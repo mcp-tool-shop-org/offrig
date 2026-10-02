@@ -332,6 +332,9 @@
       "name": "offrig-app",
       "origin": "authored",
       "role": "code",
+      "testRunners": [
+        "cargo test"
+      ],
       "testedBy": 1,
       "testedInside": true,
       "unresolvedSites": 0
@@ -2096,6 +2099,9 @@
       "outsideReads": 4,
       "outsideWrites": 1,
       "role": "code",
+      "testRunners": [
+        "cargo test"
+      ],
       "testedBy": 11,
       "testedInside": true,
       "unresolvedSites": 0
@@ -2109,12 +2115,24 @@
       "externals": 0,
       "files": [
         {
+          "hash": "9a62c0cef25c00b268b2a024d9c53c04552142b4a3e0134340e75e1223e0f737",
+          "path": ".claude/CLAUDE.md"
+        },
+        {
           "hash": "23302dd90b8bb74b44d365fafef8df20f809b61cb347023951ecf60a88a29651",
           "path": ".gitattributes"
         },
         {
+          "hash": "227be6fb3e3d378510372818bf1f0ba36530142fbeb53b90301750c3dec94800",
+          "path": ".github/workflows/ci.yml"
+        },
+        {
           "hash": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
           "path": ".gitignore"
+        },
+        {
+          "hash": "a40498ea4754cc3b08dfe090c39e71f8c18f462db33b702ac048309bf5eea6aa",
+          "path": "CHANGELOG.md"
         },
         {
           "hash": "fad1c03d9300da241594a9d76b8db74612e60029f1bf8a7bbc081ca42751c5e8",
@@ -2125,8 +2143,20 @@
           "path": "Cargo.toml"
         },
         {
+          "hash": "367e5141e4f5884e5791c4021f33a9faa958840a5decf44e1b273a87aad1c459",
+          "path": "LICENSE"
+        },
+        {
           "hash": "fa9c8ec0d9fd05c550ab9d86475299e605472fe5b72b0a97a6929f98e528b882",
           "path": "README.md"
+        },
+        {
+          "hash": "ad9a12855585b9a547bc41cfcc7053aca68453ae8f3c8f7ca5b590592474c7f1",
+          "path": "SECURITY.md"
+        },
+        {
+          "hash": "d3840ac764180a2988d8e3c8aecbf5f24a63bd1e11704513e379de0b82444a61",
+          "path": "deny.toml"
         },
         {
           "hash": "4d7d5425fe623392e565a964fc135c563c316ce125058199eb40b2953ba6ecbb",
@@ -2138,7 +2168,9 @@
         }
       ],
       "globs": [
-        "*"
+        "*",
+        ".claude/**",
+        ".github/**"
       ],
       "importConfidence": "full",
       "name": "root",
@@ -2149,6 +2181,260 @@
     }
   ],
   "doors": [
+    {
+      "checksCount": 3,
+      "commands": [
+        {
+          "dir": "",
+          "job": "rust",
+          "programs": [
+            "sudo"
+          ],
+          "step": "System libraries for eframe"
+        },
+        {
+          "dir": "",
+          "job": "rust",
+          "programs": [
+            "rustup"
+          ],
+          "step": "Toolchain (pinned in rust-toolchain.toml)"
+        },
+        {
+          "dir": "",
+          "job": "rust",
+          "programs": [
+            "cargo"
+          ],
+          "step": "Format"
+        },
+        {
+          "dir": "",
+          "job": "rust",
+          "programs": [
+            "cargo"
+          ],
+          "step": "Clippy"
+        },
+        {
+          "dir": "",
+          "job": "rust",
+          "programs": [
+            "cargo"
+          ],
+          "step": "Test"
+        },
+        {
+          "dir": "",
+          "job": "rust",
+          "programs": [
+            "npx"
+          ],
+          "step": "Atlas check"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/ci.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "rust",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [],
+      "name": "ci",
+      "permissions": [],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "offrig-app",
+          "depth": 0,
+          "files": 3
+        },
+        {
+          "boundary": "offrig-cli",
+          "depth": 0,
+          "files": 1
+        },
+        {
+          "boundary": "offrig-core",
+          "depth": 0,
+          "files": 15
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-app/src/app.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-app/src/main.rs",
+          "runKind": "checks",
+          "via": "cargo clippy"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-cli/src/main.rs",
+          "runKind": "checks",
+          "via": "cargo clippy"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/config.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/cost.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/guard.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/lib.rs",
+          "runKind": "checks",
+          "via": "cargo clippy"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/ollama.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/remote.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/runpod.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/session.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/spec.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/sshconfig.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/tunnel.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/zed.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        }
+      ],
+      "runsCount": 15,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "tests": [
+        {
+          "files": 12,
+          "job": "rust",
+          "runner": "cargo test",
+          "step": "Test"
+        }
+      ],
+      "triggers": [
+        {
+          "event": "pull_request"
+        },
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "push",
+          "paths": [
+            ".github/workflows/**",
+            "Cargo.lock",
+            "Cargo.toml",
+            "atlas/**",
+            "crates/**",
+            "deny.toml",
+            "rust-toolchain.toml",
+            "rustfmt.toml"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "EmbarkStudios/cargo-deny-action",
+        "Swatinem/rust-cache",
+        "actions/checkout"
+      ],
+      "usesWorkflowToken": false
+    },
     {
       "checksCount": 0,
       "commands": [],
@@ -2268,8 +2554,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "7fe69591744d4786e22db061cbccff23c68a492d",
-    "tracked": 29
+    "commit": "49626418f5ffe02eaee26eab3763231d39e9dd7a",
+    "tracked": 35
   },
   "landings": [
     {

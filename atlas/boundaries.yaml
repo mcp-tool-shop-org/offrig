@@ -15,4 +15,6 @@ boundaries:
   - name: root
     globs:
       - "*"
+      - .github/**
+      - .claude/**
     role: config

@@ -1,56 +1,43 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit 7fe6959 by Atlas 1.24.0.
+Mapped at 2026-10-02 from commit 4962641 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-4 parts, mostly Rust (19 files). Work enters through 2 doors; offrig and offrig-app each reach 2 parts, and offrig is followed because it comes first by name. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).
+4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).
 
-## What changed since the last map
+## What changed since 2026-10-02 (7fe6959)
 
-This is the first map.
+- ci (.github/workflows/ci.yml) is a new door. It starts on a pull request; on a push to main touching 8 paths; or by hand. It runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/cost.rs and 9 more. It checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and crates/offrig-core/src/lib.rs.
+- 6 files added, across 1 part.
 
 ## What comes in
 
-1. **offrig** (a command built from crates/offrig-cli, which nothing ships). Runs crates/offrig-cli/src/main.rs.
-2. **offrig-app** (a command built from crates/offrig-app, which nothing ships). Runs crates/offrig-app/src/main.rs.
+1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/cost.rs and 9 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and crates/offrig-core/src/lib.rs.
+2. **offrig** (a command built from crates/offrig-cli, which nothing ships). Runs crates/offrig-cli/src/main.rs.
+3. **offrig-app** (a command built from crates/offrig-app, which nothing ships). Runs crates/offrig-app/src/main.rs.
 
-## What happens through offrig
+## What happens through ci
 
-1. The command runs crates/offrig-cli/src/main.rs in offrig-cli.
-   1. Inside crates/offrig-cli/src/main.rs, `main` does, in order:
-      1. `config.rs` (offrig-core, 3 steps)
-      2. `new` (Session)
-      3. `now_unix`
-      4. `session_cost`
-      5. `new` (Session)
-      6. `chain`
-      7. `api_key_env_name`
-      8. `settings_path`
-      9. `gather`
-      10. `evaluate`
-      11. `new` (IdleTracker)
-      12. `gpu_stats`, and 6 more
-   2. **`gather`** (offrig-core) runs, in order: `read_settings`, `read_provider`, `new` (Ollama), `local_ollama_models` and `pod_tags_json`.
-   3. **`gpu_stats`** (offrig-core) runs, in order: `run_with_timeout` and `Ssh` (Error).
-   4. **`pull_start`** (offrig-core) runs, in order: `Ollama` (Error), `run_with_timeout`, `Ssh` (Error) and `Ollama` (Error).
-   5. **`pull_state`** (offrig-core) runs, in order: `Ollama` (Error), `run_with_timeout` and `Ssh` (Error).
-   6. **`gather`** (offrig-core) runs, in order: `read_settings`, `read_provider`, `new` (Ollama), `local_ollama_models` and `pod_tags_json`.
-2. That reaches offrig-core (14 files).
+1. The workflow runs crates/offrig-app/src/app.rs in offrig-app and 11 files in offrig-core; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli and crates/offrig-core/src/lib.rs in offrig-core.
 
 ## Who reads the results
 
-offrig writes nothing this map can see.
+ci writes nothing this map can see.
 
 ## The other doors
+
+**offrig** (a command built from crates/offrig-cli, which nothing ships) runs crates/offrig-cli/src/main.rs and reaches offrig-core.
 
 **offrig-app** (a command built from crates/offrig-app, which nothing ships) runs crates/offrig-app/src/main.rs and reaches offrig-core.
 
 ## What breaks what
 
-- **offrig-core** is imported by 2 parts (offrig-app, offrig-cli) and sits on the path of 2 doors.
+- **offrig-core** is imported by 2 parts (offrig-app, offrig-cli) and sits on the path of 3 doors.
+- **offrig-app** is imported by no other part and sits on the path of 2 doors.
+- **offrig-cli** is imported by no other part and sits on the path of 2 doors.
 
 ## What tends to change together
 
@@ -80,18 +67,18 @@ Nothing in this repository writes to a tracked place this map can see.
 
 ## Hand-authored
 
-People write the repository root; 3 writes with paths built at run time may land here.
+People write root; 3 writes with paths built at run time may land here.
 
 ## Where to start
 
 crates/offrig-cli/src/main.rs → crates/offrig-core/src/config.rs → crates/offrig-core/src/error.rs
 
-Read those in order to follow one run of offrig end to end.
+Read those in order to follow one run of offrig end to end. This path follows offrig (a command built from crates/offrig-cli, which nothing ships) from its entry, since ci runs only tests and checks.
 
 ## What this map cannot see
 
 - 3 writes use paths built at run time and are not named here.
 - 1 write and 4 reads go to a path their caller passes, not to this repository.
-- Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions.
+- Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
