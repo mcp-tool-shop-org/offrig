@@ -110,7 +110,9 @@ impl Session {
 
     /// Wait for the SSH endpoint, write the alias, and wait for sshd to answer.
     pub fn wait_ready(&self, pod_id: &str, on: &mut dyn FnMut(Event)) -> Result<Pod> {
-        let deadline = Instant::now() + POD_READY_TIMEOUT;
+        let started = Instant::now();
+        let deadline = started + POD_READY_TIMEOUT;
+        let mut next_note = started;
         let pod = loop {
             let pod = self.rp.get_pod(pod_id)?;
             if pod.ssh_endpoint().is_some() {
@@ -121,9 +123,13 @@ impl Session {
                     "pod {pod_id} to get an ssh endpoint"
                 )));
             }
-            on(Event::Step(
-                "waiting for the pod to start and get a public address".into(),
-            ));
+            if Instant::now() >= next_note {
+                on(Event::Step(format!(
+                    "waiting for the pod to pull its image and get a public address ({}s)",
+                    started.elapsed().as_secs()
+                )));
+                next_note = Instant::now() + Duration::from_secs(30);
+            }
             std::thread::sleep(Duration::from_secs(5));
         };
         on(Event::Pod(Box::new(pod.clone())));

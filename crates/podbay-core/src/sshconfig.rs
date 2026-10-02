@@ -106,19 +106,24 @@ fn read_or_empty(path: &Path) -> Result<String> {
 /// Write the alias's block into ~/.ssh/config and forget any old host key for the
 /// endpoint (RunPod reuses ip:port pairs across pods with new host keys).
 pub fn apply(e: &HostEntry) -> Result<()> {
-    apply_at(&config_path()?, e)?;
-    forget_host_key(&e.host, e.port);
+    // Forget the old key only when the block changed (a new pod or endpoint). An
+    // unchanged endpoint keeps its pinned key, so a swapped host still fails ssh.
+    if apply_at(&config_path()?, e)? {
+        forget_host_key(&e.host, e.port);
+    }
     Ok(())
 }
 
-pub fn apply_at(path: &Path, e: &HostEntry) -> Result<()> {
+/// Returns whether the file changed.
+pub fn apply_at(path: &Path, e: &HostEntry) -> Result<bool> {
     let old = read_or_empty(path)?;
     let new = upsert(&old, e);
-    if new != old {
-        // OpenSSH on Windows misreads a BOM; write plain UTF-8.
-        fsutil::write_atomic(path, new.as_bytes())?;
+    if new == old {
+        return Ok(false);
     }
-    Ok(())
+    // OpenSSH on Windows misreads a BOM; write plain UTF-8.
+    fsutil::write_atomic(path, new.as_bytes())?;
+    Ok(true)
 }
 
 pub fn remove_at(path: &Path, alias: &str) -> Result<()> {
@@ -208,7 +213,14 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("config");
         std::fs::write(&path, "\u{feff}Host a\n").expect("write");
-        apply_at(&path, &entry("podbay", "1.1.1.1", 1)).expect("apply");
+        assert!(
+            apply_at(&path, &entry("podbay", "1.1.1.1", 1)).expect("apply"),
+            "first write changes the file"
+        );
+        assert!(
+            !apply_at(&path, &entry("podbay", "1.1.1.1", 1)).expect("apply"),
+            "same endpoint is a no-op"
+        );
         let bytes = std::fs::read(&path).expect("read");
         assert_ne!(&bytes[..3], b"\xEF\xBB\xBF");
         remove_at(&path, "podbay").expect("remove");

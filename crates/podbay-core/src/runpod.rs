@@ -192,7 +192,7 @@ impl RunPod {
     pub fn list_pods(&self) -> Result<Vec<Pod>> {
         let resp = self
             .agent
-            .get(self.url("/pods"))
+            .get(self.url("/pods?includeMachine=true"))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("list pods", e))?;
@@ -202,7 +202,7 @@ impl RunPod {
     pub fn get_pod(&self, id: &str) -> Result<Pod> {
         let resp = self
             .agent
-            .get(self.url(&format!("/pods/{id}")))
+            .get(self.url(&format!("/pods/{id}?includeMachine=true")))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("get pod", e))?;

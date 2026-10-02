@@ -101,7 +101,7 @@ pub fn validate_model_name(name: &str) -> Result<()> {
     }
 }
 
-fn pull_file(model: &str) -> String {
+fn pull_file_in(dir: &str, model: &str) -> String {
     let safe: String = model
         .chars()
         .map(|c| {
@@ -112,17 +112,28 @@ fn pull_file(model: &str) -> String {
             }
         })
         .collect();
-    format!("{STATE_DIR}/pulls/{safe}")
+    format!("{dir}/pulls/{safe}")
+}
+
+fn pull_file(model: &str) -> String {
+    pull_file_in(STATE_DIR, model)
+}
+
+/// Only the `nohup curl` command goes to the background, with all three streams
+/// redirected. Backgrounding a whole `a && b && curl &` list would put a subshell
+/// in the background that still holds ssh's stdout, and ssh would never return.
+fn pull_start_script_in(dir: &str, model: &str) -> Result<String> {
+    validate_model_name(model)?;
+    let f = pull_file_in(dir, model);
+    Ok(format!(
+        "mkdir -p {dir}/pulls && rm -f {f}.jsonl || exit 1; \
+         nohup curl -sN http://127.0.0.1:11434/api/pull -d '{{\"model\":\"{model}\"}}' > {f}.jsonl 2>&1 < /dev/null & \
+         echo $! > {f}.pid; echo started"
+    ))
 }
 
 pub fn pull_start_script(model: &str) -> Result<String> {
-    validate_model_name(model)?;
-    let f = pull_file(model);
-    Ok(format!(
-        "mkdir -p {STATE_DIR}/pulls && rm -f {f}.jsonl && \
-         nohup curl -sN http://127.0.0.1:11434/api/pull -d '{{\"model\":\"{model}\"}}' > {f}.jsonl 2>&1 < /dev/null & \
-         echo $! > {f}.pid && echo started"
-    ))
+    pull_start_script_in(STATE_DIR, model)
 }
 
 /// Start `ollama pull` on the pod in the background. Restarting a pull resumes it.
@@ -279,6 +290,46 @@ mod tests {
         let s = pull_start_script("hf.co/org/m:Q4").expect("valid name");
         assert!(s.contains("/workspace/podbay/pulls/hf.co_org_m_Q4.jsonl"));
         assert!(s.contains(r#"-d '{"model":"hf.co/org/m:Q4"}'"#));
+    }
+
+    #[test]
+    fn only_curl_is_backgrounded() {
+        let s = pull_start_script("qwen3:8b").expect("valid name");
+        assert!(s.contains("|| exit 1; nohup curl"), "{s}");
+        assert!(s.contains("< /dev/null & echo $! >"), "{s}");
+    }
+
+    /// Regression for a live hang: the script must return while the pull keeps going.
+    #[cfg(unix)]
+    #[test]
+    fn pull_start_returns_while_the_pull_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("podbay-pull-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("temp dir");
+        let curl = bin.join("curl");
+        std::fs::write(
+            &curl,
+            "#!/bin/sh\nsleep 5\necho '{\"status\":\"success\"}'\n",
+        )
+        .expect("fake curl");
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let state = dir.join("state");
+        let script =
+            pull_start_script_in(state.to_str().expect("utf8 path"), "qwen3:8b").expect("script");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(&script).env("PATH", path);
+        let started = std::time::Instant::now();
+        let out = crate::proc::run_with_timeout(&mut cmd, Duration::from_secs(3), "pull script")
+            .expect("the script must not wait for curl");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(out.stdout.trim(), "started");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

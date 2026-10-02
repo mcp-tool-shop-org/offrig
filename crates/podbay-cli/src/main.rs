@@ -467,7 +467,13 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
             p.gpu_count
         ),
     }
-    let price = best.map_or(0.0, |b| b.1);
+    // A pod that is already up is in the account's current spend; do not add it twice.
+    let already_up = s.current_pod(p)?.is_some();
+    let price = if already_up {
+        0.0
+    } else {
+        best.map_or(0.0, |b| b.1)
+    };
     let runway = account.runway_hours(price);
     println!(
         "balance ${:.2}; with this pod the account spends ${:.2}/hr; runway {}",
