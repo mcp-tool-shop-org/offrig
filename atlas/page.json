@@ -34,30 +34,44 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 4,
+      "changed": 9,
       "moved": 0,
-      "parts": 2,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
+        "kind": "sequence",
+        "sentence": "In crates/offrig-cli/src/main.rs, `main` gained a step, `minutes`, before `api_key_env_name`.",
+        "subjects": [
+          "crates/offrig-cli/src/main.rs"
+        ]
+      },
+      {
+        "kind": "sequence",
+        "sentence": "In crates/offrig-cli/src/main.rs, `main` lost a step, `all_ok`.",
+        "subjects": [
+          "crates/offrig-cli/src/main.rs"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-02; 4 files changed content.",
+        "sentence": "9 files changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683",
-      "generatedAt": "2026-10-02T17:44:42.899Z"
+      "commit": "65ef665fd8261e4fbab96cfb98e1d7a170959934",
+      "generatedAt": "2026-10-02T22:30:32.198Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "65ef665fd8261e4fbab96cfb98e1d7a170959934",
+  "commit": "3d0a2c13a373d0cb3417349c19d87572dd476590",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
   "doors": [
@@ -199,7 +213,7 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-02T22:30:32.198Z",
+  "generatedAt": "2026-10-02T22:36:27.001Z",
   "limits": [
     "3 writes use paths built at run time and are not named here.",
     "1 write and 4 reads go to a path their caller passes, not to this repository.",

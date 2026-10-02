@@ -14,7 +14,7 @@ use offrig_core::cost::{self, Idle, IdleTracker};
 use offrig_core::error::chain;
 use offrig_core::remote::{self, PullState};
 use offrig_core::runpod::Pod;
-use offrig_core::session::{Event, Session};
+use offrig_core::session::{Event, Session, Wait};
 use offrig_core::tunnel::{self, Tunnel};
 use offrig_core::{guard, ollama::Ollama, spec, zed};
 
@@ -60,6 +60,10 @@ enum Cmd {
         /// Leave Zed's settings alone
         #[arg(long)]
         no_zed: bool,
+        /// Minutes to wait for the GPUs if none are free (overrides the profile;
+        /// nothing is rented while waiting)
+        #[arg(long)]
+        wait: Option<u32>,
     },
     /// Hold the tunnel to the running pod open (with idle auto-stop)
     Tunnel { profile: Option<String> },
@@ -277,11 +281,19 @@ fn run(cli: Cli) -> Result<()> {
             default_model,
             detach,
             no_zed,
+            wait,
         } => {
             let (s, p) = session_for(&profile)?;
             preflight(&s, &p, yes)?;
+            let stop = ctrl_c_flag()?;
+            let minutes = wait.unwrap_or(p.wait_for_gpu_minutes);
             let mut last = HashMap::new();
-            let pod = s.launch(&p, &mut print_event(&mut last))?;
+            let pod = s.launch_waiting(
+                &p,
+                Wait::minutes(minutes),
+                &stop,
+                &mut print_event(&mut last),
+            )?;
             let tunnel = s.open_tunnel(&mut print_event(&mut last))?;
             s.ensure_models(&p, &mut print_event(&mut last))?;
             if !no_zed {
@@ -301,12 +313,13 @@ fn run(cli: Cli) -> Result<()> {
                 );
                 return Ok(());
             }
-            hold(&s, &p, pod, Some(tunnel))
+            hold(&s, &p, pod, Some(tunnel), &stop)
         }
         Cmd::Tunnel { profile } => {
             let (s, p) = session_for(&profile)?;
             let pod = require_pod(&s, &p)?;
-            hold(&s, &p, pod, None)
+            let stop = ctrl_c_flag()?;
+            hold(&s, &p, pod, None, &stop)
         }
         Cmd::Pull { model, profile } => {
             let (s, p) = session_for(&profile)?;
@@ -551,13 +564,25 @@ fn print_checks(checks: &[guard::Check]) {
     }
 }
 
-/// Keep the tunnel up until Ctrl+C, reopening it if it drops, and terminate the pod
-/// after the configured idle window.
-fn hold(s: &Session, p: &Profile, pod: Pod, tunnel: Option<Tunnel>) -> Result<()> {
+/// One Ctrl+C flag per run (the handler can be installed only once): it cancels a
+/// GPU wait, then closes a held tunnel.
+fn ctrl_c_flag() -> Result<Arc<AtomicBool>> {
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
     ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst))
         .context("installing the Ctrl+C handler")?;
+    Ok(stop)
+}
+
+/// Keep the tunnel up until Ctrl+C, reopening it if it drops, and terminate the pod
+/// after the configured idle window.
+fn hold(
+    s: &Session,
+    p: &Profile,
+    pod: Pod,
+    tunnel: Option<Tunnel>,
+    stop: &AtomicBool,
+) -> Result<()> {
     let mut last = HashMap::new();
     let mut tunnel = match tunnel {
         Some(t) => t,

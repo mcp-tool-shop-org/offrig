@@ -61,6 +61,12 @@ pub enum Error {
 
     #[error("ollama: {0}")]
     Ollama(String),
+
+    #[error("cancelled while {0}")]
+    Cancelled(String),
+
+    #[error("no capacity: {0}")]
+    NoCapacity(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -25,9 +25,10 @@ fn main() -> eframe::Result {
             let (upd_tx, upd_rx) = mpsc::channel();
             let out = worker::Outbox::new(upd_tx, cc.egui_ctx.clone());
             let cfg = Config::load();
-            let mut app = app::App::new(cmd_tx, upd_rx, out.clone());
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut app = app::App::new(cmd_tx, upd_rx, out.clone(), cancel.clone());
             match cfg {
-                Ok(cfg) => worker::spawn(cfg, out, cmd_rx),
+                Ok(cfg) => worker::spawn(cfg, out, cmd_rx, cancel),
                 Err(e) => app.st.apply(worker::Update::Error(format!(
                     "offrig config: {}",
                     offrig_core::error::chain(&e)

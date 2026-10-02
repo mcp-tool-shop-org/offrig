@@ -2,6 +2,7 @@
 //! wire Zed to it, and shut it down. Progress goes out through a callback so the
 //! CLI can print it and the app can draw it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, Profile};
@@ -65,17 +66,43 @@ pub fn local_conflicts(profile: &Profile, local_models: &[String]) -> Result<()>
     }
 }
 
-/// RunPod answers an exhausted GPU list with a 500 whose body says so; say it plainly.
-pub fn explain_create_error(e: Error, body: &crate::runpod::PodCreate) -> Error {
-    match &e {
-        Error::Api { body: text, .. } if text.contains("no instances currently available") => {
-            Error::Config(format!(
-                "RunPod has no {}x of [{}] free right now; add GPU types to the profile or try again later",
-                body.gpu_count,
-                body.gpu_type_ids.join(" | ")
-            ))
+/// RunPod answers an exhausted GPU list with a 500 whose body says so.
+pub fn is_no_capacity(e: &Error) -> bool {
+    matches!(e, Error::Api { body, .. } if body.contains("no instances currently available"))
+}
+
+fn no_capacity(body: &crate::runpod::PodCreate, waited: Duration) -> Error {
+    let what = format!("{}x of [{}]", body.gpu_count, body.gpu_type_ids.join(" | "));
+    Error::NoCapacity(if waited.is_zero() {
+        format!("RunPod has no {what} free right now; try again later or set a wait")
+    } else {
+        format!(
+            "RunPod had no {what} free during a {} minute wait; nothing was rented",
+            waited.as_secs() / 60
+        )
+    })
+}
+
+/// How the wait for capacity behaves. `poll` is a minute in use; tests shorten it.
+#[derive(Debug, Clone, Copy)]
+pub struct Wait {
+    pub limit: Duration,
+    pub poll: Duration,
+}
+
+impl Wait {
+    pub fn none() -> Self {
+        Self {
+            limit: Duration::ZERO,
+            poll: Duration::from_secs(60),
         }
-        _ => e,
+    }
+
+    pub fn minutes(m: u32) -> Self {
+        Self {
+            limit: Duration::from_secs(u64::from(m) * 60),
+            poll: Duration::from_secs(60),
+        }
     }
 }
 
@@ -134,22 +161,25 @@ impl Session {
     }
 
     pub fn launch(&self, profile: &Profile, on: &mut dyn FnMut(Event)) -> Result<Pod> {
+        self.launch_waiting(profile, Wait::none(), &AtomicBool::new(false), on)
+    }
+
+    /// Launch, waiting up to `wait.limit` for the profile's GPUs to come free. Nothing
+    /// is rented while waiting; setting `cancel` stops the wait.
+    pub fn launch_waiting(
+        &self,
+        profile: &Profile,
+        wait: Wait,
+        cancel: &AtomicBool,
+        on: &mut dyn FnMut(Event),
+    ) -> Result<Pod> {
         self.plan_check(profile)?;
         if let Some(p) = self.current_pod(profile)? {
             on(Event::Step(format!("{} is already up ({})", p.name, p.id)));
             return self.wait_ready(&p.id, on);
         }
         let body = spec::pod_create(&self.cfg, profile);
-        on(Event::Step(format!(
-            "creating {} on {}x {}",
-            body.name,
-            body.gpu_count,
-            body.gpu_type_ids.join(" | ")
-        )));
-        let pod = self
-            .rp
-            .create_pod(&body)
-            .map_err(|e| explain_create_error(e, &body))?;
+        let pod = self.create_when_free(&body, wait, cancel, on)?;
         on(Event::Step(format!(
             "pod {} created at ${:.2}/hr on {}",
             pod.id,
@@ -157,6 +187,65 @@ impl Session {
             pod.gpu_type().unwrap_or("a matching GPU")
         )));
         self.wait_ready(&pod.id, on)
+    }
+
+    /// Whether any of the body's GPU types is free at its count. `None` when the
+    /// price API cannot say (it is GraphQL, which RunPod may retire).
+    fn capacity_free(&self, body: &crate::runpod::PodCreate) -> Option<bool> {
+        let offers = self.rp.gpu_offers(body.gpu_count).ok()?;
+        Some(
+            offers
+                .iter()
+                .any(|o| body.gpu_type_ids.contains(&o.id) && o.price_per_hr.is_some()),
+        )
+    }
+
+    /// Create the pod as soon as RunPod has the GPUs, or give up at the limit.
+    pub fn create_when_free(
+        &self,
+        body: &crate::runpod::PodCreate,
+        wait: Wait,
+        cancel: &AtomicBool,
+        on: &mut dyn FnMut(Event),
+    ) -> Result<Pod> {
+        let started = Instant::now();
+        let what = format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | "));
+        let mut next_note = started;
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(Error::Cancelled(format!("waiting for {what}")));
+            }
+            // Ask the price API first so a full market costs no create calls; if it
+            // cannot answer, try the create and let RunPod say no.
+            if self.capacity_free(body) != Some(false) {
+                on(Event::Step(format!("creating {} on {what}", body.name)));
+                match self.rp.create_pod(body) {
+                    Ok(pod) => return Ok(pod),
+                    Err(e) if is_no_capacity(&e) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            let waited = started.elapsed();
+            if waited >= wait.limit {
+                return Err(no_capacity(body, wait.limit));
+            }
+            if Instant::now() >= next_note {
+                on(Event::Step(format!(
+                    "no {what} free yet; checking every {}s, {} of {} min waited",
+                    wait.poll.as_secs(),
+                    waited.as_secs() / 60,
+                    wait.limit.as_secs() / 60
+                )));
+                next_note = Instant::now() + Duration::from_secs(300).max(wait.poll);
+            }
+            let wake = Instant::now() + wait.poll;
+            while Instant::now() < wake {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err(Error::Cancelled(format!("waiting for {what}")));
+                }
+                std::thread::sleep(Duration::from_millis(200).min(wait.poll));
+            }
+        }
     }
 
     /// Wait for the SSH endpoint, write the alias, and wait for sshd to answer.
@@ -394,15 +483,233 @@ mod tests {
         spec::pod_create(&cfg, cfg.profile("medium").expect("medium"))
     }
 
+    const NO_INSTANCES: &str =
+        r#"{"error":"create pod: There are no instances currently available"}"#;
+
     #[test]
-    fn exhausted_capacity_is_explained() {
-        let e = Error::Api {
+    fn no_capacity_is_recognised() {
+        let full = Error::Api {
             what: "create pod".into(),
             status: 500,
-            body: r#"{"error":"create pod: There are no instances currently available"}"#.into(),
+            body: NO_INSTANCES.into(),
         };
-        let msg = explain_create_error(e, &body()).to_string();
-        assert!(msg.contains("no 1x of [NVIDIA RTX PRO 6000 Blackwell Server Edition"), "{msg}");
+        assert!(is_no_capacity(&full));
+        let auth = Error::Api {
+            what: "create pod".into(),
+            status: 401,
+            body: "unauthorized".into(),
+        };
+        assert!(!is_no_capacity(&auth));
+        let msg = no_capacity(&body(), Duration::ZERO).to_string();
+        assert!(
+            msg.contains("no 1x of [NVIDIA RTX PRO 6000 Blackwell Server Edition"),
+            "{msg}"
+        );
+        let waited = no_capacity(&body(), Duration::from_secs(120 * 60)).to_string();
+        assert!(
+            waited.contains("120 minute wait; nothing was rented"),
+            "{waited}"
+        );
+    }
+
+    /// A tiny HTTP server standing in for RunPod. `handler` gets the route
+    /// ("POST /graphql", "POST /pods") and how many times that route was hit.
+    struct Mock {
+        url: String,
+        hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Mock {
+        fn count(&self, route: &str) -> usize {
+            self.hits
+                .lock()
+                .expect("hits lock")
+                .iter()
+                .filter(|h| *h == route)
+                .count()
+        }
+    }
+
+    fn mock(handler: impl Fn(&str, usize) -> (u16, String) + Send + 'static) -> Mock {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = std::sync::Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().map_while(std::result::Result::ok) {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let route = format!(
+                    "{} {}",
+                    parts.next().unwrap_or(""),
+                    parts.next().unwrap_or("").split('?').next().unwrap_or("")
+                );
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = reader.read_exact(&mut body);
+                let nth = {
+                    let mut l = log.lock().expect("hits lock");
+                    let n = l.iter().filter(|h| **h == route).count();
+                    l.push(route.clone());
+                    n
+                };
+                let (status, text) = handler(&route, nth);
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = reader.get_mut().write_all(resp.as_bytes());
+            }
+        });
+        Mock { url, hits }
+    }
+
+    fn offers(free: bool) -> String {
+        let price = if free { "8.36" } else { "null" };
+        format!(
+            r#"{{"data":{{"gpuTypes":[{{"id":"NVIDIA RTX PRO 6000 Blackwell Server Edition","displayName":"RTX PRO 6000","memoryInGb":96,"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":{price},"stockStatus":null}}}}]}}}}"#
+        )
+    }
+
+    const POD: &str =
+        r#"{"id":"p1","name":"offrig-frontier","desiredStatus":"RUNNING","costPerHr":8.36}"#;
+
+    fn session_on(m: &Mock) -> Session {
+        let rp = RunPod::new("test-key", &m.url, &format!("{}/graphql", m.url));
+        Session::with_client(Config::default(), rp)
+    }
+
+    fn frontier() -> crate::runpod::PodCreate {
+        let cfg = Config::default();
+        spec::pod_create(&cfg, cfg.profile("frontier").expect("frontier"))
+    }
+
+    fn fast(limit_ms: u64) -> Wait {
+        Wait {
+            limit: Duration::from_millis(limit_ms),
+            poll: Duration::from_millis(20),
+        }
+    }
+
+    #[test]
+    fn waits_without_renting_until_the_gpus_free_up() {
+        let m = mock(|route, nth| match route {
+            "POST /graphql" => (200, offers(nth >= 2)),
+            "POST /pods" => (200, POD.into()),
+            _ => (404, "{}".into()),
+        });
+        let s = session_on(&m);
+        let mut steps = Vec::new();
+        let pod = s
+            .create_when_free(
+                &frontier(),
+                fast(5_000),
+                &AtomicBool::new(false),
+                &mut |e| steps.push(e),
+            )
+            .expect("the pod is created once the GPUs are free");
+        assert_eq!(pod.id, "p1");
+        assert_eq!(m.count("POST /graphql"), 3, "two full answers, then free");
+        assert_eq!(
+            m.count("POST /pods"),
+            1,
+            "no create while the market was full"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|e| matches!(e, Event::Step(s) if s.starts_with("no 4x")))
+        );
+    }
+
+    #[test]
+    fn gives_up_at_the_limit_having_rented_nothing() {
+        let m = mock(|route, _| match route {
+            "POST /graphql" => (200, offers(false)),
+            _ => (200, POD.into()),
+        });
+        let s = session_on(&m);
+        let err = s
+            .create_when_free(&frontier(), fast(150), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("nothing frees up");
+        assert!(matches!(err, Error::NoCapacity(_)), "{err}");
+        assert_eq!(m.count("POST /pods"), 0);
+    }
+
+    #[test]
+    fn without_the_price_api_it_retries_the_create() {
+        let m = mock(|route, nth| match route {
+            "POST /graphql" => (500, "{}".into()),
+            "POST /pods" if nth < 2 => (500, NO_INSTANCES.into()),
+            "POST /pods" => (200, POD.into()),
+            _ => (404, "{}".into()),
+        });
+        let s = session_on(&m);
+        let pod = s
+            .create_when_free(
+                &frontier(),
+                fast(5_000),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
+            .expect("third create succeeds");
+        assert_eq!(pod.id, "p1");
+        assert_eq!(m.count("POST /pods"), 3);
+    }
+
+    #[test]
+    fn other_create_errors_stop_at_once() {
+        let m = mock(|route, _| match route {
+            "POST /graphql" => (200, offers(true)),
+            _ => (401, "unauthorized".into()),
+        });
+        let s = session_on(&m);
+        let err = s
+            .create_when_free(
+                &frontier(),
+                fast(5_000),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
+            .expect_err("401 is not a capacity problem");
+        assert!(matches!(err, Error::Api { status: 401, .. }), "{err}");
+        assert_eq!(m.count("POST /pods"), 1);
+    }
+
+    #[test]
+    fn cancel_stops_the_wait() {
+        let m = mock(|route, _| match route {
+            "POST /graphql" => (200, offers(false)),
+            _ => (200, POD.into()),
+        });
+        let s = session_on(&m);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let err = s
+            .create_when_free(&frontier(), fast(60_000), &cancel, &mut |_| {})
+            .expect_err("cancelled");
+        assert!(matches!(err, Error::Cancelled(_)), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(m.count("POST /pods"), 0);
     }
 
     #[test]
@@ -429,18 +736,5 @@ mod tests {
         for p in &cfg.profiles {
             local_conflicts(p, &local).unwrap_or_else(|e| panic!("{}: {e}", p.name));
         }
-    }
-
-    #[test]
-    fn other_errors_pass_through() {
-        let e = Error::Api {
-            what: "create pod".into(),
-            status: 401,
-            body: "unauthorized".into(),
-        };
-        assert!(matches!(
-            explain_create_error(e, &body()),
-            Error::Api { status: 401, .. }
-        ));
     }
 }

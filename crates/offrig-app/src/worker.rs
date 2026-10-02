@@ -1,6 +1,8 @@
 //! The app's background thread. It owns the session, the tunnel and the idle
 //! tracker; the UI sends it `Cmd`s and draws the `Update`s it sends back.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -12,7 +14,7 @@ use offrig_core::guard::{self, Check};
 use offrig_core::ollama::{ChatCheck, Ollama, Tag};
 use offrig_core::remote::{self, GpuStat, PullState};
 use offrig_core::runpod::{Account, GpuOffer, Pod, RunPod};
-use offrig_core::session::{Event, Session};
+use offrig_core::session::{Event, Session, Wait};
 use offrig_core::tunnel::Tunnel;
 use offrig_core::zed::{self, DefaultModel};
 use offrig_core::{Error, Result, spec};
@@ -90,12 +92,14 @@ pub struct Worker {
     want_tunnel: bool,
     idle: Option<IdleTracker>,
     previous_default: Option<DefaultModel>,
+    /// Set by the window's Cancel button; stops a wait for GPUs.
+    cancel: Arc<AtomicBool>,
 }
 
 const REFRESH_EVERY: Duration = Duration::from_secs(15);
 const GPU_EVERY: Duration = Duration::from_secs(60);
 
-pub fn spawn(cfg: Config, out: Outbox, rx: Receiver<Cmd>) {
+pub fn spawn(cfg: Config, out: Outbox, rx: Receiver<Cmd>, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let session = match Session::new(cfg.clone()) {
             Ok(s) => s,
@@ -115,6 +119,7 @@ pub fn spawn(cfg: Config, out: Outbox, rx: Receiver<Cmd>) {
             want_tunnel: false,
             idle,
             previous_default: None,
+            cancel,
         };
         w.run(rx);
     });
@@ -247,7 +252,12 @@ impl Worker {
             }
             Cmd::Launch => {
                 let p = self.profile()?;
-                let pod = self.session.launch(&p, &mut self.events())?;
+                self.cancel.store(false, Ordering::SeqCst);
+                let wait = Wait::minutes(p.wait_for_gpu_minutes);
+                let cancel = Arc::clone(&self.cancel);
+                let pod = self
+                    .session
+                    .launch_waiting(&p, wait, &cancel, &mut self.events())?;
                 self.out.send(Update::Pods(self.session.rp.list_pods()?));
                 self.open_tunnel()?;
                 self.session.ensure_models(&p, &mut self.events())?;

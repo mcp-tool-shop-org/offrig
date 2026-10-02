@@ -49,6 +49,10 @@ pub struct Profile {
     /// Ollama's default context window (`OLLAMA_CONTEXT_LENGTH`), also told to Zed.
     pub context_length: u32,
     pub models: Vec<ModelEntry>,
+    /// When the GPUs are not free, check every minute for up to this long before
+    /// giving up. Nothing is rented while waiting. 0 fails at once.
+    #[serde(default)]
+    pub wait_for_gpu_minutes: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +121,7 @@ pub fn default_profiles() -> Vec<Profile> {
             // Not qwen3:8b: that one is in this rig's local Ollama, and a pod model
             // must never share a name with a local one.
             models: vec![model("qwen3:4b", 2.5, false)],
+            wait_for_gpu_minutes: 0,
         },
         Profile {
             name: "medium".into(),
@@ -139,6 +144,7 @@ pub fn default_profiles() -> Vec<Profile> {
                 model("qwen3-coder:30b-a3b-q8_0", 32.0, false),
                 model("gpt-oss:120b", 65.0, false),
             ],
+            wait_for_gpu_minutes: 0,
         },
         Profile {
             name: "frontier".into(),
@@ -156,6 +162,8 @@ pub fn default_profiles() -> Vec<Profile> {
             container_disk_gb: 40,
             context_length: 65_536,
             models: vec![model("qwen3-coder:480b", 290.0, false)],
+            // 4x comes and goes within minutes; wait for it rather than settle.
+            wait_for_gpu_minutes: 120,
         },
     ]
 }

@@ -2,6 +2,8 @@
 //! `App::draw` renders it and turns clicks into worker commands (kittest tested).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -156,16 +158,24 @@ pub struct App {
     cmd: Sender<Cmd>,
     upd: Receiver<Update>,
     out: Outbox,
+    /// Shared with the worker: stops a wait for GPUs while the worker is busy.
+    cancel: Arc<AtomicBool>,
     pub st: State,
     ui: Ui,
 }
 
 impl App {
-    pub fn new(cmd: Sender<Cmd>, upd: Receiver<Update>, out: Outbox) -> Self {
+    pub fn new(
+        cmd: Sender<Cmd>,
+        upd: Receiver<Update>,
+        out: Outbox,
+        cancel: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             cmd,
             upd,
             out,
+            cancel,
             st: State::default(),
             ui: Ui::default(),
         }
@@ -232,10 +242,14 @@ impl App {
                     ui.label("Reading the account…");
                 }
             }
-            if let Some(b) = &self.st.busy {
+            if let Some(b) = self.st.busy.clone() {
                 ui.separator();
                 ui.spinner();
-                ui.label(b);
+                ui.label(&b);
+                // Only a launch can be waiting for GPUs; nothing is rented yet then.
+                if b.starts_with("Launching") && ui.button("Cancel launch").clicked() {
+                    self.cancel.store(true, Ordering::SeqCst);
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Refresh").clicked() {
@@ -311,6 +325,16 @@ impl App {
             ui.end_row();
             ui.label("Context");
             ui.label(format!("{} tokens", p.context_length));
+            ui.end_row();
+            ui.label("If no GPUs");
+            ui.label(if p.wait_for_gpu_minutes > 0 {
+                format!(
+                    "wait up to {} min (nothing rented while waiting)",
+                    p.wait_for_gpu_minutes
+                )
+            } else {
+                "fail at once".to_string()
+            });
             ui.end_row();
             ui.label("Storage");
             ui.label(match &p.network_volume_id {
@@ -921,7 +945,8 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (upd_tx, upd_rx) = mpsc::channel();
         let out = Outbox::new(upd_tx.clone(), egui::Context::default());
-        (App::new(cmd_tx, upd_rx, out), cmd_rx, upd_tx)
+        let cancel = Arc::new(AtomicBool::new(false));
+        (App::new(cmd_tx, upd_rx, out, cancel), cmd_rx, upd_tx)
     }
 }
 
@@ -1085,6 +1110,21 @@ mod ui_tests {
         h.get_by_label("Pull").click();
         h.run();
         assert!(sent(&cmds).contains(&Cmd::Pull("gpt-oss:120b".into())));
+    }
+
+    #[test]
+    fn cancel_launch_stops_a_gpu_wait() {
+        let (mut h, _cmds) = harness(vec![Update::Busy(Some("Launching the pod".into()))]);
+        // The busy spinner repaints forever, so step frames instead of run().
+        h.run_steps(3);
+        h.get_by_label("fail at once");
+        assert!(!h.state().cancel.load(Ordering::SeqCst));
+        h.get_by_label("Cancel launch").click();
+        h.run_steps(3);
+        assert!(
+            h.state().cancel.load(Ordering::SeqCst),
+            "the worker sees the flag"
+        );
     }
 
     #[test]

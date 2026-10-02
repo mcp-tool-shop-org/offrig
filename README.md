@@ -62,6 +62,7 @@ offrig status                 balance, runway, pods
 offrig gpus --count 2         live offers for a GPU count
 offrig profiles               tiers and their models
 offrig up medium              launch, pull, wire Zed, run the checks, hold the tunnel
+offrig up frontier --wait 180  wait up to 3 hours for the GPUs, renting nothing meanwhile
 offrig tunnel medium          hold the tunnel to a running pod
 offrig check gpt-oss:120b     streamed chat with a tool call, the way Zed sends it
 offrig guard                  run the seven checks
@@ -82,6 +83,10 @@ Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defau
 | frontier | 4 × RTX PRO 6000 (384 GB) | `qwen3-coder:480b` (290 GB), about 90 GB left for context | $8.36/hr |
 
 Each profile lists GPU types in priority order; RunPod takes the first with capacity.
+When none is free, a profile can wait (`wait_for_gpu_minutes`; frontier waits up to 120 minutes):
+offrig checks every minute and creates the pod the moment the GPUs free up. Nothing is rented
+while it waits, Ctrl+C or the app's Cancel launch stops it, and if RunPod's price API is down it
+simply retries the create each minute. Large multi-GPU setups come and go within minutes.
 Prices are secure-cloud prices, read live; the pricing page is not the available price.
 
 ## Money safety
