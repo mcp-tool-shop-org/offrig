@@ -126,28 +126,28 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 5,
-        "lines": 175,
+        "commits": 6,
+        "lines": 183,
         "path": "atlas/README.md"
       },
       {
-        "commits": 2,
-        "lines": 20,
+        "commits": 3,
+        "lines": 21,
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 5,
-        "lines": 972,
+        "commits": 6,
+        "lines": 1004,
         "path": "atlas/page.json"
       },
       {
-        "commits": 5,
-        "lines": 627,
+        "commits": 6,
+        "lines": 692,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 5,
-        "lines": 3068,
+        "commits": 6,
+        "lines": 3079,
         "path": "atlas/structure.json"
       },
       {
@@ -332,6 +332,11 @@
       },
       {
         "commits": 1,
+        "lines": 246,
+        "path": "docs/sidecar-design.md"
+      },
+      {
+        "commits": 1,
         "lines": 8,
         "path": "offrig-app}/Cargo.toml"
       },
@@ -456,9 +461,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T22:43:25.202Z",
+  "generatedAt": "2026-10-02T22:52:24.189Z",
   "generatedFrom": {
-    "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b"
+    "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c"
   },
   "pairs": [],
   "parameters": {
@@ -471,16 +476,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T18:36:27-04:00",
+    "headDate": "2026-10-02T18:43:25-04:00",
     "inScopeFiles": 41,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 6,
+    "qualifyingCommits": 7,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T22:36:27.000Z",
+    "since": "2026-04-05T22:43:25.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

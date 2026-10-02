@@ -1136,7 +1136,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "31572fcacf9309df1f6e3e465fc986a883977b79b74a0d82d90447b4dc7fdb8d",
+          "hash": "c3b8d01f7e2349b41340284762934a47d6378e4d3e92e860e52d8bb388f7ba89",
           "path": "crates/offrig-core/Cargo.toml"
         },
         {
@@ -1212,12 +1212,13 @@
         },
         {
           "exports": [
+            "date_utc",
             "now_unix",
             "parse_timestamp",
             "session_cost",
             "volume_cost_per_month"
           ],
-          "hash": "3f0c684d0dcb34ea940ab4fa5d67a45012c626691653f800664be91ce2f799e9",
+          "hash": "87cdb4663f52d16f321829a05ec26c1402cadacf00db03fd7f7e29c9d4152082",
           "importsFiles": [
             "crates/offrig-core/src/remote.rs"
           ],
@@ -1228,7 +1229,7 @@
           "exports": [
             "chain"
           ],
-          "hash": "59f122d1584ec5563cc2099ba67926980a0680ec20a938814584c53091c883fa",
+          "hash": "9e9c03c92fcf64f4067210b1993d363d9e991fe14dd12aaaa11e8224ce214314",
           "path": "crates/offrig-core/src/error.rs"
         },
         {
@@ -1310,7 +1311,7 @@
           "testsInside": true
         },
         {
-          "hash": "97cd8fcb2eac243014f1b18e44f739454b1a3ccc2880594a763c6789b5b4e8f3",
+          "hash": "891fed4a6586e50eb59a450be3e411ef9f30bb1fdaf9525e8f144c8398fa7bee",
           "importsFiles": [
             "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/cost.rs",
@@ -2158,7 +2159,24 @@
       ],
       "testedBy": 11,
       "testedInside": true,
-      "unresolvedSites": 0
+      "unresolvedNamed": [
+        {
+          "path": "crates/offrig-core/src/lib.rs",
+          "specifier": "mod context",
+          "why": "other"
+        },
+        {
+          "path": "crates/offrig-core/src/lib.rs",
+          "specifier": "mod roles",
+          "why": "other"
+        },
+        {
+          "path": "crates/offrig-core/src/lib.rs",
+          "specifier": "mod store",
+          "why": "other"
+        }
+      ],
+      "unresolvedSites": 3
     },
     {
       "dynamicReads": 0,
@@ -2189,7 +2207,7 @@
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "fad1c03d9300da241594a9d76b8db74612e60029f1bf8a7bbc081ca42751c5e8",
+          "hash": "7f151f38008b0ad6be6169fe02a0622f315bce21a1c401c9f7f08ad01ae92a22",
           "path": "Cargo.lock"
         },
         {
@@ -2613,7 +2631,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b",
+    "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c",
     "tracked": 36
   },
   "landings": [

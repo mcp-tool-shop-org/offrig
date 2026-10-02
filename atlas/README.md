@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit 61dce78 by Atlas 1.24.0.
+Mapped at 2026-10-02 from commit 53c9b4b by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,9 +8,9 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).
 
-## What changed since 2026-10-02 (3d0a2c1)
+## What changed since 2026-10-02 (61dce78)
 
-Nothing structural changed since 2026-10-02; 1 file added.
+Nothing structural changed since 2026-10-02; 5 files changed content.
 
 ## What comes in
 
@@ -76,6 +76,7 @@ Read those in order to follow one run of offrig end to end. This path follows of
 
 ## What this map cannot see
 
+- 3 imports could not be resolved: `crates/offrig-core/src/lib.rs` imports `mod context`; `crates/offrig-core/src/lib.rs` imports `mod roles`; `crates/offrig-core/src/lib.rs` imports `mod store`.
 - 3 writes use paths built at run time and are not named here.
 - 1 write and 4 reads go to a path their caller passes, not to this repository.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.

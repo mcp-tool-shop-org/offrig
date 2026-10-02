@@ -67,6 +67,24 @@ pub enum Error {
 
     #[error("no capacity: {0}")]
     NoCapacity(String),
+
+    #[error("database error while {what}")]
+    Db {
+        what: String,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error("refused: {0}")]
+    Refused(String),
+
+    #[error("illegal transition for handoff {id}: {from} -> {to}{hint}")]
+    Transition {
+        id: i64,
+        from: String,
+        to: String,
+        hint: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

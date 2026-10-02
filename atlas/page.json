@@ -33,22 +33,22 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 0,
+      "added": 0,
+      "changed": 5,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-02; 1 file added.",
+        "sentence": "Nothing structural changed since 2026-10-02; 5 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "3d0a2c13a373d0cb3417349c19d87572dd476590",
-      "generatedAt": "2026-10-02T22:36:27.001Z"
+      "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b",
+      "generatedAt": "2026-10-02T22:43:25.202Z"
     },
     "unchanged": true
   },
@@ -57,7 +57,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b",
+  "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
   "doors": [
@@ -199,8 +199,9 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-02T22:43:25.202Z",
+  "generatedAt": "2026-10-02T22:52:24.189Z",
   "limits": [
+    "3 imports could not be resolved: `crates/offrig-core/src/lib.rs` imports `mod context`; `crates/offrig-core/src/lib.rs` imports `mod roles`; `crates/offrig-core/src/lib.rs` imports `mod store`.",
     "3 writes use paths built at run time and are not named here.",
     "1 write and 4 reads go to a path their caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."

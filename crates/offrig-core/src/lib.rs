@@ -7,6 +7,7 @@
 //! that this still holds.
 
 pub mod config;
+pub mod context;
 pub mod cost;
 pub mod error;
 pub mod fsutil;
@@ -14,10 +15,12 @@ pub mod guard;
 pub mod ollama;
 pub mod proc;
 pub mod remote;
+pub mod roles;
 pub mod runpod;
 pub mod session;
 pub mod spec;
 pub mod sshconfig;
+pub mod store;
 pub mod tunnel;
 pub mod zed;
 
