@@ -1,0 +1,28 @@
+[package]
+name = "offrig-mcp"
+description = "offrig side-car: an MCP server agents call to plan GPU sessions, keep project memory and queue role-headed handoffs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "offrig-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+offrig-core.workspace = true
+rmcp = { version = "3.5.0", features = ["server", "macros", "transport-io", "schemars"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "io-std", "sync", "time"] }
+
+[dev-dependencies]
+rmcp = { version = "3.5.0", features = ["client", "transport-child-process"] }
+tokio = { version = "1.53.1", features = ["process"] }
+
+[lints]
+workspace = true

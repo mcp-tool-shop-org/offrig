@@ -360,20 +360,20 @@
             {
               "in": "main",
               "kind": "match-err",
-              "line": 109
+              "line": 118
             },
             {
               "in": "preflight",
               "kind": "match-err",
-              "line": 466
+              "line": 492
             },
             {
               "in": "preflight",
               "kind": "match-err",
-              "line": 503
+              "line": 529
             }
           ],
-          "hash": "49926a4052262a6ec3eccbb035254f35abb1a19db484d5e75c081e9db8f5d02f",
+          "hash": "138441957b37fdf6514319bce3c8d54a4fda123a885f3703f41e304d8f3665fa",
           "importsFiles": [
             "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/cost.rs",
@@ -384,6 +384,7 @@
             "crates/offrig-core/src/runpod.rs",
             "crates/offrig-core/src/session.rs",
             "crates/offrig-core/src/spec.rs",
+            "crates/offrig-core/src/store.rs",
             "crates/offrig-core/src/tunnel.rs",
             "crates/offrig-core/src/zed.rs"
           ],
@@ -392,9 +393,17 @@
             {
               "calls": [
                 {
+                  "line": 195,
+                  "name": "open",
+                  "target": {
+                    "file": "crates/offrig-core/src/store.rs"
+                  },
+                  "via": "run"
+                },
+                {
                   "inner": [
                     {
-                      "line": 184,
+                      "line": 202,
                       "name": "Config",
                       "receiver": "Error",
                       "target": {
@@ -402,7 +411,7 @@
                       }
                     }
                   ],
-                  "line": 182,
+                  "line": 208,
                   "name": "config_path",
                   "target": {
                     "file": "crates/offrig-core/src/config.rs"
@@ -410,7 +419,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 186,
+                  "line": 212,
                   "name": "default",
                   "receiver": "Config",
                   "target": {
@@ -419,7 +428,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 142,
+                  "line": 151,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -428,7 +437,7 @@
                   "via": "load"
                 },
                 {
-                  "line": 220,
+                  "line": 246,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -437,7 +446,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 239,
+                  "line": 265,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -445,7 +454,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 239,
+                  "line": 265,
                   "name": "session_cost",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -453,7 +462,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 254,
+                  "line": 280,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -462,7 +471,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 469,
+                  "line": 495,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -470,7 +479,7 @@
                   "via": "preflight"
                 },
                 {
-                  "line": 293,
+                  "line": 319,
                   "name": "minutes",
                   "receiver": "Wait",
                   "target": {
@@ -479,7 +488,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 549,
+                  "line": 575,
                   "name": "api_key_env_name",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
@@ -497,7 +506,7 @@
                       }
                     }
                   ],
-                  "line": 301,
+                  "line": 327,
                   "name": "settings_path",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
@@ -543,7 +552,7 @@
                       }
                     }
                   ],
-                  "line": 301,
+                  "line": 327,
                   "name": "gather",
                   "target": {
                     "file": "crates/offrig-core/src/guard.rs"
@@ -551,7 +560,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 301,
+                  "line": 327,
                   "name": "evaluate",
                   "target": {
                     "file": "crates/offrig-core/src/guard.rs"
@@ -559,7 +568,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 594,
+                  "line": 620,
                   "name": "new",
                   "receiver": "IdleTracker",
                   "target": {
@@ -587,7 +596,7 @@
                       "via": "ssh_exec"
                     }
                   ],
-                  "line": 618,
+                  "line": 644,
                   "name": "gpu_stats",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
@@ -595,7 +604,7 @@
                   "via": "hold"
                 },
                 {
-                  "line": 641,
+                  "line": 667,
                   "name": "pod_name",
                   "target": {
                     "file": "crates/offrig-core/src/spec.rs"
@@ -639,7 +648,7 @@
                       }
                     }
                   ],
-                  "line": 327,
+                  "line": 353,
                   "name": "pull_start",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
@@ -675,7 +684,7 @@
                       "via": "ssh_exec"
                     }
                   ],
-                  "line": 333,
+                  "line": 359,
                   "name": "pull_state",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
@@ -702,7 +711,7 @@
                       "via": "ssh_exec"
                     }
                   ],
-                  "line": 352,
+                  "line": 378,
                   "name": "pod_tags_json",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
@@ -710,7 +719,7 @@
                   "via": "run"
                 },
                 {
-                  "line": 172,
+                  "line": 181,
                   "name": "port_open",
                   "target": {
                     "file": "crates/offrig-core/src/tunnel.rs"
@@ -718,7 +727,7 @@
                   "via": "ensure_tunnel"
                 },
                 {
-                  "line": 373,
+                  "line": 399,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -737,7 +746,7 @@
                       }
                     }
                   ],
-                  "line": 385,
+                  "line": 411,
                   "name": "settings_path",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
@@ -783,16 +792,8 @@
                       }
                     }
                   ],
-                  "line": 385,
+                  "line": 411,
                   "name": "gather",
-                  "target": {
-                    "file": "crates/offrig-core/src/guard.rs"
-                  },
-                  "via": "run"
-                },
-                {
-                  "line": 385,
-                  "name": "evaluate",
                   "target": {
                     "file": "crates/offrig-core/src/guard.rs"
                   },
@@ -808,7 +809,7 @@
             {
               "calls": [
                 {
-                  "line": 142,
+                  "line": 151,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -824,7 +825,7 @@
             {
               "calls": [
                 {
-                  "line": 142,
+                  "line": 151,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -833,7 +834,7 @@
                   "via": "load"
                 },
                 {
-                  "line": 155,
+                  "line": 164,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -849,7 +850,7 @@
             {
               "calls": [
                 {
-                  "line": 172,
+                  "line": 181,
                   "name": "port_open",
                   "target": {
                     "file": "crates/offrig-core/src/tunnel.rs"
@@ -864,14 +865,21 @@
             {
               "calls": [
                 {
-                  "line": 182,
+                  "line": 195,
+                  "name": "open",
+                  "target": {
+                    "file": "crates/offrig-core/src/store.rs"
+                  }
+                },
+                {
+                  "line": 208,
                   "name": "config_path",
                   "target": {
                     "file": "crates/offrig-core/src/config.rs"
                   }
                 },
                 {
-                  "line": 186,
+                  "line": 212,
                   "name": "default",
                   "receiver": "Config",
                   "target": {
@@ -879,7 +887,7 @@
                   }
                 },
                 {
-                  "line": 142,
+                  "line": 151,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -888,7 +896,7 @@
                   "via": "load"
                 },
                 {
-                  "line": 220,
+                  "line": 246,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -896,21 +904,21 @@
                   }
                 },
                 {
-                  "line": 239,
+                  "line": 265,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
                   }
                 },
                 {
-                  "line": 239,
+                  "line": 265,
                   "name": "session_cost",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
                   }
                 },
                 {
-                  "line": 254,
+                  "line": 280,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -918,7 +926,7 @@
                   }
                 },
                 {
-                  "line": 469,
+                  "line": 495,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -926,7 +934,7 @@
                   "via": "preflight"
                 },
                 {
-                  "line": 293,
+                  "line": 319,
                   "name": "minutes",
                   "receiver": "Wait",
                   "target": {
@@ -934,7 +942,7 @@
                   }
                 },
                 {
-                  "line": 549,
+                  "line": 575,
                   "name": "api_key_env_name",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
@@ -942,28 +950,28 @@
                   "via": "configure_zed"
                 },
                 {
-                  "line": 301,
+                  "line": 327,
                   "name": "settings_path",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
                   }
                 },
                 {
-                  "line": 301,
+                  "line": 327,
                   "name": "gather",
                   "target": {
                     "file": "crates/offrig-core/src/guard.rs"
                   }
                 },
                 {
-                  "line": 301,
+                  "line": 327,
                   "name": "evaluate",
                   "target": {
                     "file": "crates/offrig-core/src/guard.rs"
                   }
                 },
                 {
-                  "line": 594,
+                  "line": 620,
                   "name": "new",
                   "receiver": "IdleTracker",
                   "target": {
@@ -972,7 +980,7 @@
                   "via": "hold"
                 },
                 {
-                  "line": 618,
+                  "line": 644,
                   "name": "gpu_stats",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
@@ -980,7 +988,7 @@
                   "via": "hold"
                 },
                 {
-                  "line": 641,
+                  "line": 667,
                   "name": "pod_name",
                   "target": {
                     "file": "crates/offrig-core/src/spec.rs"
@@ -988,28 +996,28 @@
                   "via": "hold"
                 },
                 {
-                  "line": 327,
+                  "line": 353,
                   "name": "pull_start",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
                   }
                 },
                 {
-                  "line": 333,
+                  "line": 359,
                   "name": "pull_state",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
                   }
                 },
                 {
-                  "line": 352,
+                  "line": 378,
                   "name": "pod_tags_json",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
                   }
                 },
                 {
-                  "line": 172,
+                  "line": 181,
                   "name": "port_open",
                   "target": {
                     "file": "crates/offrig-core/src/tunnel.rs"
@@ -1017,7 +1025,7 @@
                   "via": "ensure_tunnel"
                 },
                 {
-                  "line": 373,
+                  "line": 399,
                   "name": "new",
                   "receiver": "Session",
                   "target": {
@@ -1025,22 +1033,15 @@
                   }
                 },
                 {
-                  "line": 385,
+                  "line": 411,
                   "name": "settings_path",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
                   }
                 },
                 {
-                  "line": 385,
+                  "line": 411,
                   "name": "gather",
-                  "target": {
-                    "file": "crates/offrig-core/src/guard.rs"
-                  }
-                },
-                {
-                  "line": 385,
-                  "name": "evaluate",
                   "target": {
                     "file": "crates/offrig-core/src/guard.rs"
                   }
@@ -1055,7 +1056,7 @@
             {
               "calls": [
                 {
-                  "line": 469,
+                  "line": 495,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -1070,7 +1071,7 @@
             {
               "calls": [
                 {
-                  "line": 549,
+                  "line": 575,
                   "name": "api_key_env_name",
                   "target": {
                     "file": "crates/offrig-core/src/zed.rs"
@@ -1085,7 +1086,7 @@
             {
               "calls": [
                 {
-                  "line": 594,
+                  "line": 620,
                   "name": "new",
                   "receiver": "IdleTracker",
                   "target": {
@@ -1093,14 +1094,14 @@
                   }
                 },
                 {
-                  "line": 618,
+                  "line": 644,
                   "name": "gpu_stats",
                   "target": {
                     "file": "crates/offrig-core/src/remote.rs"
                   }
                 },
                 {
-                  "line": 641,
+                  "line": 667,
                   "name": "pod_name",
                   "target": {
                     "file": "crates/offrig-core/src/spec.rs"
@@ -1177,46 +1178,47 @@
           "exports": [
             "config_path",
             "default_identity_file",
-            "default_profiles"
+            "default_profiles",
+            "default_role_os_dir"
           ],
           "failurePaths": [
             {
               "in": "load_from",
               "kind": "match-err",
-              "line": 203
+              "line": 221
             },
             {
               "in": "load_from",
               "kind": "match-err",
-              "line": 204
+              "line": 222
             },
             {
               "in": "load_from",
               "kind": "err",
-              "line": 204
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 220
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 226
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 231
+              "line": 222
             },
             {
               "in": "validate",
               "kind": "err",
               "line": 238
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 244
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 249
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 256
             }
           ],
-          "hash": "fc964e84c507bccfd1c47df66b629e9c5c7641d23a66ae2e0a9b0ecbabe2b80a",
+          "hash": "7e9e671c7043a514742738a75bdee59bd34b7de65d91c1e991b597358a119a4b",
           "importsFiles": [
             "crates/offrig-core/src/error.rs",
             "crates/offrig-core/src/fsutil.rs"
@@ -1226,7 +1228,7 @@
             {
               "calls": [
                 {
-                  "line": 184,
+                  "line": 202,
                   "name": "Config",
                   "receiver": "Error",
                   "target": {
@@ -1801,8 +1803,13 @@
               "line": 176
             }
           ],
-          "hash": "6f07fbb44ea8851be1d3bf72256fb1e9720ce4731da0c961447b7ad2d5005308",
+          "hash": "b13834aa0a8af3bffdcbe5ff27e3d13f5d9cf3e5ebf0957b71c5d13298fa45eb",
+          "importOrder": [
+            "crates/offrig-core/src/error.rs",
+            "crates/offrig-core/src/config.rs"
+          ],
           "importsFiles": [
+            "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/error.rs"
           ],
           "path": "crates/offrig-core/src/roles.rs",
@@ -2372,8 +2379,7 @@
       "testRunners": [
         "cargo test"
       ],
-      "testedBy": 14,
-      "testedInside": true,
+      "testedBy": 15,
       "unresolvedSites": 0
     },
     {
@@ -2401,15 +2407,15 @@
           "path": ".gitignore"
         },
         {
-          "hash": "3bb0ef4638efbfc66e862208c1ccde33d8c345730a342a0430599997f1b0aa7e",
+          "hash": "f3d4a6bf4a706c408d1a636357ed650a5588d2d24c2596a4adb64a2c581a02df",
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "7f151f38008b0ad6be6169fe02a0622f315bce21a1c401c9f7f08ad01ae92a22",
+          "hash": "312ba119a9694d06b7f291c00a6936b65898c0f05253f80d522a4a4796a5427a",
           "path": "Cargo.lock"
         },
         {
-          "hash": "da669dd5aa7dd955f66cc4dd5c453f5eb4f0d799f431cbf70f1851fe8d39ceb4",
+          "hash": "97a296372ebc99f68359d4287c57e1d4f8ab67191adbb4c56fb3218b32685821",
           "path": "Cargo.toml"
         },
         {
@@ -2417,7 +2423,7 @@
           "path": "LICENSE"
         },
         {
-          "hash": "00ef55a651caf4614f13fe505f3e7dd22c92f5891ce9677ab53e6e36a345085f",
+          "hash": "7eb4e9a2fa9d49f4dde5871077cbe14b830f4858f1f05a7e9a8c2573e0b254fe",
           "path": "README.md"
         },
         {
@@ -2457,7 +2463,7 @@
   ],
   "doors": [
     {
-      "checksCount": 3,
+      "checksCount": 4,
       "commands": [
         {
           "dir": "",
@@ -2677,9 +2683,24 @@
           "path": "crates/offrig-core/src/zed.rs",
           "runKind": "executes",
           "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-mcp/src/main.rs",
+          "runKind": "checks",
+          "via": "cargo clippy"
+        },
+        {
+          "directory": true,
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-mcp/tests/",
+          "runKind": "executes",
+          "via": "cargo test"
         }
       ],
-      "runsCount": 18,
+      "runsCount": 20,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -2694,7 +2715,7 @@
       "stages": [],
       "tests": [
         {
-          "files": 15,
+          "files": 16,
           "job": "rust",
           "runner": "cargo test",
           "step": "Test"
@@ -2807,13 +2828,60 @@
             "file": "crates/offrig-core/src/config.rs",
             "from": "crates/offrig-cli/src/main.rs"
           },
-          "files": 14
+          "files": 15
         }
       ],
       "readers": [],
       "runs": [
         {
           "path": "crates/offrig-cli/src/main.rs",
+          "runKind": "executes"
+        }
+      ],
+      "runsCount": 1,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [],
+      "unshipped": true,
+      "uses": [],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
+      "commands": [],
+      "elsewhere": [],
+      "file": "crates/offrig-mcp/Cargo.toml",
+      "kind": "command",
+      "landings": [],
+      "mentions": [],
+      "name": "offrig-mcp",
+      "permissions": [],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "offrig-core",
+          "depth": 1,
+          "enters": {
+            "file": "crates/offrig-core/src/config.rs",
+            "from": "crates/offrig-mcp/src/main.rs"
+          },
+          "files": 18
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "path": "crates/offrig-mcp/src/main.rs",
           "runKind": "executes"
         }
       ],
@@ -2850,8 +2918,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "c1b1cea9f15c3d5339be39f81907e85ed63cc102",
-    "tracked": 47
+    "commit": "8c7b5a16d05966b8f48d5ac364139f6a0306323c",
+    "tracked": 50
   },
   "landings": [
     {
@@ -2996,11 +3064,197 @@
       ],
       "target": "crates/offrig-core/roles/systems-designer.md",
       "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "Cargo.toml",
+          "call": "configuration",
+          "confidence": "config"
+        }
+      ],
+      "target": "crates/offrig-mcp",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-mcp/Cargo.toml",
+          "call": "configuration",
+          "confidence": "config"
+        }
+      ],
+      "target": "crates/offrig-mcp/src/main.rs",
+      "writers": []
     }
   ],
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 15,
-  "unassigned": []
+  "testFiles": 16,
+  "unassigned": [
+    {
+      "hash": "f482f6bdad3c6d62ad01ffec4d5ae5b117bdb3307625a5cf35e00682d40144c8",
+      "path": "crates/offrig-mcp/Cargo.toml"
+    },
+    {
+      "entry": "main",
+      "entryRule": 1,
+      "failurePaths": [
+        {
+          "in": "offrig_status",
+          "kind": "match-err",
+          "line": 225
+        },
+        {
+          "in": "offrig_status",
+          "kind": "match-err",
+          "line": 226
+        },
+        {
+          "in": "offrig_offers",
+          "kind": "match-err",
+          "line": 296
+        },
+        {
+          "in": "offrig_offers",
+          "kind": "match-err",
+          "line": 297
+        },
+        {
+          "in": "offrig_plan",
+          "kind": "match-err",
+          "line": 328
+        },
+        {
+          "in": "offrig_plan",
+          "kind": "match-err",
+          "line": 344
+        },
+        {
+          "in": "offrig_plan",
+          "kind": "match-err",
+          "line": 350
+        },
+        {
+          "in": "offrig_plan",
+          "kind": "match-err",
+          "line": 378
+        },
+        {
+          "in": "offrig_memory_search",
+          "kind": "match-err",
+          "line": 413
+        },
+        {
+          "in": "offrig_memory_search",
+          "kind": "match-err",
+          "line": 434
+        },
+        {
+          "in": "offrig_memory_record",
+          "kind": "match-err",
+          "line": 452
+        },
+        {
+          "in": "offrig_memory_record",
+          "kind": "match-err",
+          "line": 473
+        },
+        {
+          "in": "offrig_handoffs",
+          "kind": "match-err",
+          "line": 496
+        },
+        {
+          "in": "offrig_handoffs",
+          "kind": "match-err",
+          "line": 513
+        },
+        {
+          "in": "offrig_handoffs",
+          "kind": "match-err",
+          "line": 521
+        },
+        {
+          "in": "offrig_handoffs",
+          "kind": "match-err",
+          "line": 559
+        }
+      ],
+      "hash": "0263508a75efab0ae3a8d08a48d56120d23f57e95bc0321c403e13b9d72926f5",
+      "importsFiles": [
+        "crates/offrig-core/src/config.rs",
+        "crates/offrig-core/src/cost.rs",
+        "crates/offrig-core/src/error.rs",
+        "crates/offrig-core/src/lib.rs",
+        "crates/offrig-core/src/roles.rs",
+        "crates/offrig-core/src/runpod.rs",
+        "crates/offrig-core/src/store.rs"
+      ],
+      "path": "crates/offrig-mcp/src/main.rs",
+      "sequences": [
+        {
+          "calls": [
+            {
+              "line": 71,
+              "name": "date_utc",
+              "target": {
+                "file": "crates/offrig-core/src/cost.rs"
+              }
+            }
+          ],
+          "exported": false,
+          "invokedAtTopLevel": false,
+          "isDefaultExport": false,
+          "name": "record_json"
+        },
+        {
+          "calls": [
+            {
+              "line": 84,
+              "name": "is_stale",
+              "target": {
+                "file": "crates/offrig-core/src/store.rs"
+              }
+            }
+          ],
+          "exported": false,
+          "invokedAtTopLevel": false,
+          "isDefaultExport": false,
+          "name": "handoff_json"
+        },
+        {
+          "calls": [
+            {
+              "line": 598,
+              "name": "load",
+              "receiver": "Config",
+              "target": {
+                "file": "crates/offrig-core/src/config.rs"
+              }
+            }
+          ],
+          "exported": false,
+          "invokedAtTopLevel": true,
+          "isDefaultExport": false,
+          "name": "main"
+        }
+      ]
+    },
+    {
+      "hash": "1eabed76792ece991dd7a517da28efe6036a80c21eb210a26338bca88ee941e6",
+      "importsFiles": [
+        "crates/offrig-core/src/store.rs"
+      ],
+      "path": "crates/offrig-mcp/tests/stdio.rs",
+      "spawns": [
+        "crates/offrig-mcp/src/main.rs"
+      ],
+      "spawnsInstalled": [
+        "crates/offrig-mcp/src/main.rs"
+      ],
+      "testsInside": true
+    }
+  ]
 }

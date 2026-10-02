@@ -72,6 +72,32 @@ offrig down medium --yes      terminate the pod
 offrig zed-remove             take the provider out of Zed
 ```
 
+## The side-car (for agents)
+
+`offrig-mcp` is an MCP server an agent such as Claude Code calls as an instrument. It
+keeps a database per project at `<project>/.offrig/offrig.db` that outlives every pod,
+so a session survives compaction or a restart without re-explaining anything.
+
+| Tool | What it does |
+|---|---|
+| `offrig_status` | Budget, RunPod balance and runway, offrig's pods, the handoff queue with stale work flagged |
+| `offrig_offers` | Live GPU offers for a GPU count |
+| `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left |
+| `offrig_memory_search` | Searches active project memory, each result with source and date |
+| `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
+| `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check), lists them, previews role blocks |
+
+Roles come from Role OS (dossiers and starter-pack cards) plus four game roles shipped
+here in Role OS's formats: game-designer, systems-designer, narrative-designer,
+lore-keeper. The budget cap is set only by a human:
+
+```text
+offrig budget 15          set this project's cap (run in the project directory)
+offrig budget             show cap, committed, spent, remaining
+```
+
+Launching, job tracking, `offrig_ask` and shutdown through the side-car are phase 2.
+The design and its evidence are in [docs/sidecar-design.md](docs/sidecar-design.md).
 ## Tiers
 
 Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defaults:
@@ -196,6 +222,7 @@ crates/offrig-core   library: RunPod client, pod spec, tunnel, remote ops, Zed a
                      edits, guard, cost and idle logic, session workflow
 crates/offrig-cli    `offrig` command line
 crates/offrig-app    `offrig-app` desktop app (egui)
+crates/offrig-mcp    `offrig-mcp` side-car: MCP server for agents
 atlas/               Atlas map of the repo (regenerate with `atlas map`)
 ```
 

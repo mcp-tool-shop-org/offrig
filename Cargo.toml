@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/offrig-core", "crates/offrig-cli", "crates/offrig-app"]
+members = ["crates/offrig-core", "crates/offrig-cli", "crates/offrig-app", "crates/offrig-mcp"]
 resolver = "3"
 
 [workspace.package]

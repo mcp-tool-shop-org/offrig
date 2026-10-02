@@ -1,31 +1,37 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit c1b1cea by Atlas 1.24.0.
+Mapped at 2026-10-02 from commit 8c7b5a1 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-4 parts, mostly Rust (22 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).
+4 parts, mostly Rust (24 files). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
 
-## What changed since 2026-10-02 (53c9b4b)
+## What changed since 2026-10-02 (c1b1cea)
 
-- ci now also runs crates/offrig-core/src/context.rs, crates/offrig-core/src/roles.rs and crates/offrig-core/src/store.rs.
-- crates/offrig-core/roles/game-designer.json is now read by crates/offrig-core/src/roles.rs.
-- crates/offrig-core/roles/game-designer.md is now read by crates/offrig-core/src/roles.rs.
-- crates/offrig-core/roles/lore-keeper.json is now read by crates/offrig-core/src/roles.rs.
-- And 5 more new writers and readers of places.
-- 11 files added, across 1 part.
+- ci now also runs crates/offrig-mcp/tests/.
+- ci now also checks crates/offrig-mcp/src/main.rs.
+- offrig-mcp (crates/offrig-mcp/Cargo.toml) is a new command. It runs crates/offrig-mcp/src/main.rs.
+- crates/offrig-mcp/ is now read by Cargo.toml.
+- crates/offrig-mcp/src/main.rs is now read by crates/offrig-mcp/Cargo.toml.
+- In crates/offrig-cli/src/main.rs, `main` gained a step, `open`, before `config_path`.
+- In crates/offrig-cli/src/main.rs, `main` lost a step, `evaluate`.
+- crates/offrig-mcp/Cargo.toml is new and belongs to no part, so atlas check fails on it against the previous map.
+- crates/offrig-mcp/src/main.rs is new and belongs to no part, so atlas check fails on it against the previous map.
+- crates/offrig-mcp/tests/stdio.rs is new and belongs to no part, so atlas check fails on it against the previous map.
+- 3 files added and 7 changed content, across 3 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/context.rs and 12 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and crates/offrig-core/src/lib.rs.
+1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/context.rs and 13 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
 2. **offrig** (a command built from crates/offrig-cli, which nothing ships). Runs crates/offrig-cli/src/main.rs.
 3. **offrig-app** (a command built from crates/offrig-app, which nothing ships). Runs crates/offrig-app/src/main.rs.
+4. **offrig-mcp** (a command built from crates/offrig-mcp, which nothing ships). Runs crates/offrig-mcp/src/main.rs.
 
 ## What happens through ci
 
-1. The workflow runs crates/offrig-app/src/app.rs in offrig-app and 14 files in offrig-core; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli and crates/offrig-core/src/lib.rs in offrig-core.
+1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 14 files in offrig-core, and crates/offrig-mcp/tests/; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs.
 
 ## Who reads the results
 
@@ -37,9 +43,11 @@ ci writes nothing this map can see.
 
 **offrig-app** (a command built from crates/offrig-app, which nothing ships) runs crates/offrig-app/src/main.rs and reaches offrig-core.
 
+**offrig-mcp** (a command built from crates/offrig-mcp, which nothing ships) runs crates/offrig-mcp/src/main.rs and reaches offrig-core.
+
 ## What breaks what
 
-- **offrig-core** is imported by 2 parts (offrig-app, offrig-cli) and sits on the path of 3 doors.
+- **offrig-core** is imported by 2 parts (offrig-app, offrig-cli) and sits on the path of 4 doors.
 - **offrig-app** is imported by no other part and sits on the path of 2 doors.
 - **offrig-cli** is imported by no other part and sits on the path of 2 doors.
 
@@ -54,8 +62,6 @@ Window: 180 days; a pair counts from 3 shared commits, since the window holds fe
 - **offrig-cli** is imported by no test.
 
 offrig-app is tested only by the unit tests in its own files.
-
-offrig-core is tested only by the unit tests in its own files.
 
 ## Written but never read
 
@@ -75,7 +81,7 @@ People write root; 4 writes with paths built at run time may land here.
 
 ## Where to start
 
-crates/offrig-cli/src/main.rs → crates/offrig-core/src/config.rs → crates/offrig-core/src/error.rs
+crates/offrig-cli/src/main.rs → crates/offrig-core/src/store.rs → crates/offrig-core/src/cost.rs → crates/offrig-core/src/remote.rs → crates/offrig-core/src/proc.rs → crates/offrig-core/src/error.rs
 
 Read those in order to follow one run of offrig end to end. This path follows offrig (a command built from crates/offrig-cli, which nothing ships) from its entry, since ci runs only tests and checks.
 
@@ -83,6 +89,7 @@ Read those in order to follow one run of offrig end to end. This path follows of
 
 - 4 writes use paths built at run time and are not named here.
 - 1 write and 7 reads go to a path their caller passes, not to this repository.
+- 3 files belong to no part: crates/offrig-mcp/Cargo.toml, crates/offrig-mcp/src/main.rs and crates/offrig-mcp/tests/stdio.rs.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.

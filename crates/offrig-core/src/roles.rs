@@ -415,6 +415,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Every real Role OS dossier must load and render. Skips where Role OS is not
+    /// checked out (CI); on the studio rig it proves the format against live data.
+    #[test]
+    fn every_real_role_os_dossier_renders() {
+        let Some(dir) = crate::config::default_role_os_dir().map(PathBuf::from) else {
+            return;
+        };
+        let Ok(rd) = std::fs::read_dir(dir.join("dossier").join("examples")) else {
+            return;
+        };
+        let mut n = 0;
+        for entry in rd.flatten() {
+            let id = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let r = load(&id, Some(&dir)).unwrap_or_else(|e| panic!("{id}: {e}"));
+            let block = render(&r);
+            assert!(block.contains("Charter:"), "{id}");
+            assert!(
+                r.dossier.operating_profile.prompt_delta.is_empty() || block.contains(r.dossier.operating_profile.prompt_delta.trim()),
+                "{id} lost its disposition text"
+            );
+            n += 1;
+        }
+        assert!(n > 0, "Role OS checkout has no dossiers");
+    }
+
     #[test]
     fn fingerprint_is_stable_and_sensitive() {
         assert_eq!(fingerprint("abc"), fingerprint("abc"));

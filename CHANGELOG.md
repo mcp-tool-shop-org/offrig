@@ -18,4 +18,5 @@ First version, built and tested live on 2026-10-02.
 - Small profile uses qwen3:4b (qwen3:8b is in this rig's local Ollama).
 - Frontier tier: 4x RTX PRO 6000 (384 GB, $8.36/hr live); medium leads with 1x RTX PRO 6000. 2x B200 was not rentable.
 - Wait for GPUs: a profile can wait (frontier: 120 min) for its GPUs, checking every minute and renting nothing until they are free; `up --wait`, Ctrl+C and the app's Cancel launch.
+- Side-car phase 1: `offrig-mcp` MCP server with status, offers, plan, memory search/record and handoff queue tools over a per-project SQLite store (typed records with supersession, FTS5, worst-case budget ledger, handoff state machine). Roles render from Role OS plus four game roles. `offrig budget` sets the cap (human only).
 - Renamed from podbay before release: the name collides with Podbay Cloud and podbay.fm.

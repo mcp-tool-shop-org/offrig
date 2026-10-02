@@ -29,8 +29,25 @@ pub struct Config {
     pub zed_provider: String,
     /// Stop the pod after this many minutes with every GPU idle. `None` disables it.
     pub auto_stop_idle_minutes: Option<u32>,
+    /// Role OS checkout whose dossiers and cards define handoff roles. `None` uses
+    /// only offrig's built-in game roles.
+    pub role_os_dir: Option<String>,
     pub active_profile: String,
     pub profiles: Vec<Profile>,
+}
+
+/// `ROLE_OS_DIR`, else the studio's checkout if present.
+pub fn default_role_os_dir() -> Option<String> {
+    if let Ok(d) = std::env::var("ROLE_OS_DIR")
+        && !d.trim().is_empty()
+    {
+        return Some(d);
+    }
+    let studio = Path::new("E:/AI/role-os");
+    studio
+        .join("dossier")
+        .is_dir()
+        .then(|| studio.display().to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,6 +104,7 @@ impl Default for Config {
             tunnel_port: 11435,
             zed_provider: "offrig".into(),
             auto_stop_idle_minutes: Some(30),
+            role_os_dir: default_role_os_dir(),
             active_profile: "medium".into(),
             profiles: default_profiles(),
         }

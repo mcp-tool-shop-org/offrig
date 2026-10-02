@@ -97,6 +97,15 @@ enum Cmd {
         #[arg(long)]
         profile: Option<String>,
     },
+    /// Show or set this project's spending cap for agent-planned sessions. Only a
+    /// human sets it: the side-car's tools can read it but never change it.
+    Budget {
+        /// New cap in USD; omit to show the current budget
+        usd: Option<f64>,
+        /// Project directory (default: the current directory)
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+    },
     /// Terminate the profile's pod
     Down {
         profile: Option<String>,
@@ -178,6 +187,23 @@ fn ensure_tunnel(s: &Session) -> Result<Option<Tunnel>> {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
+        Cmd::Budget { usd, project } => {
+            let dir = match project {
+                Some(p) => p,
+                None => std::env::current_dir()?,
+            };
+            let store = offrig_core::store::Store::open(&dir.join(".offrig").join("offrig.db"))?;
+            if let Some(cap) = usd {
+                store.set_budget_cap(cap)?;
+                println!("budget cap set to ${cap:.2} for {}", dir.display());
+            }
+            let b = store.budget()?;
+            println!(
+                "cap ${:.2}  committed ${:.2}  spent ${:.2}  remaining ${:.2}",
+                b.cap, b.committed, b.spent, b.remaining
+            );
+            Ok(())
+        }
         Cmd::Init => {
             let path = offrig_core::config::config_path()?;
             if path.exists() {
