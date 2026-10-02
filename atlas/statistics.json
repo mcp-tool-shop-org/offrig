@@ -52,7 +52,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 1,
+      "qualifyingSourceCommits": 2,
       "rebaseline": null
     },
     {
@@ -96,8 +96,8 @@
         "path": ".gitignore"
       },
       {
-        "commits": 1,
-        "lines": 17,
+        "commits": 2,
+        "lines": 19,
         "path": "CHANGELOG.md"
       },
       {
@@ -116,8 +116,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 3,
-        "lines": 203,
+        "commits": 4,
+        "lines": 205,
         "path": "README.md"
       },
       {
@@ -126,8 +126,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 2,
-        "lines": 152,
+        "commits": 3,
+        "lines": 160,
         "path": "atlas/README.md"
       },
       {
@@ -136,18 +136,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 2,
-        "lines": 884,
+        "commits": 3,
+        "lines": 921,
         "path": "atlas/page.json"
       },
       {
-        "commits": 2,
-        "lines": 503,
+        "commits": 3,
+        "lines": 540,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 2,
-        "lines": 2628,
+        "commits": 3,
+        "lines": 2734,
         "path": "atlas/structure.json"
       },
       {
@@ -162,7 +162,12 @@
       },
       {
         "commits": 1,
-        "lines": 53,
+        "lines": 4,
+        "path": "crates/offrig-core/src/config.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 113,
         "path": "crates/offrig-core/src/session.rs"
       },
       {
@@ -436,9 +441,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T17:44:42.899Z",
+  "generatedAt": "2026-10-02T22:30:32.198Z",
   "generatedFrom": {
-    "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683"
+    "commit": "65ef665fd8261e4fbab96cfb98e1d7a170959934"
   },
   "pairs": [],
   "parameters": {
@@ -451,16 +456,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T13:28:36-04:00",
+    "headDate": "2026-10-02T13:44:43-04:00",
     "inScopeFiles": 40,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 4,
+    "qualifyingCommits": 5,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T17:28:36.000Z",
+    "since": "2026-04-05T17:44:43.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

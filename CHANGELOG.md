@@ -16,4 +16,5 @@ First version, built and tested live on 2026-10-02.
 - Three default tiers: small, medium, frontier.
 - Refuse to launch a profile whose models already exist in the local Ollama, before any spend.
 - Small profile uses qwen3:4b (qwen3:8b is in this rig's local Ollama).
+- Frontier tier: 4x RTX PRO 6000 (384 GB, $8.36/hr live); medium leads with 1x RTX PRO 6000. 2x B200 was not rentable.
 - Renamed from podbay before release: the name collides with Podbay Cloud and podbay.fm.

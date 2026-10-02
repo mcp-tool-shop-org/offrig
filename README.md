@@ -78,8 +78,8 @@ Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defau
 | Profile | GPUs | Models | Typical cost |
 |---|---|---|---|
 | small | 1 × RTX 2000 Ada / A4000 class | `qwen3:4b` | about $0.25/hr |
-| medium | 1 × A100 80GB / RTX PRO 6000 / H100 | `qwen3-coder:30b-a3b-q8_0`, `gpt-oss:120b` | about $1.60–2.20/hr |
-| frontier | 2 × B200 | `qwen3-coder:480b` (290 GB) | about $14/hr |
+| medium | 1 × RTX PRO 6000 (96 GB); A100 or H100 80 GB if none is free | `qwen3-coder:30b-a3b-q8_0`, `gpt-oss:120b` | $2.09/hr (A100 fallback $1.59) |
+| frontier | 4 × RTX PRO 6000 (384 GB) | `qwen3-coder:480b` (290 GB), about 90 GB left for context | $8.36/hr |
 
 Each profile lists GPU types in priority order; RunPod takes the first with capacity.
 Prices are secure-cloud prices, read live; the pricing page is not the available price.
@@ -147,7 +147,7 @@ Bugs the live run found, now fixed and covered: a backgrounded `&&` list kept ss
 stdout open and hung the pull start; the pod list lacked GPU types without
 `includeMachine=true`; the launch check counted a running pod's price twice.
 
-Not yet verified live: a frontier-tier run (needs about $14/hr of budget), and a chat
+Not yet verified live: a frontier-tier run (4 × RTX PRO 6000 at $8.36/hr), and a chat
 sent from Zed's agent panel itself (the request shape Zed uses is tested directly).
 
 ## Standards compliance

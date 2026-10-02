@@ -121,11 +121,12 @@ pub fn default_profiles() -> Vec<Profile> {
         Profile {
             name: "medium".into(),
             tier: Tier::Medium,
+            // 1x RTX PRO 6000 (96 GB) first; the 80 GB cards only when none is free.
             gpu_type_ids: vec![
-                "NVIDIA A100-SXM4-80GB".into(),
-                "NVIDIA A100 80GB PCIe".into(),
                 "NVIDIA RTX PRO 6000 Blackwell Server Edition".into(),
                 "NVIDIA RTX PRO 6000 Blackwell Workstation Edition".into(),
+                "NVIDIA A100-SXM4-80GB".into(),
+                "NVIDIA A100 80GB PCIe".into(),
                 "NVIDIA H100 NVL".into(),
                 "NVIDIA H100 80GB HBM3".into(),
             ],
@@ -142,8 +143,14 @@ pub fn default_profiles() -> Vec<Profile> {
         Profile {
             name: "frontier".into(),
             tier: Tier::Frontier,
-            gpu_type_ids: vec!["NVIDIA B200".into()],
-            gpu_count: 2,
+            // 4x RTX PRO 6000 = 384 GB: the 290 GB model plus about 90 GB for context.
+            // Chosen 2026-10-02 from live offers ($8.36/hr secure); 2x B200 was not
+            // rentable, and 4x A100 (320 GB) leaves too little room for context.
+            gpu_type_ids: vec![
+                "NVIDIA RTX PRO 6000 Blackwell Server Edition".into(),
+                "NVIDIA RTX PRO 6000 Blackwell Workstation Edition".into(),
+            ],
+            gpu_count: 4,
             network_volume_id: None,
             volume_gb: 400,
             container_disk_gb: 40,
@@ -305,6 +312,19 @@ mod tests {
         Config::default().save_to(&good).expect("save");
         assert_eq!(Config::load_from(&good).expect("load"), Config::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn frontier_and_medium_lead_with_rtx_pro_6000() {
+        let cfg = Config::default();
+        let f = cfg.profile("frontier").expect("frontier");
+        assert_eq!(f.gpu_count, 4);
+        assert!(f.gpu_type_ids.iter().all(|g| g.contains("RTX PRO 6000")));
+        // 4 x 96 GB must hold the largest model with room for context.
+        assert!(f.total_model_gb() * 1.15 <= 4.0 * 96.0);
+        let m = cfg.profile("medium").expect("medium");
+        assert_eq!(m.gpu_count, 1);
+        assert!(m.gpu_type_ids[0].contains("RTX PRO 6000"));
     }
 
     #[test]

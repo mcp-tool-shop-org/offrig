@@ -402,7 +402,7 @@ mod tests {
             body: r#"{"error":"create pod: There are no instances currently available"}"#.into(),
         };
         let msg = explain_create_error(e, &body()).to_string();
-        assert!(msg.contains("no 1x of [NVIDIA A100-SXM4-80GB"), "{msg}");
+        assert!(msg.contains("no 1x of [NVIDIA RTX PRO 6000 Blackwell Server Edition"), "{msg}");
     }
 
     #[test]

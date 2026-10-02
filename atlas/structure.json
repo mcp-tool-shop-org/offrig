@@ -394,7 +394,7 @@
                 {
                   "inner": [
                     {
-                      "line": 169,
+                      "line": 176,
                       "name": "Config",
                       "receiver": "Error",
                       "target": {
@@ -1149,40 +1149,40 @@
             {
               "in": "load_from",
               "kind": "match-err",
-              "line": 188
+              "line": 195
             },
             {
               "in": "load_from",
               "kind": "match-err",
-              "line": 189
+              "line": 196
             },
             {
               "in": "load_from",
               "kind": "err",
-              "line": 189
+              "line": 196
             },
             {
               "in": "validate",
               "kind": "err",
-              "line": 205
+              "line": 212
             },
             {
               "in": "validate",
               "kind": "err",
-              "line": 211
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 216
+              "line": 218
             },
             {
               "in": "validate",
               "kind": "err",
               "line": 223
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 230
             }
           ],
-          "hash": "2085cde29a9167c60adfac25a625e5459b092426bd1d96c0a895c96338a67e77",
+          "hash": "ce6e363a89ed8dab8d6b583a2398d81f9a1ec1767da98025c593549c71178504",
           "importsFiles": [
             "crates/offrig-core/src/error.rs",
             "crates/offrig-core/src/fsutil.rs"
@@ -1192,7 +1192,7 @@
             {
               "calls": [
                 {
-                  "line": 169,
+                  "line": 176,
                   "name": "Config",
                   "receiver": "Error",
                   "target": {
@@ -1793,7 +1793,7 @@
               "line": 324
             }
           ],
-          "hash": "d9967cfc69940422de62511a75cf6236c9585513946ef111c048c92e6c2c5447",
+          "hash": "af2527ffc1c13acb9cd5a8fbad57f9b5a85e88a632702152fb8de2abd04ccb6e",
           "importsFiles": [
             "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/error.rs",
@@ -2153,7 +2153,7 @@
           "path": ".gitignore"
         },
         {
-          "hash": "59a349eac69f13cef2ef5ab90e45208c84beedef2b752180a4295b234a3ad745",
+          "hash": "4a9e341808547a41de6d589ae70a510131658ed284f479d7762ad39ab2374c80",
           "path": "CHANGELOG.md"
         },
         {
@@ -2169,7 +2169,7 @@
           "path": "LICENSE"
         },
         {
-          "hash": "c708eb0c78c3a91cf265bc83bc5776171ab9ab2b1ec6b6c0b50f5da101eb4908",
+          "hash": "f333ecced2b293a1f02410a98f1b79031382b07f06debcc4d4e653fee7081910",
           "path": "README.md"
         },
         {
@@ -2576,7 +2576,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683",
+    "commit": "65ef665fd8261e4fbab96cfb98e1d7a170959934",
     "tracked": 35
   },
   "landings": [

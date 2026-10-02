@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit 0983cc3 by Atlas 1.24.0.
+Mapped at 2026-10-02 from commit 65ef665 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,10 +8,9 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).
 
-## What changed since 2026-10-02 (4962641)
+## What changed since 2026-10-02 (0983cc3)
 
-- crates/offrig-core/src/session.rs now starts at `local_conflicts`; it started at `explain_create_error`.
-- 5 files changed content, across 2 parts.
+Nothing structural changed since 2026-10-02; 4 files changed content.
 
 ## What comes in
 

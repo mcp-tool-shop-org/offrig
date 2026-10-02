@@ -34,37 +34,30 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 5,
+      "changed": 4,
       "moved": 0,
       "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "sequence",
-        "sentence": "crates/offrig-core/src/session.rs now starts at `local_conflicts`; it started at `explain_create_error`.",
-        "subjects": [
-          "crates/offrig-core/src/session.rs"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "5 files changed content, across 2 parts.",
+        "sentence": "Nothing structural changed since 2026-10-02; 4 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "49626418f5ffe02eaee26eab3763231d39e9dd7a",
-      "generatedAt": "2026-10-02T17:23:38.743Z"
+      "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683",
+      "generatedAt": "2026-10-02T17:44:42.899Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683",
+  "commit": "65ef665fd8261e4fbab96cfb98e1d7a170959934",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
   "doors": [
@@ -206,7 +199,7 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-02T17:44:42.899Z",
+  "generatedAt": "2026-10-02T22:30:32.198Z",
   "limits": [
     "3 writes use paths built at run time and are not named here.",
     "1 write and 4 reads go to a path their caller passes, not to this repository.",
