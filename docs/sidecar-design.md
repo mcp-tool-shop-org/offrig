@@ -238,9 +238,9 @@ the reaper.
    multi-turn runner on the pod, branch per handoff, acceptance checks run on the pod,
    and harvest to git. A paid frontier run once Mike funds it.
 
-## Open decisions (for Mike)
+## Decisions
 
-- The frontier tier moves from Ollama to SGLang, which is what makes parallel handoffs
-  pay. Small and medium stay on Ollama.
-- One database per project, committed to the project's repo, versus one central store.
-  Proposed: per project, so memory travels with the code.
+- 2026-10-02, Mike: the frontier tier serves with SGLang (TP=4, AWQ, fp8 KV). Small and medium stay on Ollama.
+- 2026-10-02, Mike: register the side-car with Claude Code at user scope. Because it then starts in every project, the store opens on first use, never on start.
+- One database per project, at `<project>/.offrig/offrig.db`, so memory travels with the code (the proposal; not overruled).
+- Open: whether Docker Sandboxes should isolate the agents that run handoffs (under evaluation).

@@ -2401,87 +2401,97 @@
           "entryRule": 1,
           "failurePaths": [
             {
-              "in": "offrig_status",
-              "kind": "match-err",
-              "line": 225
+              "in": "with_store",
+              "kind": "err",
+              "line": 201
             },
             {
               "in": "offrig_status",
               "kind": "match-err",
-              "line": 226
+              "line": 231
+            },
+            {
+              "in": "offrig_status",
+              "kind": "match-err",
+              "line": 240
+            },
+            {
+              "in": "offrig_status",
+              "kind": "match-err",
+              "line": 241
             },
             {
               "in": "offrig_offers",
               "kind": "match-err",
-              "line": 296
+              "line": 308
             },
             {
               "in": "offrig_offers",
               "kind": "match-err",
-              "line": 297
+              "line": 309
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 328
+              "line": 340
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 344
+              "line": 356
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 350
+              "line": 362
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 378
+              "line": 391
             },
             {
               "in": "offrig_memory_search",
               "kind": "match-err",
-              "line": 413
+              "line": 426
             },
             {
               "in": "offrig_memory_search",
               "kind": "match-err",
-              "line": 434
+              "line": 447
             },
             {
               "in": "offrig_memory_record",
               "kind": "match-err",
-              "line": 452
+              "line": 465
             },
             {
               "in": "offrig_memory_record",
               "kind": "match-err",
-              "line": 473
+              "line": 487
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 496
+              "line": 510
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 513
+              "line": 528
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 521
+              "line": 536
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 559
+              "line": 574
             }
           ],
-          "hash": "0263508a75efab0ae3a8d08a48d56120d23f57e95bc0321c403e13b9d72926f5",
+          "hash": "ded9e72ba93a03aa900c6b7786f62e01d9da3e0fb1d1d0298dca1fc9d859aabc",
           "importsFiles": [
             "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/cost.rs",
@@ -2526,7 +2536,7 @@
             {
               "calls": [
                 {
-                  "line": 598,
+                  "line": 613,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -2542,7 +2552,7 @@
           ]
         },
         {
-          "hash": "1eabed76792ece991dd7a517da28efe6036a80c21eb210a26338bca88ee941e6",
+          "hash": "2ce97c0680294fbc14cff7cfbc0d68502b9e835e99565ec36978a57021255b3f",
           "importsFiles": [
             "crates/offrig-core/src/store.rs"
           ],
@@ -2626,7 +2636,7 @@
           "path": "deny.toml"
         },
         {
-          "hash": "5d397ec5044ea8ca28311103e444034667d2cefa99c24c86371ec788910a9ea0",
+          "hash": "9bef51c1a9fd889a01c0820d7699abfa05ac527ada28753b3a11b515af893d41",
           "path": "docs/sidecar-design.md"
         },
         {
@@ -3124,7 +3134,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "d64c817da8c0ec0459b574e153e46f04f031ac49",
+    "commit": "8bbf0bdc4e31535c9680ec50bf63c5658f41d489",
     "tracked": 50
   },
   "landings": [

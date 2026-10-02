@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit d64c817 by Atlas 1.24.0.
+Mapped at 2026-10-02 from commit 8bbf0bd by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,11 +8,9 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 5 parts, mostly Rust (24 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
 
-## What changed since 2026-10-02 (8c7b5a1)
+## What changed since 2026-10-02 (d64c817)
 
-- offrig-mcp now imports offrig-core.
-- offrig-mcp is a new part, drawn from `crates/offrig-mcp/**`.
-- 3 files moved and 1 changed content, across 2 parts.
+Nothing structural changed since 2026-10-02; 3 files changed content.
 
 ## What comes in
 

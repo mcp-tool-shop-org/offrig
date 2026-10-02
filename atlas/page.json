@@ -43,45 +43,30 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 1,
-      "moved": 3,
+      "changed": 3,
+      "moved": 0,
       "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "import-added",
-        "sentence": "offrig-mcp now imports offrig-core.",
-        "subjects": [
-          "offrig-mcp",
-          "offrig-core"
-        ]
-      },
-      {
-        "kind": "part",
-        "sentence": "offrig-mcp is a new part, drawn from `crates/offrig-mcp/**`.",
-        "subjects": [
-          "offrig-mcp"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "3 files moved and 1 changed content, across 2 parts.",
+        "sentence": "Nothing structural changed since 2026-10-02; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "8c7b5a16d05966b8f48d5ac364139f6a0306323c",
-      "generatedAt": "2026-10-02T23:03:42.357Z"
+      "commit": "d64c817da8c0ec0459b574e153e46f04f031ac49",
+      "generatedAt": "2026-10-02T23:05:32.401Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "d64c817da8c0ec0459b574e153e46f04f031ac49",
+  "commit": "8bbf0bdc4e31535c9680ec50bf63c5658f41d489",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Rust (24 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).",
   "doors": [
@@ -271,7 +256,7 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-02T23:05:32.401Z",
+  "generatedAt": "2026-10-02T23:13:24.744Z",
   "limits": [
     "4 writes and 1 read use paths built at run time and are not named here.",
     "1 write and 7 reads go to a path their caller passes, not to this repository.",

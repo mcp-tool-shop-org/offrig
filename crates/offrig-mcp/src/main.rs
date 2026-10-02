@@ -26,7 +26,7 @@ const STALE_SECS: i64 = 1800;
 
 #[derive(Clone)]
 pub struct Sidecar {
-    store: Arc<Mutex<Store>>,
+    store: Arc<Mutex<Option<Store>>>,
     cfg: Arc<Config>,
     project: Arc<PathBuf>,
 }
@@ -169,20 +169,39 @@ pub struct HandoffArgs {
 }
 
 impl Sidecar {
-    pub fn open(project: &Path, cfg: Config) -> anyhow::Result<Self> {
-        let db = project.join(".offrig").join("offrig.db");
-        let store = Store::open(&db)?;
-        Ok(Self {
-            store: Arc::new(Mutex::new(store)),
+    /// Opening touches nothing on disk. The database is created on first use, so a
+    /// side-car registered for every project leaves no `.offrig/` behind in folders
+    /// where it was only started (a health check, a session that never called it).
+    pub fn new(project: &Path, cfg: Config) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(None)),
             cfg: Arc::new(cfg),
             project: Arc::new(project.to_path_buf()),
-        })
+        }
     }
 
-    /// A panic mid-write leaves no half state behind (SQLite rolls the transaction
-    /// back), so a poisoned lock is safe to keep using.
-    fn store(&self) -> MutexGuard<'_, Store> {
-        self.store.lock().unwrap_or_else(PoisonError::into_inner)
+    pub fn db_path(&self) -> PathBuf {
+        self.project.join(".offrig").join("offrig.db")
+    }
+
+    /// Run `f` against the project store, opening it on first use. A panic mid-write
+    /// leaves no half state behind (SQLite rolls the transaction back), so a
+    /// poisoned lock is safe to keep using.
+    fn with_store<T>(
+        &self,
+        f: impl FnOnce(&Store) -> offrig_core::Result<T>,
+    ) -> offrig_core::Result<T> {
+        let mut guard: MutexGuard<'_, Option<Store>> =
+            self.store.lock().unwrap_or_else(PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(Store::open(&self.db_path())?);
+        }
+        match guard.as_ref() {
+            Some(s) => f(s),
+            None => Err(offrig_core::Error::Refused(
+                "the project store did not open".into(),
+            )),
+        }
     }
 
     fn role_os(&self) -> Option<PathBuf> {
@@ -199,21 +218,17 @@ impl Sidecar {
     )]
     async fn offrig_status(&self) -> CallToolResult {
         let now = cost::now_unix();
-        let local = {
-            let s = self.store();
-            (s.budget(), s.handoffs(), s.unfinished_journal())
-        };
-        let (budget, handoffs, journal) = match local {
-            (Ok(b), Ok(h), Ok(j)) => (b, h, j),
-            (b, h, j) => {
-                let e = b
-                    .err()
-                    .or(h.err())
-                    .or(j.err())
-                    .map(|e| chain(&e))
-                    .unwrap_or_default();
-                return fail(e, "check the project database at .offrig/offrig.db");
-            }
+        let local = self.with_store(|s| {
+            Ok((
+                s.budget()?,
+                s.handoffs()?,
+                s.unfinished_journal()?,
+                s.ready()?,
+            ))
+        });
+        let (budget, handoffs, journal, ready) = match local {
+            Ok(v) => v,
+            Err(e) => return fail(chain(&e), "check the project database at .offrig/offrig.db"),
         };
         let remote = tokio::task::spawn_blocking(|| {
             let rp = RunPod::from_env()?;
@@ -245,10 +260,7 @@ impl Sidecar {
             )
         } else if stale > 0 {
             format!("{stale} handoff(s) are past the {STALE_SECS}s timeout")
-        } else if store::Store::ready(&self.store())
-            .map(|r| !r.is_empty())
-            .unwrap_or(false)
-        {
+        } else if !ready.is_empty() {
             "handoffs are ready; plan a session or work them".into()
         } else {
             "record the project brief and constraints, then queue handoffs".into()
@@ -365,14 +377,15 @@ impl Sidecar {
                 "check offrig_offers later, or plan a different profile",
             );
         };
-        let plan = self.store().create_plan(NewPlan {
+        let new_plan = NewPlan {
             profile: profile.name.clone(),
             gpu_count: count,
             gpu_types: types,
             max_hours: a.max_hours,
             max_price_hr: max_price,
             note: a.note,
-        });
+        };
+        let plan = self.with_store(|s| s.create_plan(new_plan));
         let plan = match plan {
             Ok(p) => p,
             Err(e) => {
@@ -382,7 +395,7 @@ impl Sidecar {
                 );
             }
         };
-        let budget = self.store().budget().ok();
+        let budget = self.with_store(|s| s.budget()).ok();
         let runway = account.as_ref().and_then(|ac| ac.runway_hours(max_price));
         ok(json!({
             "plan_id": plan.id,
@@ -423,7 +436,7 @@ impl Sidecar {
             task_id: a.task_id,
             limit: a.limit.unwrap_or(8),
         };
-        match self.store().search(&q) {
+        match self.with_store(|s| s.search(&q)) {
             Ok(rs) => {
                 let n = rs.len();
                 ok(json!({
@@ -456,7 +469,7 @@ impl Sidecar {
                 );
             }
         };
-        let res = self.store().record(NewRecord {
+        let new = NewRecord {
             kind: Some(kind),
             body: a.body,
             author: a.author,
@@ -465,7 +478,8 @@ impl Sidecar {
             tags: a.tags,
             supersedes: a.supersedes,
             reason: a.reason,
-        });
+        };
+        let res = self.with_store(|s| s.record(new));
         match res {
             Ok(id) => ok(
                 json!({"id": id, "kind": kind.as_str(), "next_action": "cite it as #id; supersede it rather than contradict it"}),
@@ -499,13 +513,14 @@ impl Sidecar {
                         "call offrig_handoffs with action=roles for valid ids",
                     );
                 }
-                let res = self.store().add_handoff(NewHandoff {
+                let new = NewHandoff {
                     role_id: role,
                     mission: a.mission.unwrap_or_default(),
                     acceptance: a.acceptance.unwrap_or_default(),
                     scope: a.scope,
                     depends_on: a.depends_on,
-                });
+                };
+                let res = self.with_store(|s| s.add_handoff(new));
                 match res {
                     Ok(id) => ok(
                         json!({"id": id, "state": "pending", "next_action": "add the rest of the queue, or preview the role block"}),
@@ -513,7 +528,7 @@ impl Sidecar {
                     Err(e) => fail(chain(&e), "fix the field named in the error and add again"),
                 }
             }
-            "list" => match self.store().handoffs() {
+            "list" => match self.with_store(|s| s.handoffs()) {
                 Ok(hs) => ok(json!({
                     "handoffs": hs.iter().map(|h| handoff_json(h, now)).collect::<Vec<_>>(),
                     "next_action": "work ready handoffs in order; dependencies gate the rest",
@@ -596,7 +611,7 @@ async fn main() -> anyhow::Result<()> {
     // stdout carries the protocol; anything human goes to stderr.
     let project = project_dir()?;
     let cfg = Config::load()?;
-    let sidecar = Sidecar::open(&project, cfg)?;
+    let sidecar = Sidecar::new(&project, cfg);
     let service = sidecar.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

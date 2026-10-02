@@ -178,6 +178,22 @@ async fn the_sidecar_works_end_to_end_over_stdio() {
     );
 
     client.cancel().await.expect("shutdown");
+
+    // Starting the side-car in a folder and listing its tools (what a health check
+    // does) must not create a database there.
+    let bare = dir.join("untouched");
+    std::fs::create_dir_all(&bare).expect("dir");
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_offrig-mcp")).configure(|c| {
+        c.arg("--project").arg(&bare);
+        c.env_remove("RUNPOD_API_KEY");
+    });
+    let probe = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("connect");
+    probe.list_all_tools().await.expect("list");
+    probe.cancel().await.expect("shutdown");
+    assert!(
+        !bare.join(".offrig").exists(),
+        "a health check must not leave .offrig/ behind"
+    );
     // The memory outlives the server.
     let reopened = Store::open(&dir.join(".offrig").join("offrig.db")).expect("reopen");
     assert_eq!(reopened.handoffs().expect("list").len(), 1);
