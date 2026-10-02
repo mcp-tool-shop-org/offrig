@@ -17,4 +17,5 @@ boundaries:
       - "*"
       - .github/**
       - .claude/**
+      - docs/**
     role: config

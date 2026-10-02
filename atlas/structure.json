@@ -2213,6 +2213,10 @@
           "path": "deny.toml"
         },
         {
+          "hash": "5d397ec5044ea8ca28311103e444034667d2cefa99c24c86371ec788910a9ea0",
+          "path": "docs/sidecar-design.md"
+        },
+        {
           "hash": "4d7d5425fe623392e565a964fc135c563c316ce125058199eb40b2953ba6ecbb",
           "path": "rust-toolchain.toml"
         },
@@ -2224,7 +2228,8 @@
       "globs": [
         "*",
         ".claude/**",
-        ".github/**"
+        ".github/**",
+        "docs/**"
       ],
       "importConfidence": "full",
       "name": "root",
@@ -2608,8 +2613,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "3d0a2c13a373d0cb3417349c19d87572dd476590",
-    "tracked": 35
+    "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b",
+    "tracked": 36
   },
   "landings": [
     {

@@ -96,8 +96,8 @@
         "path": ".gitignore"
       },
       {
-        "commits": 3,
-        "lines": 20,
+        "commits": 4,
+        "lines": 21,
         "path": "CHANGELOG.md"
       },
       {
@@ -116,8 +116,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 5,
-        "lines": 211,
+        "commits": 6,
+        "lines": 216,
         "path": "README.md"
       },
       {
@@ -126,8 +126,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 4,
-        "lines": 167,
+        "commits": 5,
+        "lines": 175,
         "path": "atlas/README.md"
       },
       {
@@ -136,38 +136,53 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 4,
-        "lines": 942,
+        "commits": 5,
+        "lines": 972,
         "path": "atlas/page.json"
       },
       {
-        "commits": 4,
-        "lines": 583,
+        "commits": 5,
+        "lines": 627,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 4,
-        "lines": 2762,
+        "commits": 5,
+        "lines": 3068,
         "path": "atlas/structure.json"
       },
       {
         "commits": 1,
-        "lines": 7,
-        "path": "crates/offrig-app/src/worker.rs"
+        "lines": 48,
+        "path": "crates/offrig-app/src/app.rs"
       },
       {
         "commits": 1,
-        "lines": 25,
-        "path": "crates/offrig-cli/src/main.rs"
+        "lines": 5,
+        "path": "crates/offrig-app/src/main.rs"
       },
       {
         "commits": 2,
-        "lines": 32,
-        "path": "crates/offrig-core/src/config.rs"
+        "lines": 23,
+        "path": "crates/offrig-app/src/worker.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 64,
+        "path": "crates/offrig-cli/src/main.rs"
       },
       {
         "commits": 3,
-        "lines": 115,
+        "lines": 40,
+        "path": "crates/offrig-core/src/config.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 6,
+        "path": "crates/offrig-core/src/error.rs"
+      },
+      {
+        "commits": 4,
+        "lines": 485,
         "path": "crates/offrig-core/src/session.rs"
       },
       {
@@ -441,13 +456,13 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T22:36:27.001Z",
+  "generatedAt": "2026-10-02T22:43:25.202Z",
   "generatedFrom": {
-    "commit": "3d0a2c13a373d0cb3417349c19d87572dd476590"
+    "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 10,
+    "appliedChangesetLimit": 10.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -456,8 +471,8 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T18:30:32-04:00",
-    "inScopeFiles": 40,
+    "headDate": "2026-10-02T18:36:27-04:00",
+    "inScopeFiles": 41,
     "pinnedStart": null,
     "priorFloor": "fallen",
     "qualifyingCommits": 6,
@@ -465,7 +480,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T22:30:32.000Z",
+    "since": "2026-04-05T22:36:27.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
