@@ -3,8 +3,6 @@
 //! plus `agent.default_model` when asked to make a pod model the default.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
@@ -218,10 +216,10 @@ pub fn api_key_env_present(provider: &str) -> bool {
     }
     #[cfg(windows)]
     {
-        let mut cmd = Command::new("reg");
+        let mut cmd = std::process::Command::new("reg");
         cmd.args(["query", r"HKCU\Environment", "/v", &name]);
         if let Ok(out) =
-            crate::proc::run_with_timeout(&mut cmd, Duration::from_secs(10), "reg query")
+            crate::proc::run_with_timeout(&mut cmd, std::time::Duration::from_secs(10), "reg query")
         {
             return out.success();
         }
@@ -236,9 +234,10 @@ pub fn set_api_key_env(provider: &str) -> Result<()> {
     let name = api_key_env_name(provider);
     #[cfg(windows)]
     {
-        let mut cmd = Command::new("setx");
+        let mut cmd = std::process::Command::new("setx");
         cmd.args([name.as_str(), "offrig-tunnel"]);
-        let out = crate::proc::run_with_timeout(&mut cmd, Duration::from_secs(20), "setx")?;
+        let out =
+            crate::proc::run_with_timeout(&mut cmd, std::time::Duration::from_secs(20), "setx")?;
         if out.success() {
             Ok(())
         } else {
