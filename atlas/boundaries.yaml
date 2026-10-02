@@ -12,6 +12,10 @@ boundaries:
     globs:
       - crates/offrig-core/**
     role: code
+  - name: offrig-mcp
+    globs:
+      - crates/offrig-mcp/**
+    role: code
   - name: root
     globs:
       - "*"

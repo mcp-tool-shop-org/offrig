@@ -44,7 +44,8 @@
         "importsAndCoChanges": [],
         "importsOnly": [
           "offrig-app",
-          "offrig-cli"
+          "offrig-cli",
+          "offrig-mcp"
         ]
       },
       "cohesion": null,
@@ -53,6 +54,22 @@
       "highWater": null,
       "name": "offrig-core",
       "qualifyingSourceCommits": 4,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "offrig-mcp",
+      "qualifyingSourceCommits": 0,
       "rebaseline": null
     },
     {
@@ -96,18 +113,18 @@
         "path": ".gitignore"
       },
       {
-        "commits": 4,
-        "lines": 21,
+        "commits": 5,
+        "lines": 22,
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 4,
-        "lines": 4934,
+        "commits": 5,
+        "lines": 5245,
         "path": "Cargo.lock"
       },
       {
-        "commits": 3,
-        "lines": 30,
+        "commits": 4,
+        "lines": 34,
         "path": "Cargo.toml"
       },
       {
@@ -116,8 +133,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 6,
-        "lines": 216,
+        "commits": 7,
+        "lines": 243,
         "path": "README.md"
       },
       {
@@ -126,8 +143,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 8,
-        "lines": 214,
+        "commits": 9,
+        "lines": 251,
         "path": "atlas/README.md"
       },
       {
@@ -136,18 +153,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 8,
-        "lines": 1102,
+        "commits": 9,
+        "lines": 1252,
         "path": "atlas/page.json"
       },
       {
-        "commits": 8,
-        "lines": 884,
+        "commits": 9,
+        "lines": 938,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 8,
-        "lines": 3476,
+        "commits": 9,
+        "lines": 3930,
         "path": "atlas/structure.json"
       },
       {
@@ -166,8 +183,8 @@
         "path": "crates/offrig-app/src/worker.rs"
       },
       {
-        "commits": 2,
-        "lines": 64,
+        "commits": 3,
+        "lines": 90,
         "path": "crates/offrig-cli/src/main.rs"
       },
       {
@@ -216,8 +233,8 @@
         "path": "crates/offrig-core/roles/systems-designer.md"
       },
       {
-        "commits": 3,
-        "lines": 40,
+        "commits": 4,
+        "lines": 58,
         "path": "crates/offrig-core/src/config.rs"
       },
       {
@@ -241,8 +258,8 @@
         "path": "crates/offrig-core/src/lib.rs"
       },
       {
-        "commits": 1,
-        "lines": 424,
+        "commits": 2,
+        "lines": 449,
         "path": "crates/offrig-core/src/roles.rs"
       },
       {
@@ -259,6 +276,21 @@
         "commits": 1,
         "lines": 11,
         "path": "crates/offrig-core/src/zed.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 28,
+        "path": "crates/offrig-mcp/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 603,
+        "path": "crates/offrig-mcp/src/main.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 186,
+        "path": "crates/offrig-mcp/tests/stdio.rs"
       },
       {
         "commits": 2,
@@ -531,9 +563,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T23:03:42.357Z",
+  "generatedAt": "2026-10-02T23:05:32.401Z",
   "generatedFrom": {
-    "commit": "8c7b5a16d05966b8f48d5ac364139f6a0306323c"
+    "commit": "d64c817da8c0ec0459b574e153e46f04f031ac49"
   },
   "pairs": [
     {
@@ -589,7 +621,7 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T18:52:49-04:00",
+    "headDate": "2026-10-02T19:03:42-04:00",
     "inScopeFiles": 55,
     "pinnedStart": null,
     "priorFloor": "fallen",
@@ -598,7 +630,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T22:52:49.000Z",
+    "since": "2026-04-05T23:03:42.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

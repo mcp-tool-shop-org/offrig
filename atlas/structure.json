@@ -1803,7 +1803,7 @@
               "line": 176
             }
           ],
-          "hash": "b13834aa0a8af3bffdcbe5ff27e3d13f5d9cf3e5ebf0957b71c5d13298fa45eb",
+          "hash": "63a4adcb05c025f17299dcd1ac56fe674bd8ec3fe68272705685e2bbd5078f63",
           "importOrder": [
             "crates/offrig-core/src/error.rs",
             "crates/offrig-core/src/config.rs"
@@ -2383,6 +2383,197 @@
       "unresolvedSites": 0
     },
     {
+      "dynamicReads": 1,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [
+        "crates/offrig-mcp/src/main.rs"
+      ],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "f482f6bdad3c6d62ad01ffec4d5ae5b117bdb3307625a5cf35e00682d40144c8",
+          "path": "crates/offrig-mcp/Cargo.toml"
+        },
+        {
+          "entry": "main",
+          "entryRule": 1,
+          "failurePaths": [
+            {
+              "in": "offrig_status",
+              "kind": "match-err",
+              "line": 225
+            },
+            {
+              "in": "offrig_status",
+              "kind": "match-err",
+              "line": 226
+            },
+            {
+              "in": "offrig_offers",
+              "kind": "match-err",
+              "line": 296
+            },
+            {
+              "in": "offrig_offers",
+              "kind": "match-err",
+              "line": 297
+            },
+            {
+              "in": "offrig_plan",
+              "kind": "match-err",
+              "line": 328
+            },
+            {
+              "in": "offrig_plan",
+              "kind": "match-err",
+              "line": 344
+            },
+            {
+              "in": "offrig_plan",
+              "kind": "match-err",
+              "line": 350
+            },
+            {
+              "in": "offrig_plan",
+              "kind": "match-err",
+              "line": 378
+            },
+            {
+              "in": "offrig_memory_search",
+              "kind": "match-err",
+              "line": 413
+            },
+            {
+              "in": "offrig_memory_search",
+              "kind": "match-err",
+              "line": 434
+            },
+            {
+              "in": "offrig_memory_record",
+              "kind": "match-err",
+              "line": 452
+            },
+            {
+              "in": "offrig_memory_record",
+              "kind": "match-err",
+              "line": 473
+            },
+            {
+              "in": "offrig_handoffs",
+              "kind": "match-err",
+              "line": 496
+            },
+            {
+              "in": "offrig_handoffs",
+              "kind": "match-err",
+              "line": 513
+            },
+            {
+              "in": "offrig_handoffs",
+              "kind": "match-err",
+              "line": 521
+            },
+            {
+              "in": "offrig_handoffs",
+              "kind": "match-err",
+              "line": 559
+            }
+          ],
+          "hash": "0263508a75efab0ae3a8d08a48d56120d23f57e95bc0321c403e13b9d72926f5",
+          "importsFiles": [
+            "crates/offrig-core/src/config.rs",
+            "crates/offrig-core/src/cost.rs",
+            "crates/offrig-core/src/error.rs",
+            "crates/offrig-core/src/lib.rs",
+            "crates/offrig-core/src/roles.rs",
+            "crates/offrig-core/src/runpod.rs",
+            "crates/offrig-core/src/store.rs"
+          ],
+          "path": "crates/offrig-mcp/src/main.rs",
+          "sequences": [
+            {
+              "calls": [
+                {
+                  "line": 71,
+                  "name": "date_utc",
+                  "target": {
+                    "file": "crates/offrig-core/src/cost.rs"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "record_json"
+            },
+            {
+              "calls": [
+                {
+                  "line": 84,
+                  "name": "is_stale",
+                  "target": {
+                    "file": "crates/offrig-core/src/store.rs"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "handoff_json"
+            },
+            {
+              "calls": [
+                {
+                  "line": 598,
+                  "name": "load",
+                  "receiver": "Config",
+                  "target": {
+                    "file": "crates/offrig-core/src/config.rs"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": true,
+              "isDefaultExport": false,
+              "name": "main"
+            }
+          ]
+        },
+        {
+          "hash": "1eabed76792ece991dd7a517da28efe6036a80c21eb210a26338bca88ee941e6",
+          "importsFiles": [
+            "crates/offrig-core/src/store.rs"
+          ],
+          "path": "crates/offrig-mcp/tests/stdio.rs",
+          "spawns": [
+            "crates/offrig-mcp/src/main.rs"
+          ],
+          "spawnsInstalled": [
+            "crates/offrig-mcp/src/main.rs"
+          ],
+          "testsInside": true
+        }
+      ],
+      "frameworks": [
+        "mcp"
+      ],
+      "globs": [
+        "crates/offrig-mcp/**"
+      ],
+      "importConfidence": "full",
+      "name": "offrig-mcp",
+      "origin": "authored",
+      "role": "code",
+      "testRunners": [
+        "cargo test"
+      ],
+      "testedBy": 1,
+      "testedThroughSpawn": true,
+      "unresolvedSites": 0
+    },
+    {
       "dynamicReads": 0,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
@@ -2554,6 +2745,11 @@
           "boundary": "offrig-core",
           "depth": 0,
           "files": 18
+        },
+        {
+          "boundary": "offrig-mcp",
+          "depth": 0,
+          "files": 2
         }
       ],
       "readers": [],
@@ -2869,6 +3065,11 @@
       "pushes": false,
       "reach": [
         {
+          "boundary": "offrig-mcp",
+          "depth": 0,
+          "files": 1
+        },
+        {
           "boundary": "offrig-core",
           "depth": 1,
           "enters": {
@@ -2914,11 +3115,16 @@
       "from": "offrig-cli",
       "kind": "file",
       "to": "offrig-core"
+    },
+    {
+      "from": "offrig-mcp",
+      "kind": "file",
+      "to": "offrig-core"
     }
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "8c7b5a16d05966b8f48d5ac364139f6a0306323c",
+    "commit": "d64c817da8c0ec0459b574e153e46f04f031ac49",
     "tracked": 50
   },
   "landings": [
@@ -3092,169 +3298,5 @@
   "submodules": [],
   "symlinks": [],
   "testFiles": 16,
-  "unassigned": [
-    {
-      "hash": "f482f6bdad3c6d62ad01ffec4d5ae5b117bdb3307625a5cf35e00682d40144c8",
-      "path": "crates/offrig-mcp/Cargo.toml"
-    },
-    {
-      "entry": "main",
-      "entryRule": 1,
-      "failurePaths": [
-        {
-          "in": "offrig_status",
-          "kind": "match-err",
-          "line": 225
-        },
-        {
-          "in": "offrig_status",
-          "kind": "match-err",
-          "line": 226
-        },
-        {
-          "in": "offrig_offers",
-          "kind": "match-err",
-          "line": 296
-        },
-        {
-          "in": "offrig_offers",
-          "kind": "match-err",
-          "line": 297
-        },
-        {
-          "in": "offrig_plan",
-          "kind": "match-err",
-          "line": 328
-        },
-        {
-          "in": "offrig_plan",
-          "kind": "match-err",
-          "line": 344
-        },
-        {
-          "in": "offrig_plan",
-          "kind": "match-err",
-          "line": 350
-        },
-        {
-          "in": "offrig_plan",
-          "kind": "match-err",
-          "line": 378
-        },
-        {
-          "in": "offrig_memory_search",
-          "kind": "match-err",
-          "line": 413
-        },
-        {
-          "in": "offrig_memory_search",
-          "kind": "match-err",
-          "line": 434
-        },
-        {
-          "in": "offrig_memory_record",
-          "kind": "match-err",
-          "line": 452
-        },
-        {
-          "in": "offrig_memory_record",
-          "kind": "match-err",
-          "line": 473
-        },
-        {
-          "in": "offrig_handoffs",
-          "kind": "match-err",
-          "line": 496
-        },
-        {
-          "in": "offrig_handoffs",
-          "kind": "match-err",
-          "line": 513
-        },
-        {
-          "in": "offrig_handoffs",
-          "kind": "match-err",
-          "line": 521
-        },
-        {
-          "in": "offrig_handoffs",
-          "kind": "match-err",
-          "line": 559
-        }
-      ],
-      "hash": "0263508a75efab0ae3a8d08a48d56120d23f57e95bc0321c403e13b9d72926f5",
-      "importsFiles": [
-        "crates/offrig-core/src/config.rs",
-        "crates/offrig-core/src/cost.rs",
-        "crates/offrig-core/src/error.rs",
-        "crates/offrig-core/src/lib.rs",
-        "crates/offrig-core/src/roles.rs",
-        "crates/offrig-core/src/runpod.rs",
-        "crates/offrig-core/src/store.rs"
-      ],
-      "path": "crates/offrig-mcp/src/main.rs",
-      "sequences": [
-        {
-          "calls": [
-            {
-              "line": 71,
-              "name": "date_utc",
-              "target": {
-                "file": "crates/offrig-core/src/cost.rs"
-              }
-            }
-          ],
-          "exported": false,
-          "invokedAtTopLevel": false,
-          "isDefaultExport": false,
-          "name": "record_json"
-        },
-        {
-          "calls": [
-            {
-              "line": 84,
-              "name": "is_stale",
-              "target": {
-                "file": "crates/offrig-core/src/store.rs"
-              }
-            }
-          ],
-          "exported": false,
-          "invokedAtTopLevel": false,
-          "isDefaultExport": false,
-          "name": "handoff_json"
-        },
-        {
-          "calls": [
-            {
-              "line": 598,
-              "name": "load",
-              "receiver": "Config",
-              "target": {
-                "file": "crates/offrig-core/src/config.rs"
-              }
-            }
-          ],
-          "exported": false,
-          "invokedAtTopLevel": true,
-          "isDefaultExport": false,
-          "name": "main"
-        }
-      ]
-    },
-    {
-      "hash": "1eabed76792ece991dd7a517da28efe6036a80c21eb210a26338bca88ee941e6",
-      "importsFiles": [
-        "crates/offrig-core/src/store.rs"
-      ],
-      "path": "crates/offrig-mcp/tests/stdio.rs",
-      "spawns": [
-        "crates/offrig-mcp/src/main.rs"
-      ],
-      "spawnsInstalled": [
-        "crates/offrig-mcp/src/main.rs"
-      ],
-      "testsInside": true
-    }
-  ]
+  "unassigned": []
 }

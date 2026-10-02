@@ -427,12 +427,17 @@ mod tests {
         };
         let mut n = 0;
         for entry in rd.flatten() {
-            let id = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let id = entry
+                .path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let r = load(&id, Some(&dir)).unwrap_or_else(|e| panic!("{id}: {e}"));
             let block = render(&r);
             assert!(block.contains("Charter:"), "{id}");
             assert!(
-                r.dossier.operating_profile.prompt_delta.is_empty() || block.contains(r.dossier.operating_profile.prompt_delta.trim()),
+                r.dossier.operating_profile.prompt_delta.is_empty()
+                    || block.contains(r.dossier.operating_profile.prompt_delta.trim()),
                 "{id} lost its disposition text"
             );
             n += 1;

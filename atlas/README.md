@@ -1,26 +1,18 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit 8c7b5a1 by Atlas 1.24.0.
+Mapped at 2026-10-02 from commit d64c817 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-4 parts, mostly Rust (24 files). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
+5 parts, mostly Rust (24 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
 
-## What changed since 2026-10-02 (c1b1cea)
+## What changed since 2026-10-02 (8c7b5a1)
 
-- ci now also runs crates/offrig-mcp/tests/.
-- ci now also checks crates/offrig-mcp/src/main.rs.
-- offrig-mcp (crates/offrig-mcp/Cargo.toml) is a new command. It runs crates/offrig-mcp/src/main.rs.
-- crates/offrig-mcp/ is now read by Cargo.toml.
-- crates/offrig-mcp/src/main.rs is now read by crates/offrig-mcp/Cargo.toml.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `open`, before `config_path`.
-- In crates/offrig-cli/src/main.rs, `main` lost a step, `evaluate`.
-- crates/offrig-mcp/Cargo.toml is new and belongs to no part, so atlas check fails on it against the previous map.
-- crates/offrig-mcp/src/main.rs is new and belongs to no part, so atlas check fails on it against the previous map.
-- crates/offrig-mcp/tests/stdio.rs is new and belongs to no part, so atlas check fails on it against the previous map.
-- 3 files added and 7 changed content, across 3 parts.
+- offrig-mcp now imports offrig-core.
+- offrig-mcp is a new part, drawn from `crates/offrig-mcp/**`.
+- 3 files moved and 1 changed content, across 2 parts.
 
 ## What comes in
 
@@ -31,7 +23,7 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 ## What happens through ci
 
-1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 14 files in offrig-core, and crates/offrig-mcp/tests/; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs.
+1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 14 files in offrig-core, and crates/offrig-mcp/tests/ in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
 
 ## Who reads the results
 
@@ -47,9 +39,10 @@ ci writes nothing this map can see.
 
 ## What breaks what
 
-- **offrig-core** is imported by 2 parts (offrig-app, offrig-cli) and sits on the path of 4 doors.
+- **offrig-core** is imported by 3 parts (offrig-app, offrig-cli, offrig-mcp) and sits on the path of 4 doors.
 - **offrig-app** is imported by no other part and sits on the path of 2 doors.
 - **offrig-cli** is imported by no other part and sits on the path of 2 doors.
+- **offrig-mcp** is imported by no other part and sits on the path of 2 doors.
 
 ## What tends to change together
 
@@ -60,6 +53,8 @@ Window: 180 days; a pair counts from 3 shared commits, since the window holds fe
 ## What no test touches
 
 - **offrig-cli** is imported by no test.
+
+offrig-mcp is touched by tests only through a spawn: a test runs its files as a child process.
 
 offrig-app is tested only by the unit tests in its own files.
 
@@ -87,9 +82,8 @@ Read those in order to follow one run of offrig end to end. This path follows of
 
 ## What this map cannot see
 
-- 4 writes use paths built at run time and are not named here.
+- 4 writes and 1 read use paths built at run time and are not named here.
 - 1 write and 7 reads go to a path their caller passes, not to this repository.
-- 3 files belong to no part: crates/offrig-mcp/Cargo.toml, crates/offrig-mcp/src/main.rs and crates/offrig-mcp/tests/stdio.rs.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
