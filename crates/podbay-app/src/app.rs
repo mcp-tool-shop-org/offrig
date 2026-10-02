@@ -795,7 +795,6 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use podbay_core::config::Config;
     use std::sync::mpsc;
 
     fn pod(name: &str) -> Pod {
@@ -936,7 +935,6 @@ mod ui_tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
-    use podbay_core::config::Config;
     use std::sync::mpsc::Receiver;
 
     fn pod(name: &str) -> Pod {
