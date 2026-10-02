@@ -33,44 +33,29 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 6,
-      "changed": 0,
+      "added": 0,
+      "changed": 5,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci (.github/workflows/ci.yml) is a new door. It starts on a pull request; on a push to main touching 8 paths; or by hand. It runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/cost.rs and 9 more. It checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and crates/offrig-core/src/lib.rs.",
+        "kind": "sequence",
+        "sentence": "crates/offrig-core/src/session.rs now starts at `local_conflicts`; it started at `explain_create_error`.",
         "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-app/src/app.rs",
-          "crates/offrig-app/src/main.rs",
-          "crates/offrig-cli/src/main.rs",
-          "crates/offrig-core/src/config.rs",
-          "crates/offrig-core/src/cost.rs",
-          "crates/offrig-core/src/guard.rs",
-          "crates/offrig-core/src/lib.rs",
-          "crates/offrig-core/src/ollama.rs",
-          "crates/offrig-core/src/remote.rs",
-          "crates/offrig-core/src/runpod.rs",
-          "crates/offrig-core/src/session.rs",
-          "crates/offrig-core/src/spec.rs",
-          "crates/offrig-core/src/sshconfig.rs",
-          "crates/offrig-core/src/tunnel.rs",
-          "crates/offrig-core/src/zed.rs"
+          "crates/offrig-core/src/session.rs"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "6 files added, across 1 part.",
+        "sentence": "5 files changed content, across 2 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "7fe69591744d4786e22db061cbccff23c68a492d",
-      "generatedAt": "2026-10-02T17:22:51.767Z"
+      "commit": "49626418f5ffe02eaee26eab3763231d39e9dd7a",
+      "generatedAt": "2026-10-02T17:23:38.743Z"
     },
     "unchanged": false
   },
@@ -79,7 +64,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "49626418f5ffe02eaee26eab3763231d39e9dd7a",
+  "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
   "doors": [
@@ -221,7 +206,7 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-02T17:23:38.743Z",
+  "generatedAt": "2026-10-02T17:44:42.899Z",
   "limits": [
     "3 writes use paths built at run time and are not named here.",
     "1 write and 4 reads go to a path their caller passes, not to this repository.",

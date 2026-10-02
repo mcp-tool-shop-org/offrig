@@ -114,7 +114,9 @@ pub fn default_profiles() -> Vec<Profile> {
             volume_gb: 30,
             container_disk_gb: 30,
             context_length: 32_768,
-            models: vec![model("qwen3:8b", 5.2, false)],
+            // Not qwen3:8b: that one is in this rig's local Ollama, and a pod model
+            // must never share a name with a local one.
+            models: vec![model("qwen3:4b", 2.5, false)],
         },
         Profile {
             name: "medium".into(),

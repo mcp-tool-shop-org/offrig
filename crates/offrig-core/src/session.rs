@@ -40,6 +40,31 @@ pub const POD_READY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const SSH_READY_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 pub const OLLAMA_READY_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
+/// Refuse a profile whose models already exist in the local Ollama: the same name
+/// could then be served on this machine. Checked before any money is spent.
+pub fn local_conflicts(profile: &Profile, local_models: &[String]) -> Result<()> {
+    let clash: Vec<&str> = profile
+        .models
+        .iter()
+        .map(|m| m.name.as_str())
+        .filter(|n| {
+            local_models
+                .iter()
+                .any(|l| l == n || *l == format!("{n}:latest"))
+        })
+        .collect();
+    if clash.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Guard(format!(
+            "profile {} would run {} on the pod, but the local Ollama has it too; \
+             remove it locally (`ollama rm`) or pick another model, so that name can never run on this GPU",
+            profile.name,
+            clash.join(", ")
+        )))
+    }
+}
+
 /// RunPod answers an exhausted GPU list with a 500 whose body says so; say it plainly.
 pub fn explain_create_error(e: Error, body: &crate::runpod::PodCreate) -> Error {
     match &e {
@@ -95,6 +120,15 @@ impl Session {
         }
         for m in &profile.models {
             remote::validate_model_name(&m.name)?;
+        }
+        let local = crate::ollama::Ollama::new(&format!(
+            "http://127.0.0.1:{}",
+            crate::config::LOCAL_OLLAMA_PORT
+        ));
+        // A local Ollama that is not running holds no models; that is fine.
+        if let Ok(tags) = local.tags() {
+            let names: Vec<String> = tags.into_iter().map(|t| t.name).collect();
+            local_conflicts(profile, &names)?;
         }
         Ok(())
     }
@@ -369,6 +403,32 @@ mod tests {
         };
         let msg = explain_create_error(e, &body()).to_string();
         assert!(msg.contains("no 1x of [NVIDIA A100-SXM4-80GB"), "{msg}");
+    }
+
+    #[test]
+    fn local_copies_of_profile_models_are_refused() {
+        let cfg = Config::default();
+        let medium = cfg.profile("medium").expect("medium");
+        let local = vec!["qwen3:8b".to_string(), "gemma4:31b".to_string()];
+        assert!(local_conflicts(medium, &local).is_ok());
+        let clash = vec!["gpt-oss:120b".to_string()];
+        let err = local_conflicts(medium, &clash).expect_err("must refuse");
+        assert!(err.to_string().contains("gpt-oss:120b"), "{err}");
+        assert!(matches!(err, Error::Guard(_)));
+    }
+
+    #[test]
+    fn default_profiles_avoid_this_rigs_local_models() {
+        // Measured 2026-10-02: qwen3:8b is in this rig's local Ollama, which is why
+        // the small profile does not use it.
+        let cfg = Config::default();
+        let local = vec![
+            "qwen3:8b".to_string(),
+            "qwen3:4b-instruct-2507-q4_K_M".to_string(),
+        ];
+        for p in &cfg.profiles {
+            local_conflicts(p, &local).unwrap_or_else(|e| panic!("{}: {e}", p.name));
+        }
     }
 
     #[test]

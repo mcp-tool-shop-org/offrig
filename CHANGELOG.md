@@ -14,4 +14,6 @@ First version, built and tested live on 2026-10-02.
   pod status and cost, tunnel control, model pulls and tests, Zed wiring, guard checks,
   shutdown and close-with-pod confirmations, idle auto-stop.
 - Three default tiers: small, medium, frontier.
+- Refuse to launch a profile whose models already exist in the local Ollama, before any spend.
+- Small profile uses qwen3:4b (qwen3:8b is in this rig's local Ollama).
 - Renamed from podbay before release: the name collides with Podbay Cloud and podbay.fm.

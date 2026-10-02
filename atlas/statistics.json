@@ -52,7 +52,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 1,
       "rebaseline": null
     },
     {
@@ -126,28 +126,28 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 1,
-        "lines": 97,
+        "commits": 2,
+        "lines": 152,
         "path": "atlas/README.md"
       },
       {
-        "commits": 1,
-        "lines": 18,
+        "commits": 2,
+        "lines": 20,
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 1,
-        "lines": 448,
+        "commits": 2,
+        "lines": 884,
         "path": "atlas/page.json"
       },
       {
-        "commits": 1,
-        "lines": 409,
+        "commits": 2,
+        "lines": 503,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 1,
-        "lines": 2336,
+        "commits": 2,
+        "lines": 2628,
         "path": "atlas/structure.json"
       },
       {
@@ -164,6 +164,11 @@
         "commits": 1,
         "lines": 53,
         "path": "crates/offrig-core/src/session.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 11,
+        "path": "crates/offrig-core/src/zed.rs"
       },
       {
         "commits": 2,
@@ -431,9 +436,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T17:23:38.743Z",
+  "generatedAt": "2026-10-02T17:44:42.899Z",
   "generatedFrom": {
-    "commit": "49626418f5ffe02eaee26eab3763231d39e9dd7a"
+    "commit": "0983cc35c14934f1d8e3f0d9a9553c5e521a1683"
   },
   "pairs": [],
   "parameters": {
@@ -446,16 +451,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T13:23:01-04:00",
+    "headDate": "2026-10-02T13:28:36-04:00",
     "inScopeFiles": 40,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 2,
+    "qualifyingCommits": 4,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T17:23:01.000Z",
+    "since": "2026-04-05T17:28:36.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

@@ -77,7 +77,7 @@ Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defau
 
 | Profile | GPUs | Models | Typical cost |
 |---|---|---|---|
-| small | 1 × RTX 2000 Ada / A4000 class | `qwen3:8b` | about $0.25/hr |
+| small | 1 × RTX 2000 Ada / A4000 class | `qwen3:4b` | about $0.25/hr |
 | medium | 1 × A100 80GB / RTX PRO 6000 / H100 | `qwen3-coder:30b-a3b-q8_0`, `gpt-oss:120b` | about $1.60–2.20/hr |
 | frontier | 2 × B200 | `qwen3-coder:480b` (290 GB) | about $14/hr |
 
