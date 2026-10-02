@@ -17,7 +17,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-app",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 1,
       "rebaseline": null
     },
     {
@@ -33,7 +33,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-cli",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 1,
       "rebaseline": null
     },
     {
@@ -52,7 +52,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 3,
+      "qualifyingSourceCommits": 4,
       "rebaseline": null
     },
     {
@@ -101,8 +101,8 @@
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 3,
-        "lines": 4858,
+        "commits": 4,
+        "lines": 4934,
         "path": "Cargo.lock"
       },
       {
@@ -126,8 +126,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 6,
-        "lines": 183,
+        "commits": 7,
+        "lines": 190,
         "path": "atlas/README.md"
       },
       {
@@ -136,18 +136,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 6,
-        "lines": 1004,
+        "commits": 7,
+        "lines": 1021,
         "path": "atlas/page.json"
       },
       {
-        "commits": 6,
-        "lines": 692,
+        "commits": 7,
+        "lines": 727,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 6,
-        "lines": 3079,
+        "commits": 7,
+        "lines": 3111,
         "path": "atlas/structure.json"
       },
       {
@@ -171,19 +171,89 @@
         "path": "crates/offrig-cli/src/main.rs"
       },
       {
+        "commits": 1,
+        "lines": 1,
+        "path": "crates/offrig-core/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 20,
+        "path": "crates/offrig-core/roles/game-designer.json"
+      },
+      {
+        "commits": 1,
+        "lines": 36,
+        "path": "crates/offrig-core/roles/game-designer.md"
+      },
+      {
+        "commits": 1,
+        "lines": 20,
+        "path": "crates/offrig-core/roles/lore-keeper.json"
+      },
+      {
+        "commits": 1,
+        "lines": 35,
+        "path": "crates/offrig-core/roles/lore-keeper.md"
+      },
+      {
+        "commits": 1,
+        "lines": 20,
+        "path": "crates/offrig-core/roles/narrative-designer.json"
+      },
+      {
+        "commits": 1,
+        "lines": 35,
+        "path": "crates/offrig-core/roles/narrative-designer.md"
+      },
+      {
+        "commits": 1,
+        "lines": 20,
+        "path": "crates/offrig-core/roles/systems-designer.json"
+      },
+      {
+        "commits": 1,
+        "lines": 35,
+        "path": "crates/offrig-core/roles/systems-designer.md"
+      },
+      {
         "commits": 3,
         "lines": 40,
         "path": "crates/offrig-core/src/config.rs"
       },
       {
         "commits": 1,
-        "lines": 6,
+        "lines": 231,
+        "path": "crates/offrig-core/src/context.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 29,
+        "path": "crates/offrig-core/src/cost.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 24,
         "path": "crates/offrig-core/src/error.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "crates/offrig-core/src/lib.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 424,
+        "path": "crates/offrig-core/src/roles.rs"
       },
       {
         "commits": 4,
         "lines": 485,
         "path": "crates/offrig-core/src/session.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 1448,
+        "path": "crates/offrig-core/src/store.rs"
       },
       {
         "commits": 1,
@@ -461,13 +531,56 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T22:52:24.189Z",
+  "generatedAt": "2026-10-02T22:52:47.389Z",
   "generatedFrom": {
-    "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c"
+    "commit": "c1b1cea9f15c3d5339be39f81907e85ed63cc102"
   },
-  "pairs": [],
+  "pairs": [
+    {
+      "a": "atlas/README.md",
+      "b": "atlas/page.json",
+      "either": 5,
+      "shared": 5,
+      "strength": 1
+    },
+    {
+      "a": "atlas/README.md",
+      "b": "atlas/statistics.json",
+      "either": 5,
+      "shared": 5,
+      "strength": 1
+    },
+    {
+      "a": "atlas/README.md",
+      "b": "atlas/structure.json",
+      "either": 5,
+      "shared": 5,
+      "strength": 1
+    },
+    {
+      "a": "atlas/page.json",
+      "b": "atlas/statistics.json",
+      "either": 5,
+      "shared": 5,
+      "strength": 1
+    },
+    {
+      "a": "atlas/page.json",
+      "b": "atlas/structure.json",
+      "either": 5,
+      "shared": 5,
+      "strength": 1
+    },
+    {
+      "a": "atlas/statistics.json",
+      "b": "atlas/structure.json",
+      "either": 5,
+      "shared": 5,
+      "strength": 1
+    }
+  ],
   "parameters": {
-    "appliedChangesetLimit": 10.25,
+    "appliedChangesetLimit": 13,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -476,16 +589,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T18:43:25-04:00",
-    "inScopeFiles": 41,
+    "headDate": "2026-10-02T18:52:24-04:00",
+    "inScopeFiles": 52,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 7,
+    "qualifyingCommits": 8,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T22:43:25.000Z",
+    "since": "2026-04-05T22:52:24.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

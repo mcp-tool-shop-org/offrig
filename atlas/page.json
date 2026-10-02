@@ -33,33 +33,72 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 5,
+      "added": 11,
+      "changed": 0,
       "moved": 0,
-      "parts": 2,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
+        "kind": "door",
+        "sentence": "ci now also runs crates/offrig-core/src/context.rs, crates/offrig-core/src/roles.rs and crates/offrig-core/src/store.rs.",
+        "subjects": [
+          ".github/workflows/ci.yml",
+          "crates/offrig-core/src/context.rs",
+          "crates/offrig-core/src/roles.rs",
+          "crates/offrig-core/src/store.rs"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "crates/offrig-core/roles/game-designer.json is now read by crates/offrig-core/src/roles.rs.",
+        "subjects": [
+          "crates/offrig-core/roles/game-designer.json",
+          "crates/offrig-core/src/roles.rs"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "crates/offrig-core/roles/game-designer.md is now read by crates/offrig-core/src/roles.rs.",
+        "subjects": [
+          "crates/offrig-core/roles/game-designer.md",
+          "crates/offrig-core/src/roles.rs"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "crates/offrig-core/roles/lore-keeper.json is now read by crates/offrig-core/src/roles.rs.",
+        "subjects": [
+          "crates/offrig-core/roles/lore-keeper.json",
+          "crates/offrig-core/src/roles.rs"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "And 5 more new writers and readers of places.",
+        "subjects": []
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-02; 5 files changed content.",
+        "sentence": "11 files added, across 1 part.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "61dce78c87a273d61277c40ebff886d5ca12e13b",
-      "generatedAt": "2026-10-02T22:43:25.202Z"
+      "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c",
+      "generatedAt": "2026-10-02T22:52:24.189Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c",
+  "commit": "c1b1cea9f15c3d5339be39f81907e85ed63cc102",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Rust (19 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
+  "derived": "4 parts, mostly Rust (22 files). Work enters through 3 doors; the busiest is ci, which reaches 3 parts. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
   "doors": [
     {
       "checks": [
@@ -88,25 +127,28 @@
         {
           "boundary": "offrig-core",
           "depth": 0,
-          "files": 15
+          "files": 18
         }
       ],
       "runs": [
         "crates/offrig-app/src/app.rs",
         "crates/offrig-core/src/config.rs",
+        "crates/offrig-core/src/context.rs",
         "crates/offrig-core/src/cost.rs",
         "crates/offrig-core/src/guard.rs",
         "crates/offrig-core/src/ollama.rs",
         "crates/offrig-core/src/remote.rs",
+        "crates/offrig-core/src/roles.rs",
         "crates/offrig-core/src/runpod.rs",
         "crates/offrig-core/src/session.rs",
         "crates/offrig-core/src/spec.rs",
         "crates/offrig-core/src/sshconfig.rs",
+        "crates/offrig-core/src/store.rs",
         "crates/offrig-core/src/tunnel.rs",
         "crates/offrig-core/src/zed.rs"
       ],
-      "runsCount": 12,
-      "runsMore": 9,
+      "runsCount": 15,
+      "runsMore": 12,
       "sends": [],
       "stages": [],
       "triggers": [
@@ -168,7 +210,7 @@
         {
           "boundary": "offrig-core",
           "depth": 1,
-          "files": 15
+          "files": 18
         }
       ],
       "runs": [
@@ -199,11 +241,10 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-02T22:52:24.189Z",
+  "generatedAt": "2026-10-02T22:52:47.389Z",
   "limits": [
-    "3 imports could not be resolved: `crates/offrig-core/src/lib.rs` imports `mod context`; `crates/offrig-core/src/lib.rs` imports `mod roles`; `crates/offrig-core/src/lib.rs` imports `mod store`.",
-    "3 writes use paths built at run time and are not named here.",
-    "1 write and 4 reads go to a path their caller passes, not to this repository.",
+    "4 writes use paths built at run time and are not named here.",
+    "1 write and 7 reads go to a path their caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -226,17 +267,17 @@
   "startReason": "This path follows offrig (a command built from crates/offrig-cli, which nothing ships) from its entry, since ci runs only tests and checks.",
   "summary": "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top.",
   "summaryFrom": "person",
-  "testFiles": 12,
+  "testFiles": 15,
   "testedBy": {
     "offrig-app": 1,
     "offrig-cli": 0,
-    "offrig-core": 11
+    "offrig-core": 14
   },
   "testedInside": [
     "offrig-app",
     "offrig-core"
   ],
-  "unnamedWrites": 3,
+  "unnamedWrites": 4,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],

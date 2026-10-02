@@ -1129,7 +1129,7 @@
       "dynamicReads": 0,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
-      "dynamicWrites": 3,
+      "dynamicWrites": 4,
       "entryPoints": [
         "crates/offrig-core/src/lib.rs"
       ],
@@ -1138,6 +1138,38 @@
         {
           "hash": "c3b8d01f7e2349b41340284762934a47d6378e4d3e92e860e52d8bb388f7ba89",
           "path": "crates/offrig-core/Cargo.toml"
+        },
+        {
+          "hash": "afa345e45b750b9526f1bd5dfa1c8ec9988e295162052d13fa6b0957b4f71e11",
+          "path": "crates/offrig-core/roles/game-designer.json"
+        },
+        {
+          "hash": "26401bc4d54fe0d0890540b836fdea6b7370f084c7e936186b9f1bbfaf31c1af",
+          "path": "crates/offrig-core/roles/game-designer.md"
+        },
+        {
+          "hash": "2c3a6eaff1123f9e0dea2aabe11d96a2f99aa65f740b3a03ad4deb3ac7b49df3",
+          "path": "crates/offrig-core/roles/lore-keeper.json"
+        },
+        {
+          "hash": "dd74c875fa6661f56d1abcf3c65a92bf54f1545b4e57f8a7287ba96697887163",
+          "path": "crates/offrig-core/roles/lore-keeper.md"
+        },
+        {
+          "hash": "b147673bd1867302539c42994b4ff79a3043674b8dd138683e94cf344fa5292a",
+          "path": "crates/offrig-core/roles/narrative-designer.json"
+        },
+        {
+          "hash": "5a232235a793d0b53e217161f04b5b0a7a6c51e36507d9990ab05974d54c2482",
+          "path": "crates/offrig-core/roles/narrative-designer.md"
+        },
+        {
+          "hash": "a64b1e20ca87a05c76f6d999c90a684ac3e791b7617c131b0200c91e9c576799",
+          "path": "crates/offrig-core/roles/systems-designer.json"
+        },
+        {
+          "hash": "656200ef567031d91f984341ff1e1d6e14fb7a54622ccaa7f65d36b9dfa5617f",
+          "path": "crates/offrig-core/roles/systems-designer.md"
         },
         {
           "entry": "config_path",
@@ -1208,6 +1240,23 @@
               "name": "config_path"
             }
           ],
+          "testsInside": true
+        },
+        {
+          "exports": [
+            "assemble",
+            "line"
+          ],
+          "hash": "a20957c2bfa455ed95fed082e32cedb3ccafbb372c0baf9b10c35a8f7ee04e1b",
+          "importOrder": [
+            "crates/offrig-core/src/store.rs",
+            "crates/offrig-core/src/cost.rs"
+          ],
+          "importsFiles": [
+            "crates/offrig-core/src/cost.rs",
+            "crates/offrig-core/src/store.rs"
+          ],
+          "path": "crates/offrig-core/src/context.rs",
           "testsInside": true
         },
         {
@@ -1314,6 +1363,7 @@
           "hash": "891fed4a6586e50eb59a450be3e411ef9f30bb1fdaf9525e8f144c8398fa7bee",
           "importsFiles": [
             "crates/offrig-core/src/config.rs",
+            "crates/offrig-core/src/context.rs",
             "crates/offrig-core/src/cost.rs",
             "crates/offrig-core/src/error.rs",
             "crates/offrig-core/src/fsutil.rs",
@@ -1321,10 +1371,12 @@
             "crates/offrig-core/src/ollama.rs",
             "crates/offrig-core/src/proc.rs",
             "crates/offrig-core/src/remote.rs",
+            "crates/offrig-core/src/roles.rs",
             "crates/offrig-core/src/runpod.rs",
             "crates/offrig-core/src/session.rs",
             "crates/offrig-core/src/spec.rs",
             "crates/offrig-core/src/sshconfig.rs",
+            "crates/offrig-core/src/store.rs",
             "crates/offrig-core/src/tunnel.rs",
             "crates/offrig-core/src/zed.rs"
           ],
@@ -1715,6 +1767,49 @@
         },
         {
           "exports": [
+            "behaviours",
+            "builtin_ids",
+            "fingerprint",
+            "load",
+            "parse_card",
+            "render"
+          ],
+          "failurePaths": [
+            {
+              "in": "load",
+              "kind": "err",
+              "line": 146
+            },
+            {
+              "in": "load",
+              "kind": "err",
+              "line": 162
+            },
+            {
+              "in": "load_role_os",
+              "kind": "match-err",
+              "line": 175
+            },
+            {
+              "in": "load_role_os",
+              "kind": "match-err",
+              "line": 176
+            },
+            {
+              "in": "load_role_os",
+              "kind": "err",
+              "line": 176
+            }
+          ],
+          "hash": "6f07fbb44ea8851be1d3bf72256fb1e9720ce4731da0c961447b7ad2d5005308",
+          "importsFiles": [
+            "crates/offrig-core/src/error.rs"
+          ],
+          "path": "crates/offrig-core/src/roles.rs",
+          "testsInside": true
+        },
+        {
+          "exports": [
             "sort_offers",
             "usable_gpu"
           ],
@@ -1924,6 +2019,126 @@
             "crates/offrig-core/src/proc.rs"
           ],
           "path": "crates/offrig-core/src/sshconfig.rs",
+          "testsInside": true
+        },
+        {
+          "exports": [
+            "fts_query",
+            "is_stale"
+          ],
+          "failurePaths": [
+            {
+              "in": "parse",
+              "kind": "err",
+              "line": 149
+            },
+            {
+              "in": "parse",
+              "kind": "err",
+              "line": 311
+            },
+            {
+              "in": "init",
+              "kind": "err",
+              "line": 440
+            },
+            {
+              "in": "set_budget_cap",
+              "kind": "err",
+              "line": 455
+            },
+            {
+              "in": "record",
+              "kind": "err",
+              "line": 489
+            },
+            {
+              "in": "record",
+              "kind": "err",
+              "line": 492
+            },
+            {
+              "in": "record",
+              "kind": "err",
+              "line": 503
+            },
+            {
+              "in": "record",
+              "kind": "err",
+              "line": 518
+            },
+            {
+              "in": "record",
+              "kind": "err",
+              "line": 522
+            },
+            {
+              "in": "withdraw",
+              "kind": "err",
+              "line": 555
+            },
+            {
+              "in": "withdraw",
+              "kind": "err",
+              "line": 565
+            },
+            {
+              "in": "create_plan",
+              "kind": "err",
+              "line": 665
+            },
+            {
+              "in": "create_plan",
+              "kind": "err",
+              "line": 668
+            },
+            {
+              "in": "create_plan",
+              "kind": "err",
+              "line": 675
+            },
+            {
+              "in": "commit_plan",
+              "kind": "err",
+              "line": 739
+            },
+            {
+              "in": "commit_plan",
+              "kind": "err",
+              "line": 743
+            },
+            {
+              "in": "add_handoff",
+              "kind": "err",
+              "line": 868
+            },
+            {
+              "in": "add_handoff",
+              "kind": "err",
+              "line": 873
+            },
+            {
+              "in": "add_handoff",
+              "kind": "err",
+              "line": 881
+            },
+            {
+              "in": "transition",
+              "kind": "err",
+              "line": 970
+            },
+            {
+              "in": "transition",
+              "kind": "err",
+              "line": 983
+            }
+          ],
+          "hash": "cbed80a30782ab6153f8ef888900be75168709aa29e0c162e03ac4ac572da84b",
+          "importsFiles": [
+            "crates/offrig-core/src/cost.rs",
+            "crates/offrig-core/src/error.rs"
+          ],
+          "path": "crates/offrig-core/src/store.rs",
           "testsInside": true
         },
         {
@@ -2144,39 +2359,22 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 4,
+          "reads": 7,
           "where": [
             "caller"
           ],
           "writes": 1
         }
       ],
-      "outsideReads": 4,
+      "outsideReads": 7,
       "outsideWrites": 1,
       "role": "code",
       "testRunners": [
         "cargo test"
       ],
-      "testedBy": 11,
+      "testedBy": 14,
       "testedInside": true,
-      "unresolvedNamed": [
-        {
-          "path": "crates/offrig-core/src/lib.rs",
-          "specifier": "mod context",
-          "why": "other"
-        },
-        {
-          "path": "crates/offrig-core/src/lib.rs",
-          "specifier": "mod roles",
-          "why": "other"
-        },
-        {
-          "path": "crates/offrig-core/src/lib.rs",
-          "specifier": "mod store",
-          "why": "other"
-        }
-      ],
-      "unresolvedSites": 3
+      "unresolvedSites": 0
     },
     {
       "dynamicReads": 0,
@@ -2349,7 +2547,7 @@
         {
           "boundary": "offrig-core",
           "depth": 0,
-          "files": 15
+          "files": 18
         }
       ],
       "readers": [],
@@ -2379,6 +2577,13 @@
           "job": "rust",
           "matched": true,
           "path": "crates/offrig-core/src/config.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
+          "path": "crates/offrig-core/src/context.rs",
           "runKind": "executes",
           "via": "cargo test"
         },
@@ -2420,6 +2625,13 @@
         {
           "job": "rust",
           "matched": true,
+          "path": "crates/offrig-core/src/roles.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
           "path": "crates/offrig-core/src/runpod.rs",
           "runKind": "executes",
           "via": "cargo test"
@@ -2448,6 +2660,13 @@
         {
           "job": "rust",
           "matched": true,
+          "path": "crates/offrig-core/src/store.rs",
+          "runKind": "executes",
+          "via": "cargo test"
+        },
+        {
+          "job": "rust",
+          "matched": true,
           "path": "crates/offrig-core/src/tunnel.rs",
           "runKind": "executes",
           "via": "cargo test"
@@ -2460,7 +2679,7 @@
           "via": "cargo test"
         }
       ],
-      "runsCount": 15,
+      "runsCount": 18,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -2475,7 +2694,7 @@
       "stages": [],
       "tests": [
         {
-          "files": 12,
+          "files": 15,
           "job": "rust",
           "runner": "cargo test",
           "step": "Test"
@@ -2536,7 +2755,7 @@
             "file": "crates/offrig-core/src/config.rs",
             "from": "crates/offrig-app/src/main.rs"
           },
-          "files": 15
+          "files": 18
         }
       ],
       "readers": [],
@@ -2631,8 +2850,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "53c9b4bb08dde8123c75361a1245af0c831d686c",
-    "tracked": 36
+    "commit": "c1b1cea9f15c3d5339be39f81907e85ed63cc102",
+    "tracked": 47
   },
   "landings": [
     {
@@ -2689,11 +2908,99 @@
       ],
       "target": "crates/offrig-core",
       "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/game-designer.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/game-designer.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/lore-keeper.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/lore-keeper.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/narrative-designer.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/narrative-designer.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/systems-designer.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-core/src/roles.rs",
+          "call": "include_str",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-core/roles/systems-designer.md",
+      "writers": []
     }
   ],
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 12,
+  "testFiles": 15,
   "unassigned": []
 }
