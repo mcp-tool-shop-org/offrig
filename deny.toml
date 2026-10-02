@@ -1,0 +1,51 @@
+# cargo-deny policy. Run: cargo deny check
+# Permissive licences are allowed everywhere. Anything weaker is an exception
+# scoped to the one crate that carries it, so a new copyleft dependency fails CI.
+
+[graph]
+all-features = false
+
+[licenses]
+confidence-threshold = 0.95
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+]
+
+# dirs-sys -> option-ext. MPL-2.0 is file-level copyleft: it binds changes to
+# option-ext's own files, which offrig uses unmodified.
+[[licenses.exceptions]]
+name = "option-ext"
+allow = ["MPL-2.0"]
+
+# egui's bundled fonts. Font licences cover the font files shipped in the binary.
+[[licenses.exceptions]]
+name = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+# Mozilla's CA root list, used by ureq's TLS.
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+[advisories]
+ignore = [
+    # Unmaintained, not vulnerable. Reached only through egui/epaint, which parse
+    # the fonts bundled in the binary, never fonts from outside. Revisit when egui
+    # moves to skrifa.
+    { id = "RUSTSEC-2026-0192", reason = "egui-owned; parses only bundled fonts" },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

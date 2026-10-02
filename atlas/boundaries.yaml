@@ -1,0 +1,18 @@
+summary: "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top."
+boundaries:
+  - name: offrig-app
+    globs:
+      - crates/offrig-app/**
+    role: code
+  - name: offrig-cli
+    globs:
+      - crates/offrig-cli/**
+    role: code
+  - name: offrig-core
+    globs:
+      - crates/offrig-core/**
+    role: code
+  - name: root
+    globs:
+      - "*"
+    role: config

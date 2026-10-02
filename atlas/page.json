@@ -1,0 +1,448 @@
+{
+  "authored": [
+    "root"
+  ],
+  "breaks": [
+    {
+      "doors": 2,
+      "importedBy": [
+        "offrig-app",
+        "offrig-cli"
+      ],
+      "importedByTests": [],
+      "kind": "part",
+      "name": "offrig-core",
+      "partLabel": "offrig-core"
+    }
+  ],
+  "changes": {
+    "first": true
+  },
+  "changesTogether": [],
+  "changesTogetherNote": [
+    "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
+  ],
+  "changesTogetherWithTests": 0,
+  "commit": "7fe69591744d4786e22db061cbccff23c68a492d",
+  "defaultBranch": "main",
+  "derived": "4 parts, mostly Rust (19 files). Work enters through 2 doors; offrig and offrig-app each reach 2 parts, and offrig is followed because it comes first by name. offrig and offrig-app are commands built from crates/offrig-app and crates/offrig-cli (nothing ships them).",
+  "doors": [
+    {
+      "builtFrom": "crates/offrig-cli",
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": "crates/offrig-cli/Cargo.toml",
+      "id": "crates/offrig-cli/Cargo.toml#offrig",
+      "kind": "command",
+      "landings": [],
+      "name": "offrig",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "offrig-cli",
+          "depth": 0,
+          "files": 1
+        },
+        {
+          "boundary": "offrig-core",
+          "depth": 1,
+          "files": 14
+        }
+      ],
+      "runs": [
+        "crates/offrig-cli/src/main.rs"
+      ],
+      "runsCount": 1,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": [],
+      "unshipped": true
+    },
+    {
+      "builtFrom": "crates/offrig-app",
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": "crates/offrig-app/Cargo.toml",
+      "id": "crates/offrig-app/Cargo.toml#offrig-app",
+      "kind": "command",
+      "landings": [],
+      "name": "offrig-app",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "offrig-app",
+          "depth": 0,
+          "files": 3
+        },
+        {
+          "boundary": "offrig-core",
+          "depth": 1,
+          "files": 15
+        }
+      ],
+      "runs": [
+        "crates/offrig-app/src/main.rs"
+      ],
+      "runsCount": 1,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": [],
+      "unshipped": true
+    }
+  ],
+  "duplicates": [],
+  "duplicatesLead": null,
+  "duplicatesNote": [],
+  "edges": [],
+  "engine": "1.24.0",
+  "generated": [],
+  "generatedAt": "2026-10-02T17:22:51.767Z",
+  "limits": [
+    "3 writes use paths built at run time and are not named here.",
+    "1 write and 4 reads go to a path their caller passes, not to this repository.",
+    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions."
+  ],
+  "mainDoor": "crates/offrig-cli/Cargo.toml#offrig",
+  "partLabels": {
+    "offrig-app": "offrig-app",
+    "offrig-cli": "offrig-cli",
+    "offrig-core": "offrig-core",
+    "root": "the repository root"
+  },
+  "parts": 4,
+  "readers": [],
+  "repo": "mcp-tool-shop-org/offrig",
+  "sequences": [
+    {
+      "entry": "main",
+      "file": "crates/offrig-cli/src/main.rs",
+      "inner": [
+        {
+          "file": "crates/offrig-core/src/guard.rs",
+          "name": "gather",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`gather`",
+          "steps": [
+            {
+              "name": "read_settings",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`read_settings`"
+            },
+            {
+              "name": "read_provider",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`read_provider`"
+            },
+            {
+              "name": "new",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`new`",
+              "receiver": "Ollama"
+            },
+            {
+              "name": "local_ollama_models",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`local_ollama_models`"
+            },
+            {
+              "name": "pod_tags_json",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`pod_tags_json`"
+            }
+          ]
+        },
+        {
+          "file": "crates/offrig-core/src/remote.rs",
+          "name": "gpu_stats",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`gpu_stats`",
+          "steps": [
+            {
+              "name": "run_with_timeout",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`run_with_timeout`"
+            },
+            {
+              "name": "Ssh",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`Ssh`",
+              "receiver": "Error"
+            }
+          ]
+        },
+        {
+          "file": "crates/offrig-core/src/remote.rs",
+          "name": "pull_start",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`pull_start`",
+          "steps": [
+            {
+              "name": "Ollama",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`Ollama`",
+              "receiver": "Error"
+            },
+            {
+              "name": "run_with_timeout",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`run_with_timeout`"
+            },
+            {
+              "name": "Ssh",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`Ssh`",
+              "receiver": "Error"
+            },
+            {
+              "name": "Ollama",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`Ollama`",
+              "receiver": "Error"
+            }
+          ]
+        },
+        {
+          "file": "crates/offrig-core/src/remote.rs",
+          "name": "pull_state",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`pull_state`",
+          "steps": [
+            {
+              "name": "Ollama",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`Ollama`",
+              "receiver": "Error"
+            },
+            {
+              "name": "run_with_timeout",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`run_with_timeout`"
+            },
+            {
+              "name": "Ssh",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`Ssh`",
+              "receiver": "Error"
+            }
+          ]
+        },
+        {
+          "file": "crates/offrig-core/src/guard.rs",
+          "name": "gather",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`gather`",
+          "steps": [
+            {
+              "name": "read_settings",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`read_settings`"
+            },
+            {
+              "name": "read_provider",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`read_provider`"
+            },
+            {
+              "name": "new",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`new`",
+              "receiver": "Ollama"
+            },
+            {
+              "name": "local_ollama_models",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`local_ollama_models`"
+            },
+            {
+              "name": "pod_tags_json",
+              "part": "offrig-core",
+              "partLabel": "offrig-core",
+              "phrase": "`pod_tags_json`"
+            }
+          ]
+        }
+      ],
+      "part": "offrig-cli",
+      "partLabel": "offrig-cli",
+      "phrase": "`main`",
+      "steps": [
+        {
+          "count": 3,
+          "name": null,
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`config.rs`"
+        },
+        {
+          "name": "new",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`new`",
+          "receiver": "Session"
+        },
+        {
+          "name": "now_unix",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`now_unix`"
+        },
+        {
+          "name": "session_cost",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`session_cost`"
+        },
+        {
+          "name": "new",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`new`",
+          "receiver": "Session"
+        },
+        {
+          "name": "chain",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`chain`"
+        },
+        {
+          "name": "api_key_env_name",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`api_key_env_name`"
+        },
+        {
+          "name": "settings_path",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`settings_path`"
+        },
+        {
+          "name": "gather",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`gather`"
+        },
+        {
+          "name": "evaluate",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`evaluate`"
+        },
+        {
+          "name": "new",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`new`",
+          "receiver": "IdleTracker"
+        },
+        {
+          "name": "gpu_stats",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`gpu_stats`"
+        },
+        {
+          "name": "pod_name",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`pod_name`"
+        },
+        {
+          "count": 3,
+          "name": null,
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`remote.rs`"
+        },
+        {
+          "name": "port_open",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`port_open`"
+        },
+        {
+          "name": "new",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`new`",
+          "receiver": "Session"
+        },
+        {
+          "name": "settings_path",
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`settings_path`"
+        },
+        {
+          "count": 3,
+          "name": null,
+          "part": "offrig-core",
+          "partLabel": "offrig-core",
+          "phrase": "`guard.rs`"
+        }
+      ]
+    }
+  ],
+  "startDoor": "crates/offrig-cli/Cargo.toml#offrig",
+  "startHere": [
+    "crates/offrig-cli/src/main.rs",
+    "crates/offrig-core/src/config.rs",
+    "crates/offrig-core/src/error.rs"
+  ],
+  "summary": "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top.",
+  "summaryFrom": "person",
+  "testFiles": 12,
+  "testedBy": {
+    "offrig-app": 1,
+    "offrig-cli": 0,
+    "offrig-core": 11
+  },
+  "testedInside": [
+    "offrig-app",
+    "offrig-core"
+  ],
+  "unnamedWrites": 3,
+  "unread": [],
+  "unreadFiles": 0,
+  "unreadNote": [],
+  "untested": [
+    {
+      "part": "offrig-cli",
+      "partLabel": "offrig-cli",
+      "testedBy": 0
+    }
+  ],
+  "untestedNote": [
+    "offrig-app is tested only by the unit tests in its own files.",
+    "offrig-core is tested only by the unit tests in its own files."
+  ],
+  "written": 0
+}

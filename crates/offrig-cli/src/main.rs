@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use offrig_core::config::{Config, Profile};
 use offrig_core::cost::{self, Idle, IdleTracker};
+use offrig_core::error::chain;
 use offrig_core::remote::{self, PullState};
 use offrig_core::runpod::Pod;
 use offrig_core::session::{Event, Session};
@@ -445,8 +446,18 @@ fn run(cli: Cli) -> Result<()> {
 
 fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
     s.plan_check(p)?;
-    let account = s.rp.account()?;
-    let offers = s.rp.gpu_offers(p.gpu_count)?;
+    // Prices and the balance come from RunPod's GraphQL API. Launching needs only
+    // REST, so if GraphQL is down or retired, warn and launch without the estimate.
+    let offers = match s.rp.gpu_offers(p.gpu_count) {
+        Ok(o) => o,
+        Err(e) => {
+            println!(
+                "  ! could not read GPU prices ({}); launching without an estimate",
+                chain(&e)
+            );
+            Vec::new()
+        }
+    };
     let best = offers
         .iter()
         .filter(|o| p.gpu_type_ids.contains(&o.id))
@@ -473,6 +484,16 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
         0.0
     } else {
         best.map_or(0.0, |b| b.1)
+    };
+    let account = match s.rp.account() {
+        Ok(a) => a,
+        Err(e) => {
+            println!(
+                "  ! could not read the balance ({}); check runway in the RunPod console",
+                chain(&e)
+            );
+            return Ok(());
+        }
     };
     let runway = account.runway_hours(price);
     println!(

@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "atlas/**"
+      - ".github/workflows/**"
+  # A required check runs on every pull request, with no paths filter.
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: System libraries for eframe
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxkbcommon-dev libwayland-dev libxcb1-dev libgl1-mesa-dev
+
+      - name: Toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Dependency policy (licences, advisories, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+      - name: Atlas check
+        run: npx --yes @dogfood-lab/atlas@1.24.0 check

@@ -1,0 +1,409 @@
+{
+  "authorship": {
+    "parts": [],
+    "places": []
+  },
+  "boundaries": [
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "offrig-app",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "offrig-cli",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": [
+          "offrig-app",
+          "offrig-cli"
+        ]
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "offrig-core",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "root",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    }
+  ],
+  "churn": {
+    "definition": "commits is how many commits in the window touch the file, including merges and commits dropped from coupling. lines is added plus deleted in those commits.",
+    "files": [
+      {
+        "commits": 1,
+        "lines": 2,
+        "path": ".gitattributes"
+      },
+      {
+        "commits": 1,
+        "lines": 1,
+        "path": ".gitignore"
+      },
+      {
+        "commits": 3,
+        "lines": 4858,
+        "path": "Cargo.lock"
+      },
+      {
+        "commits": 2,
+        "lines": 28,
+        "path": "Cargo.toml"
+      },
+      {
+        "commits": 2,
+        "lines": 5,
+        "path": "README.md"
+      },
+      {
+        "commits": 2,
+        "lines": 30,
+        "path": "crates/podbay-app/Cargo.toml"
+      },
+      {
+        "commits": 2,
+        "lines": 1102,
+        "path": "crates/podbay-app/src/app.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 43,
+        "path": "crates/podbay-app/src/main.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 477,
+        "path": "crates/podbay-app/src/worker.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 23,
+        "path": "crates/podbay-cli/Cargo.toml"
+      },
+      {
+        "commits": 2,
+        "lines": 601,
+        "path": "crates/podbay-cli/src/main.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 21,
+        "path": "crates/podbay-core/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 319,
+        "path": "crates/podbay-core/src/config.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 214,
+        "path": "crates/podbay-core/src/cost.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 101,
+        "path": "crates/podbay-core/src/error.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 39,
+        "path": "crates/podbay-core/src/fsutil.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 360,
+        "path": "crates/podbay-core/src/guard.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 24,
+        "path": "crates/podbay-core/src/lib.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 331,
+        "path": "crates/podbay-core/src/ollama.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 78,
+        "path": "crates/podbay-core/src/proc.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 382,
+        "path": "crates/podbay-core/src/remote.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 565,
+        "path": "crates/podbay-core/src/runpod.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 343,
+        "path": "crates/podbay-core/src/session.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 118,
+        "path": "crates/podbay-core/src/spec.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 246,
+        "path": "crates/podbay-core/src/sshconfig.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 209,
+        "path": "crates/podbay-core/src/tunnel.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 414,
+        "path": "crates/podbay-core/src/zed.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "docs/screenshots/app-after-shutdown.png"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "docs/screenshots/app-guard-and-test.png"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "docs/screenshots/app-pod-running.png"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "docs/screenshots/app-shutdown-confirm.png"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "docs/screenshots/app-tunnel-open.png"
+      },
+      {
+        "commits": 1,
+        "lines": 8,
+        "path": "offrig-app}/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 50,
+        "path": "offrig-app}/src/app.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 12,
+        "path": "offrig-app}/src/main.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 24,
+        "path": "offrig-app}/src/worker.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 8,
+        "path": "offrig-cli}/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 36,
+        "path": "offrig-cli}/src/main.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 4,
+        "path": "offrig-core}/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 12,
+        "path": "offrig-core}/src/config.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "offrig-core}/src/cost.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "offrig-core}/src/error.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 8,
+        "path": "offrig-core}/src/fsutil.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 4,
+        "path": "offrig-core}/src/guard.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 2,
+        "path": "offrig-core}/src/lib.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "offrig-core}/src/ollama.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "offrig-core}/src/proc.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 4,
+        "path": "offrig-core}/src/remote.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "offrig-core}/src/runpod.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 6,
+        "path": "offrig-core}/src/session.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 16,
+        "path": "offrig-core}/src/spec.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 54,
+        "path": "offrig-core}/src/sshconfig.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 16,
+        "path": "offrig-core}/src/tunnel.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 38,
+        "path": "offrig-core}/src/zed.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "rust-toolchain.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 1,
+        "path": "rustfmt.toml"
+      }
+    ]
+  },
+  "confidence": {
+    "level": "low",
+    "reason": "fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions"
+  },
+  "generatedAt": "2026-10-02T17:22:51.767Z",
+  "generatedFrom": {
+    "commit": "7fe69591744d4786e22db061cbccff23c68a492d"
+  },
+  "pairs": [],
+  "parameters": {
+    "appliedChangesetLimit": 7.25,
+    "changeset": 50,
+    "changesetFraction": 0.25,
+    "cohesionDrop": 0.2,
+    "couplingPopulation": "source",
+    "fallenShared": 3,
+    "floor": "fallen",
+    "floorHeld": false,
+    "floorTrigger": "both",
+    "headDate": "2026-10-02T13:17:30-04:00",
+    "inScopeFiles": 29,
+    "pinnedStart": null,
+    "priorFloor": null,
+    "qualifyingCommits": 2,
+    "qualifyingMinimum": 30,
+    "revisions": 5,
+    "shared": 10,
+    "sharedFloorUsed": 3,
+    "since": "2026-04-05T17:17:30.000Z",
+    "sourceExtensions": [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".jsx",
+      ".ts",
+      ".tsx",
+      ".mts",
+      ".cts",
+      ".py",
+      ".rs",
+      ".gd"
+    ],
+    "sourceFileReach": 20,
+    "sourceFileRise": 25,
+    "sourceFilesReachingStrongFloor": 0,
+    "strength": 0.5,
+    "windowDays": 180
+  },
+  "strengthDefinition": "strength is the shared qualifying commits divided by either. either is the number of qualifying commits that touch either file."
+}

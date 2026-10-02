@@ -213,9 +213,14 @@ impl Worker {
     fn handle(&mut self, cmd: Cmd) -> Result<()> {
         match cmd {
             Cmd::Refresh => {
-                self.out.send(Update::Account(self.session.rp.account()?));
+                // Pods come from REST; the balance from GraphQL. One failing must
+                // not hide the other.
                 self.out.send(Update::Pods(self.session.rp.list_pods()?));
                 self.out.send(Update::Zed(zed_status(&self.session.cfg)?));
+                match self.session.rp.account() {
+                    Ok(a) => self.out.send(Update::Account(a)),
+                    Err(e) => self.out.log(format!("balance unavailable: {}", chain(&e))),
+                }
                 Ok(())
             }
             Cmd::Offers(n) => {

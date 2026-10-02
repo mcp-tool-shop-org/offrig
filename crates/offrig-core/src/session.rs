@@ -40,6 +40,20 @@ pub const POD_READY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const SSH_READY_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 pub const OLLAMA_READY_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
+/// RunPod answers an exhausted GPU list with a 500 whose body says so; say it plainly.
+pub fn explain_create_error(e: Error, body: &crate::runpod::PodCreate) -> Error {
+    match &e {
+        Error::Api { body: text, .. } if text.contains("no instances currently available") => {
+            Error::Config(format!(
+                "RunPod has no {}x of [{}] free right now; add GPU types to the profile or try again later",
+                body.gpu_count,
+                body.gpu_type_ids.join(" | ")
+            ))
+        }
+        _ => e,
+    }
+}
+
 impl Session {
     pub fn new(cfg: Config) -> Result<Self> {
         cfg.validate()?;
@@ -98,7 +112,10 @@ impl Session {
             body.gpu_count,
             body.gpu_type_ids.join(" | ")
         )));
-        let pod = self.rp.create_pod(&body)?;
+        let pod = self
+            .rp
+            .create_pod(&body)
+            .map_err(|e| explain_create_error(e, &body))?;
         on(Event::Step(format!(
             "pod {} created at ${:.2}/hr on {}",
             pod.id,
@@ -331,5 +348,39 @@ impl Session {
         self.rp.delete_pod(&pod.id)?;
         on(Event::Step(format!("terminated {} ({})", pod.name, pod.id)));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body() -> crate::runpod::PodCreate {
+        let cfg = Config::default();
+        spec::pod_create(&cfg, cfg.profile("medium").expect("medium"))
+    }
+
+    #[test]
+    fn exhausted_capacity_is_explained() {
+        let e = Error::Api {
+            what: "create pod".into(),
+            status: 500,
+            body: r#"{"error":"create pod: There are no instances currently available"}"#.into(),
+        };
+        let msg = explain_create_error(e, &body()).to_string();
+        assert!(msg.contains("no 1x of [NVIDIA A100-SXM4-80GB"), "{msg}");
+    }
+
+    #[test]
+    fn other_errors_pass_through() {
+        let e = Error::Api {
+            what: "create pod".into(),
+            status: 401,
+            body: "unauthorized".into(),
+        };
+        assert!(matches!(
+            explain_create_error(e, &body()),
+            Error::Api { status: 401, .. }
+        ));
     }
 }
