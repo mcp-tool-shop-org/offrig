@@ -1,4 +1,4 @@
-//! podbay-core: run models on RunPod and wire them into Zed, so they never touch
+//! offrig-core: run models on RunPod and wire them into Zed, so they never touch
 //! the local GPU.
 //!
 //! The pod runs a pinned Ollama on its loopback and exposes only SSH. The one path to

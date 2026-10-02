@@ -1,4 +1,4 @@
-//! `podbay`: the command-line front end. Every command maps onto podbay-core; the
+//! `offrig`: the command-line front end. Every command maps onto offrig-core; the
 //! desktop app drives the same calls.
 
 use std::collections::HashMap;
@@ -9,17 +9,17 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use podbay_core::config::{Config, Profile};
-use podbay_core::cost::{self, Idle, IdleTracker};
-use podbay_core::remote::{self, PullState};
-use podbay_core::runpod::Pod;
-use podbay_core::session::{Event, Session};
-use podbay_core::tunnel::{self, Tunnel};
-use podbay_core::{guard, ollama::Ollama, spec, zed};
+use offrig_core::config::{Config, Profile};
+use offrig_core::cost::{self, Idle, IdleTracker};
+use offrig_core::remote::{self, PullState};
+use offrig_core::runpod::Pod;
+use offrig_core::session::{Event, Session};
+use offrig_core::tunnel::{self, Tunnel};
+use offrig_core::{guard, ollama::Ollama, spec, zed};
 
 #[derive(Parser)]
 #[command(
-    name = "podbay",
+    name = "offrig",
     version,
     about = "Run models on RunPod and wire them into Zed, never on the local GPU"
 )]
@@ -69,13 +69,13 @@ enum Cmd {
     },
     /// Models on the pod, read over SSH
     Models { profile: Option<String> },
-    /// Write podbay's provider into Zed's settings
+    /// Write offrig's provider into Zed's settings
     Zed {
         profile: Option<String>,
         #[arg(long)]
         default_model: Option<String>,
     },
-    /// Remove podbay's provider from Zed's settings
+    /// Remove offrig's provider from Zed's settings
     ZedRemove,
     /// Run the "never on my GPU" checks
     Guard { profile: Option<String> },
@@ -134,7 +134,7 @@ fn print_event(last_pct: &mut HashMap<String, u64>) -> impl FnMut(Event) + '_ {
 }
 
 fn load() -> Result<Config> {
-    Config::load().context("loading podbay config")
+    Config::load().context("loading offrig config")
 }
 
 fn pick<'a>(cfg: &'a Config, name: &Option<String>) -> Result<&'a Profile> {
@@ -154,7 +154,7 @@ fn session_for(profile: &Option<String>) -> Result<(Session, Profile)> {
 fn require_pod(s: &Session, p: &Profile) -> Result<Pod> {
     let pod = s.current_pod(p)?.with_context(|| {
         format!(
-            "no running pod for profile {} (run `podbay up {}`)",
+            "no running pod for profile {} (run `offrig up {}`)",
             p.name, p.name
         )
     })?;
@@ -174,7 +174,7 @@ fn ensure_tunnel(s: &Session) -> Result<Option<Tunnel>> {
 fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
         Cmd::Init => {
-            let path = podbay_core::config::config_path()?;
+            let path = offrig_core::config::config_path()?;
             if path.exists() {
                 println!("config already exists: {}", path.display());
             } else {
@@ -222,8 +222,8 @@ fn run(cli: Cli) -> Result<()> {
                     .map_or("unlimited".into(), |h| format!("{h:.1} h"))
             );
             for p in s.rp.list_pods()? {
-                let ours = if p.name.starts_with("podbay-") {
-                    "podbay"
+                let ours = if p.name.starts_with("offrig-") {
+                    "offrig"
                 } else {
                     "other "
                 };
@@ -295,7 +295,7 @@ fn run(cli: Cli) -> Result<()> {
             if detach {
                 drop(tunnel);
                 println!(
-                    "tunnel closed (--detach). Reopen with `podbay tunnel {}`.",
+                    "tunnel closed (--detach). Reopen with `offrig tunnel {}`.",
                     p.name
                 );
                 return Ok(());
@@ -591,7 +591,7 @@ fn hold(s: &Session, p: &Profile, pod: Pod, tunnel: Option<Tunnel>) -> Result<()
         std::thread::sleep(Duration::from_millis(500));
     }
     println!(
-        "tunnel closed; {} is still running (stop it with `podbay down {} --yes`)",
+        "tunnel closed; {} is still running (stop it with `offrig down {} --yes`)",
         spec::pod_name(p),
         p.name
     );

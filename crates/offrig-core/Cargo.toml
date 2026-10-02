@@ -1,6 +1,6 @@
 [package]
-name = "podbay-core"
-description = "RunPod pod lifecycle, SSH tunnel, Ollama and Zed wiring for podbay"
+name = "offrig-core"
+description = "RunPod pod lifecycle, SSH tunnel, Ollama and Zed wiring for offrig"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

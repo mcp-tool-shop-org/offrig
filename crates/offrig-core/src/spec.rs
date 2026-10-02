@@ -9,14 +9,14 @@ use crate::runpod::PodCreate;
 
 /// Where weights live on the pod. On a network volume they outlive the pod.
 pub const MODELS_DIR: &str = "/workspace/ollama/models";
-/// podbay's working directory on the pod: bootstrap log, pull logs.
-pub const STATE_DIR: &str = "/workspace/podbay";
+/// offrig's working directory on the pod: bootstrap log, pull logs.
+pub const STATE_DIR: &str = "/workspace/offrig";
 
 /// Runs as `bash -c` in place of the image's `ollama` entrypoint.
 pub const BOOTSTRAP: &str = r#"set -u
-mkdir -p /workspace/podbay/pulls
-exec > >(tee -a /workspace/podbay/bootstrap.log) 2>&1
-echo "[podbay] bootstrap start $(date -u +%FT%TZ)"
+mkdir -p /workspace/offrig/pulls
+exec > >(tee -a /workspace/offrig/bootstrap.log) 2>&1
+echo "[offrig] bootstrap start $(date -u +%FT%TZ)"
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v sshd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
   apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-server curl ca-certificates >/dev/null
@@ -26,12 +26,12 @@ printf '%s\n' "${PUBLIC_KEY:-}" > /root/.ssh/authorized_keys && chmod 600 /root/
 ssh-keygen -A >/dev/null
 /usr/sbin/sshd -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AllowTcpForwarding=local
 mkdir -p "$OLLAMA_MODELS"
-echo "[podbay] sshd up, starting ollama on $OLLAMA_HOST"
+echo "[offrig] sshd up, starting ollama on $OLLAMA_HOST"
 exec ollama serve
 "#;
 
 pub fn pod_name(profile: &Profile) -> String {
-    format!("podbay-{}", profile.name)
+    format!("offrig-{}", profile.name)
 }
 
 pub fn ollama_env(profile: &Profile) -> BTreeMap<String, String> {
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(body.volume_in_gb, Some(p.volume_gb));
         assert_eq!(body.network_volume_id, None);
         assert_eq!(body.docker_entrypoint, ["bash", "-c"]);
-        assert_eq!(body.name, "podbay-medium");
+        assert_eq!(body.name, "offrig-medium");
     }
 
     #[test]

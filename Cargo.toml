@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/podbay-core", "crates/podbay-cli", "crates/podbay-app"]
+members = ["crates/offrig-core", "crates/offrig-cli", "crates/offrig-app"]
 resolver = "3"
 
 [workspace.package]
@@ -8,10 +8,10 @@ edition = "2024"
 rust-version = "1.98"
 license = "MIT"
 authors = ["mcp-tool-shop <64996768+mcp-tool-shop@users.noreply.github.com>"]
-repository = "https://github.com/mcp-tool-shop-org/podbay"
+repository = "https://github.com/mcp-tool-shop-org/offrig"
 
 [workspace.dependencies]
-podbay-core = { path = "crates/podbay-core" }
+offrig-core = { path = "crates/offrig-core" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

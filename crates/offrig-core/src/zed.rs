@@ -1,5 +1,5 @@
 //! Edits Zed's settings.json (JSONC) through a concrete syntax tree, so comments and
-//! layout survive. podbay owns exactly one key: `language_models.openai_compatible.<provider>`,
+//! layout survive. offrig owns exactly one key: `language_models.openai_compatible.<provider>`,
 //! plus `agent.default_model` when asked to make a pod model the default.
 
 use std::path::{Path, PathBuf};
@@ -105,7 +105,7 @@ fn set_prop(o: &CstObject, key: &str, value: CstInputValue) {
     }
 }
 
-/// Insert or replace podbay's provider. Everything else in the file is kept as is.
+/// Insert or replace offrig's provider. Everything else in the file is kept as is.
 pub fn apply_provider(
     text: &str,
     path: &Path,
@@ -237,7 +237,7 @@ pub fn set_api_key_env(provider: &str) -> Result<()> {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("setx");
-        cmd.args([name.as_str(), "podbay-tunnel"]);
+        cmd.args([name.as_str(), "offrig-tunnel"]);
         let out = crate::proc::run_with_timeout(&mut cmd, Duration::from_secs(20), "setx")?;
         if out.success() {
             Ok(())
@@ -251,7 +251,7 @@ pub fn set_api_key_env(provider: &str) -> Result<()> {
     #[cfg(not(windows))]
     {
         Err(Error::Config(format!(
-            "set {name}=podbay-tunnel in your shell profile, or enter any key in Zed's provider settings"
+            "set {name}=offrig-tunnel in your shell profile, or enter any key in Zed's provider settings"
         )))
     }
 }
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn apply_keeps_comments_and_other_settings() {
-        let out = apply_provider(ZED, &p(), "podbay", "http://127.0.0.1:11435/v1", &models())
+        let out = apply_provider(ZED, &p(), "offrig", "http://127.0.0.1:11435/v1", &models())
             .expect("apply");
         for kept in [
             "// Zed settings",
@@ -310,7 +310,7 @@ mod tests {
         ] {
             assert!(out.contains(kept), "lost {kept:?}:\n{out}");
         }
-        let v = read_provider(&out, &p(), "podbay")
+        let v = read_provider(&out, &p(), "offrig")
             .expect("parse")
             .expect("provider present");
         assert_eq!(v["api_url"], "http://127.0.0.1:11435/v1");
@@ -324,34 +324,34 @@ mod tests {
 
     #[test]
     fn apply_is_idempotent_and_replaces_the_whole_provider() {
-        let once = apply_provider(ZED, &p(), "podbay", "http://127.0.0.1:11435/v1", &models())
+        let once = apply_provider(ZED, &p(), "offrig", "http://127.0.0.1:11435/v1", &models())
             .expect("apply");
         let twice = apply_provider(
             &once,
             &p(),
-            "podbay",
+            "offrig",
             "http://127.0.0.1:11435/v1",
             &models(),
         )
         .expect("apply");
         assert_eq!(once, twice);
         let other =
-            apply_provider(&once, &p(), "podbay", "http://127.0.0.1:11499/v1", &[]).expect("apply");
-        let v = read_provider(&other, &p(), "podbay")
+            apply_provider(&once, &p(), "offrig", "http://127.0.0.1:11499/v1", &[]).expect("apply");
+        let v = read_provider(&other, &p(), "offrig")
             .expect("parse")
             .expect("present");
         assert_eq!(v["api_url"], "http://127.0.0.1:11499/v1");
         assert_eq!(v["available_models"].as_array().map(Vec::len), Some(0));
-        assert_eq!(other.matches("\"podbay\"").count(), 1);
+        assert_eq!(other.matches("\"offrig\"").count(), 1);
     }
 
     #[test]
     fn remove_restores_the_original_text() {
-        let with = apply_provider(ZED, &p(), "podbay", "http://127.0.0.1:11435/v1", &models())
+        let with = apply_provider(ZED, &p(), "offrig", "http://127.0.0.1:11435/v1", &models())
             .expect("apply");
-        let without = remove_provider(&with, &p(), "podbay").expect("remove");
+        let without = remove_provider(&with, &p(), "offrig").expect("remove");
         assert!(
-            read_provider(&without, &p(), "podbay")
+            read_provider(&without, &p(), "offrig")
                 .expect("parse")
                 .is_none()
         );
@@ -371,7 +371,7 @@ mod tests {
             }
         );
         let dm = DefaultModel {
-            provider: "podbay".into(),
+            provider: "offrig".into(),
             model: "qwen3-coder:30b-a3b-q8_0".into(),
         };
         let out = set_default_model(ZED, &p(), &dm).expect("set");
@@ -387,13 +387,13 @@ mod tests {
             let out = apply_provider(
                 start,
                 &p(),
-                "podbay",
+                "offrig",
                 "http://127.0.0.1:11435/v1",
                 &models(),
             )
             .unwrap_or_else(|e| panic!("start {start:?}: {e}"));
             assert!(
-                read_provider(&out, &p(), "podbay")
+                read_provider(&out, &p(), "offrig")
                     .expect("parse")
                     .is_some()
             );
@@ -402,13 +402,13 @@ mod tests {
 
     #[test]
     fn broken_jsonc_is_an_error_not_a_rewrite() {
-        let err = apply_provider("{ \"a\": ", &p(), "podbay", "x", &[]).expect_err("must refuse");
+        let err = apply_provider("{ \"a\": ", &p(), "offrig", "x", &[]).expect_err("must refuse");
         assert!(matches!(err, Error::Jsonc { .. }));
     }
 
     #[test]
     fn env_name_follows_zed_rule() {
-        assert_eq!(api_key_env_name("podbay"), "PODBAY_API_KEY");
+        assert_eq!(api_key_env_name("offrig"), "OFFRIG_API_KEY");
         assert_eq!(api_key_env_name("my-provider"), "MY_PROVIDER_API_KEY");
     }
 }

@@ -14,14 +14,14 @@ pub struct HostEntry {
     pub host: String,
     pub port: u16,
     pub identity_file: String,
-    /// Shown in the block's comment line, e.g. `podbay-medium (abc123)`.
+    /// Shown in the block's comment line, e.g. `offrig-medium (abc123)`.
     pub label: String,
 }
 
 fn markers(alias: &str) -> (String, String) {
     (
-        format!("# >>> podbay:{alias} >>>"),
-        format!("# <<< podbay:{alias} <<<"),
+        format!("# >>> offrig:{alias} >>>"),
+        format!("# <<< offrig:{alias} <<<"),
     )
 }
 
@@ -30,7 +30,7 @@ pub fn render_block(e: &HostEntry) -> String {
     [
         begin,
         format!(
-            "# {} (managed by podbay; rewritten on every pod start)",
+            "# {} (managed by offrig; rewritten on every pod start)",
             e.label
         ),
         format!("Host {}", e.alias),
@@ -39,7 +39,7 @@ pub fn render_block(e: &HostEntry) -> String {
         "    User root".into(),
         format!("    IdentityFile {}", e.identity_file),
         "    IdentitiesOnly yes".into(),
-        "    UserKnownHostsFile ~/.ssh/known_hosts_podbay".into(),
+        "    UserKnownHostsFile ~/.ssh/known_hosts_offrig".into(),
         "    StrictHostKeyChecking accept-new".into(),
         "    ServerAliveInterval 30".into(),
         "    ServerAliveCountMax 4".into(),
@@ -92,7 +92,7 @@ pub fn config_path() -> Result<PathBuf> {
 }
 
 pub fn known_hosts_path() -> Result<PathBuf> {
-    Ok(fsutil::home_ssh_dir()?.join("known_hosts_podbay"))
+    Ok(fsutil::home_ssh_dir()?.join("known_hosts_offrig"))
 }
 
 fn read_or_empty(path: &Path) -> Result<String> {
@@ -161,17 +161,17 @@ mod tests {
             host: host.into(),
             port,
             identity_file: "~/.ssh/runpod_rustline".into(),
-            label: "podbay-medium (abc)".into(),
+            label: "offrig-medium (abc)".into(),
         }
     }
 
     #[test]
     fn upsert_appends_then_replaces_in_place() {
         let start = "Host github.com\n    User git\n";
-        let once = upsert(start, &entry("podbay", "10.0.0.1", 40001));
-        assert!(once.starts_with("Host github.com\n    User git\n\n# >>> podbay:podbay >>>"));
-        let twice = upsert(&once, &entry("podbay", "10.0.0.2", 40002));
-        assert_eq!(twice.matches("# >>> podbay:podbay >>>").count(), 1);
+        let once = upsert(start, &entry("offrig", "10.0.0.1", 40001));
+        assert!(once.starts_with("Host github.com\n    User git\n\n# >>> offrig:offrig >>>"));
+        let twice = upsert(&once, &entry("offrig", "10.0.0.2", 40002));
+        assert_eq!(twice.matches("# >>> offrig:offrig >>>").count(), 1);
         assert!(twice.contains("HostName 10.0.0.2") && twice.contains("Port 40002"));
         assert!(!twice.contains("10.0.0.1"));
         assert!(twice.starts_with("Host github.com\n    User git\n\n"));
@@ -179,51 +179,51 @@ mod tests {
 
     #[test]
     fn two_aliases_coexist_and_remove_takes_only_one() {
-        let a = upsert("", &entry("podbay", "1.1.1.1", 1));
-        let ab = upsert(&a, &entry("podbay-b", "2.2.2.2", 2));
-        assert!(ab.contains("Host podbay\n") && ab.contains("Host podbay-b\n"));
-        let b_only = remove(&ab, "podbay");
-        assert!(!b_only.contains("Host podbay\n"));
-        assert!(b_only.contains("Host podbay-b\n"));
-        assert_eq!(remove(&b_only, "podbay-b"), "");
+        let a = upsert("", &entry("offrig", "1.1.1.1", 1));
+        let ab = upsert(&a, &entry("offrig-b", "2.2.2.2", 2));
+        assert!(ab.contains("Host offrig\n") && ab.contains("Host offrig-b\n"));
+        let b_only = remove(&ab, "offrig");
+        assert!(!b_only.contains("Host offrig\n"));
+        assert!(b_only.contains("Host offrig-b\n"));
+        assert_eq!(remove(&b_only, "offrig-b"), "");
     }
 
     #[test]
     fn remove_restores_surrounding_text() {
         let base = "Host a\n    User x\n";
-        let with = upsert(base, &entry("podbay", "1.1.1.1", 1));
-        assert_eq!(remove(&with, "podbay"), base);
+        let with = upsert(base, &entry("offrig", "1.1.1.1", 1));
+        assert_eq!(remove(&with, "offrig"), base);
         let trailing = format!("{with}\nHost z\n    User y\n");
         assert_eq!(
-            remove(&trailing, "podbay"),
+            remove(&trailing, "offrig"),
             "Host a\n    User x\n\nHost z\n    User y\n"
         );
     }
 
     #[test]
     fn alias_prefix_does_not_match_a_longer_alias() {
-        let b = upsert("", &entry("podbay-b", "2.2.2.2", 2));
-        let both = upsert(&b, &entry("podbay", "1.1.1.1", 1));
+        let b = upsert("", &entry("offrig-b", "2.2.2.2", 2));
+        let both = upsert(&b, &entry("offrig", "1.1.1.1", 1));
         assert_eq!(both.matches("Host ").count(), 2);
     }
 
     #[test]
     fn file_round_trip_has_no_bom_and_strips_one() {
-        let dir = std::env::temp_dir().join(format!("podbay-ssh-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("offrig-ssh-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("config");
         std::fs::write(&path, "\u{feff}Host a\n").expect("write");
         assert!(
-            apply_at(&path, &entry("podbay", "1.1.1.1", 1)).expect("apply"),
+            apply_at(&path, &entry("offrig", "1.1.1.1", 1)).expect("apply"),
             "first write changes the file"
         );
         assert!(
-            !apply_at(&path, &entry("podbay", "1.1.1.1", 1)).expect("apply"),
+            !apply_at(&path, &entry("offrig", "1.1.1.1", 1)).expect("apply"),
             "same endpoint is a no-op"
         );
         let bytes = std::fs::read(&path).expect("read");
         assert_ne!(&bytes[..3], b"\xEF\xBB\xBF");
-        remove_at(&path, "podbay").expect("remove");
+        remove_at(&path, "offrig").expect("remove");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "Host a\n");
         let _ = std::fs::remove_dir_all(&dir);
     }

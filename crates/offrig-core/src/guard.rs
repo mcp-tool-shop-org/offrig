@@ -1,4 +1,4 @@
-//! The "never on my GPU" checks. Each is a fact podbay can observe, not a promise.
+//! The "never on my GPU" checks. Each is a fact offrig can observe, not a promise.
 //! `evaluate` is pure so every rule is unit tested; `gather` collects the facts.
 
 use std::collections::BTreeSet;
@@ -71,7 +71,7 @@ pub fn evaluate(f: &Facts) -> Vec<Check> {
         None => Check {
             name: "Zed sends pod models through the tunnel",
             ok: false,
-            detail: "podbay's provider is not in Zed's settings".into(),
+            detail: "offrig's provider is not in Zed's settings".into(),
         },
     });
 

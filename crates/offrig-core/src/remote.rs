@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn pull_script_names_a_safe_file() {
         let s = pull_start_script("hf.co/org/m:Q4").expect("valid name");
-        assert!(s.contains("/workspace/podbay/pulls/hf.co_org_m_Q4.jsonl"));
+        assert!(s.contains("/workspace/offrig/pulls/hf.co_org_m_Q4.jsonl"));
         assert!(s.contains(r#"-d '{"model":"hf.co/org/m:Q4"}'"#));
     }
 
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn pull_start_returns_while_the_pull_runs() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("podbay-pull-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("offrig-pull-{}", std::process::id()));
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).expect("temp dir");
         let curl = bin.join("curl");

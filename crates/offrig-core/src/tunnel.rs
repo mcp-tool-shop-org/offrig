@@ -43,13 +43,13 @@ pub fn ssh_args(alias: &str, local_port: u16) -> Vec<String> {
     ]
 }
 
-/// The `-L` spec podbay passes; an `ssh` whose command line carries it is podbay's.
+/// The `-L` spec offrig passes; an `ssh` whose command line carries it is offrig's.
 pub fn forward_spec(local_port: u16) -> String {
     format!("127.0.0.1:{local_port}:127.0.0.1:{REMOTE_OLLAMA_PORT}")
 }
 
-/// A podbay tunnel left behind by a crashed run still holds the port. Kill it, but
-/// only if the listener is an `ssh` carrying podbay's exact forward spec.
+/// A offrig tunnel left behind by a crashed run still holds the port. Kill it, but
+/// only if the listener is an `ssh` carrying offrig's exact forward spec.
 /// Returns whether one was reclaimed.
 #[cfg(windows)]
 pub fn reclaim_orphan(local_port: u16) -> Result<bool> {
@@ -94,7 +94,7 @@ impl Tunnel {
         }
         if port_open(local_port) {
             return Err(Error::Guard(format!(
-                "127.0.0.1:{local_port} is already in use by another process; podbay will not share it"
+                "127.0.0.1:{local_port} is already in use by another process; offrig will not share it"
             )));
         }
         let mut cmd = Command::new("ssh");
@@ -183,15 +183,15 @@ mod tests {
 
     #[test]
     fn forwards_loopback_to_loopback_and_fails_hard() {
-        let a = ssh_args("podbay", 11435);
+        let a = ssh_args("offrig", 11435);
         assert!(a.contains(&"127.0.0.1:11435:127.0.0.1:11434".to_string()));
         assert!(a.contains(&"ExitOnForwardFailure=yes".to_string()));
-        assert_eq!(a.last().map(String::as_str), Some("podbay"));
+        assert_eq!(a.last().map(String::as_str), Some("offrig"));
     }
 
     #[test]
     fn refuses_local_ollama_port() {
-        let err = Tunnel::start("podbay", 11434, Duration::from_secs(1))
+        let err = Tunnel::start("offrig", 11434, Duration::from_secs(1))
             .err()
             .expect("must refuse");
         assert!(matches!(err, Error::Guard(_)));
@@ -201,7 +201,7 @@ mod tests {
     fn refuses_a_port_someone_else_holds() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = l.local_addr().expect("addr").port();
-        let err = Tunnel::start("podbay", port, Duration::from_secs(1))
+        let err = Tunnel::start("offrig", port, Duration::from_secs(1))
             .err()
             .expect("must refuse");
         assert!(err.to_string().contains("already in use"));

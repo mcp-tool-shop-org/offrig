@@ -53,7 +53,7 @@ impl Session {
         Self { rp, cfg }
     }
 
-    /// The live podbay pod for a profile, matched by its name.
+    /// The live offrig pod for a profile, matched by its name.
     pub fn current_pod(&self, profile: &Profile) -> Result<Option<Pod>> {
         let name = spec::pod_name(profile);
         Ok(self
@@ -263,7 +263,7 @@ impl Session {
             .collect()
     }
 
-    /// Write podbay's provider into Zed's settings, optionally make `default` the agent's
+    /// Write offrig's provider into Zed's settings, optionally make `default` the agent's
     /// model, and make sure Zed has the key variable it insists on.
     pub fn configure_zed(&self, models: &[ZedModel], default: Option<&str>) -> Result<ZedOutcome> {
         let path = zed::settings_path()?;
@@ -309,7 +309,7 @@ impl Session {
         })
     }
 
-    /// Take podbay out of Zed: drop the provider and restore the previous default model.
+    /// Take offrig out of Zed: drop the provider and restore the previous default model.
     pub fn unconfigure_zed(&self, restore_default: Option<&DefaultModel>) -> Result<()> {
         let path = zed::settings_path()?;
         let text = zed::read_settings(&path)?;

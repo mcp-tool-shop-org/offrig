@@ -2447,6 +2447,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "offrig-app"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_kittest",
+ "offrig-core",
+ "serde_json",
+]
+
+[[package]]
+name = "offrig-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ctrlc",
+ "offrig-core",
+ "serde_json",
+]
+
+[[package]]
+name = "offrig-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "jsonc-parser",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+ "ureq",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2653,40 +2687,6 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
-]
-
-[[package]]
-name = "podbay-app"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_kittest",
- "podbay-core",
- "serde_json",
-]
-
-[[package]]
-name = "podbay-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "ctrlc",
- "podbay-core",
- "serde_json",
-]
-
-[[package]]
-name = "podbay-core"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "jsonc-parser",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "ureq",
 ]
 
 [[package]]

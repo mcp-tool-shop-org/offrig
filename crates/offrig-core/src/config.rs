@@ -1,4 +1,4 @@
-//! podbay's own settings: `<config dir>/podbay/config.toml`. It holds no secrets; the
+//! offrig's own settings: `<config dir>/offrig/config.toml`. It holds no secrets; the
 //! RunPod key stays in the `RUNPOD_API_KEY` environment variable.
 
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ pub const LOCAL_OLLAMA_PORT: u16 = 11434;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    /// Host alias podbay manages in ~/.ssh/config. Zed and the tunnel both use it.
+    /// Host alias offrig manages in ~/.ssh/config. Zed and the tunnel both use it.
     pub ssh_alias: String,
     /// Private key RunPod knows (its public half is in RunPod account settings).
     pub identity_file: String,
@@ -78,10 +78,10 @@ fn yes() -> bool {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            ssh_alias: "podbay".into(),
+            ssh_alias: "offrig".into(),
             identity_file: default_identity_file(),
             tunnel_port: 11435,
-            zed_provider: "podbay".into(),
+            zed_provider: "offrig".into(),
             auto_stop_idle_minutes: Some(30),
             active_profile: "medium".into(),
             profiles: default_profiles(),
@@ -165,7 +165,7 @@ pub fn default_identity_file() -> String {
 pub fn config_path() -> Result<PathBuf> {
     let dir = dirs::config_dir()
         .ok_or_else(|| Error::Config("no config directory on this system".into()))?;
-    Ok(dir.join("podbay").join("config.toml"))
+    Ok(dir.join("offrig").join("config.toml"))
 }
 
 impl Config {
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_default_and_bad_file_is_error() {
-        let dir = std::env::temp_dir().join(format!("podbay-cfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("offrig-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let missing = dir.join("nope.toml");
         assert_eq!(

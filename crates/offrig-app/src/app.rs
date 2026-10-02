@@ -6,13 +6,13 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use podbay_core::config::{Config, Profile};
-use podbay_core::cost::{self, Idle};
-use podbay_core::guard::Check;
-use podbay_core::ollama::{ChatCheck, Tag};
-use podbay_core::remote::{GpuStat, PullState};
-use podbay_core::runpod::{Account, GpuOffer, Pod};
-use podbay_core::spec;
+use offrig_core::config::{Config, Profile};
+use offrig_core::cost::{self, Idle};
+use offrig_core::guard::Check;
+use offrig_core::ollama::{ChatCheck, Tag};
+use offrig_core::remote::{GpuStat, PullState};
+use offrig_core::runpod::{Account, GpuOffer, Pod};
+use offrig_core::spec;
 
 use crate::worker::{self, Cmd, Outbox, Update, ZedStatus};
 
@@ -214,7 +214,7 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("podbay");
+            ui.heading("offrig");
             ui.separator();
             match &self.st.account {
                 Some(a) => {
@@ -413,17 +413,17 @@ impl App {
     fn pod_panel(&mut self, ui: &mut egui::Ui) {
         let Some(pod) = self.st.current_pod().cloned() else {
             ui.heading("No pod running");
-            ui.label("Pick a profile and launch it. Models then run on RunPod, and Zed reaches them only through podbay's tunnel.");
+            ui.label("Pick a profile and launch it. Models then run on RunPod, and Zed reaches them only through offrig's tunnel.");
             let others: Vec<&Pod> = self
                 .st
                 .pods
                 .iter()
-                .filter(|p| !p.name.starts_with("podbay-"))
+                .filter(|p| !p.name.starts_with("offrig-"))
                 .collect();
             if !others.is_empty() {
                 ui.separator();
                 ui.label(
-                    RichText::new("Other pods on the account (podbay leaves these alone)").weak(),
+                    RichText::new("Other pods on the account (offrig leaves these alone)").weak(),
                 );
                 for p in others {
                     ui.label(format!(
@@ -607,9 +607,9 @@ impl App {
             .st
             .cfg
             .as_ref()
-            .map_or("podbay".into(), |c| c.zed_provider.clone());
+            .map_or("offrig".into(), |c| c.zed_provider.clone());
         if self.st.zed.provider_models.is_empty() {
-            ui.label(RichText::new("podbay's provider is not in Zed's settings yet.").color(WARN));
+            ui.label(RichText::new("offrig's provider is not in Zed's settings yet.").color(WARN));
         } else {
             ui.label(format!(
                 "Provider \"{provider}\" offers: {}",
@@ -622,8 +622,8 @@ impl App {
         });
         if !self.st.zed.key_env {
             ui.label(RichText::new(format!(
-                "{} is not set yet; podbay sets it when it writes the provider. Restart Zed once afterwards.",
-                podbay_core::zed::api_key_env_name(&provider)
+                "{} is not set yet; offrig sets it when it writes the provider. Restart Zed once afterwards.",
+                offrig_core::zed::api_key_env_name(&provider)
             )).color(WARN));
         }
         ui.horizontal(|ui| {
@@ -707,7 +707,7 @@ impl App {
                 ui.label(format!("Runway with this pod: {}.", hours(runway)));
                 let low = runway.is_some_and(|h| h < 1.0);
                 if low {
-                    ui.label(RichText::new("Under an hour of runway. At zero RunPod stops every pod on the account, including ones podbay does not manage.").color(BAD));
+                    ui.label(RichText::new("Under an hour of runway. At zero RunPod stops every pod on the account, including ones offrig does not manage.").color(BAD));
                     ui.checkbox(&mut self.ui.launch_override, "Launch anyway");
                 }
                 ui.horizontal(|ui| {
@@ -834,23 +834,23 @@ mod tests {
         let mut s = state();
         s.apply(Update::Pods(vec![
             pod("ai-playtest-personas"),
-            pod("podbay-small"),
+            pod("offrig-small"),
         ]));
         assert!(
             s.current_pod().is_none(),
             "medium is active; small's pod is not it"
         );
-        s.apply(Update::Pods(vec![pod("podbay-medium")]));
+        s.apply(Update::Pods(vec![pod("offrig-medium")]));
         assert_eq!(
             s.current_pod().map(|p| p.name.as_str()),
-            Some("podbay-medium")
+            Some("offrig-medium")
         );
     }
 
     #[test]
     fn losing_the_pod_clears_tunnel_and_gpu_state() {
         let mut s = state();
-        s.apply(Update::Pods(vec![pod("podbay-medium")]));
+        s.apply(Update::Pods(vec![pod("offrig-medium")]));
         s.apply(Update::Tunnel(true));
         s.apply(Update::Idle(Idle::Busy));
         s.apply(Update::Pods(vec![]));
@@ -1021,11 +1021,11 @@ mod ui_tests {
     #[test]
     fn running_pod_shows_controls_and_tunnel_state() {
         let (mut h, cmds) = harness(vec![Update::Pods(vec![
-            pod("podbay-medium"),
+            pod("offrig-medium"),
             pod("ai-playtest-personas"),
         ])]);
         h.run();
-        h.get_by_label("podbay-medium (abc)");
+        h.get_by_label("offrig-medium (abc)");
         h.get_by_label_contains("closed: Zed's pod models are unreachable");
         h.get_by_label("Open tunnel").click();
         h.run();
@@ -1040,7 +1040,7 @@ mod ui_tests {
 
     #[test]
     fn shutdown_asks_and_explains_data_loss() {
-        let (mut h, cmds) = harness(vec![Update::Pods(vec![pod("podbay-medium")])]);
+        let (mut h, cmds) = harness(vec![Update::Pods(vec![pod("offrig-medium")])]);
         h.run();
         h.get_by_label("Shut down").click();
         h.run();
@@ -1055,7 +1055,7 @@ mod ui_tests {
     #[test]
     fn guard_results_render_pass_and_fail() {
         let (mut h, cmds) = harness(vec![
-            Update::Pods(vec![pod("podbay-medium")]),
+            Update::Pods(vec![pod("offrig-medium")]),
             Update::Guard(vec![
                 Check {
                     name: "Tunnel avoids the local Ollama port",
@@ -1079,7 +1079,7 @@ mod ui_tests {
 
     #[test]
     fn pull_field_sends_the_typed_model() {
-        let (mut h, cmds) = harness(vec![Update::Pods(vec![pod("podbay-medium")])]);
+        let (mut h, cmds) = harness(vec![Update::Pods(vec![pod("offrig-medium")])]);
         h.state_mut().ui.pull_input = "gpt-oss:120b".into();
         h.run();
         h.get_by_label("Pull").click();

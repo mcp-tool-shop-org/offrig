@@ -5,17 +5,17 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use podbay_core::config::{Config, Profile};
-use podbay_core::cost::{Idle, IdleTracker};
-use podbay_core::error::chain;
-use podbay_core::guard::{self, Check};
-use podbay_core::ollama::{ChatCheck, Ollama, Tag};
-use podbay_core::remote::{self, GpuStat, PullState};
-use podbay_core::runpod::{Account, GpuOffer, Pod, RunPod};
-use podbay_core::session::{Event, Session};
-use podbay_core::tunnel::Tunnel;
-use podbay_core::zed::{self, DefaultModel};
-use podbay_core::{Error, Result, spec};
+use offrig_core::config::{Config, Profile};
+use offrig_core::cost::{Idle, IdleTracker};
+use offrig_core::error::chain;
+use offrig_core::guard::{self, Check};
+use offrig_core::ollama::{ChatCheck, Ollama, Tag};
+use offrig_core::remote::{self, GpuStat, PullState};
+use offrig_core::runpod::{Account, GpuOffer, Pod, RunPod};
+use offrig_core::session::{Event, Session};
+use offrig_core::tunnel::Tunnel;
+use offrig_core::zed::{self, DefaultModel};
+use offrig_core::{Error, Result, spec};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
@@ -300,7 +300,7 @@ impl Worker {
             Cmd::RemoveZed => {
                 self.session
                     .unconfigure_zed(self.previous_default.as_ref())?;
-                self.out.log("podbay's provider removed from Zed");
+                self.out.log("offrig's provider removed from Zed");
                 self.out.send(Update::Zed(zed_status(&self.session.cfg)?));
                 Ok(())
             }
