@@ -203,7 +203,7 @@ fn the_runner_works_the_queue_revises_against_checks_and_shuts_down() {
             .iter()
             .find(|x| x.contains("failed these checks"))
             .expect("revision prompt");
-        assert!(rev.contains("needs a heading containing \"Failure states\""));
+        assert!(rev.contains("needs a Markdown heading line containing \"Failure states\""));
         assert!(
             p.iter()
                 .all(|x| x.contains("Keep every list to five items")),

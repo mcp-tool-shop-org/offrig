@@ -223,6 +223,13 @@ pub fn draft_instruction(h: &Handoff) -> String {
     s
 }
 
+/// True when a revision came back unchanged: the model is not acting on the
+/// feedback, so the handoff goes to review instead of spending another turn.
+/// Measured 2026-10-03: three identical 97-token turns on one handoff.
+pub fn stalled(previous: &str, current: &str) -> bool {
+    previous.trim() == current.trim()
+}
+
 /// The checks the runner evaluates: the handoff's own, plus the padding guard.
 pub fn effective_checks(h: &Handoff) -> Vec<Check> {
     let mut c = h.checks.clone();
@@ -376,6 +383,12 @@ mod tests {
             Some(5),
             "oldest on a tie"
         );
+    }
+
+    #[test]
+    fn an_unchanged_revision_is_a_stall() {
+        assert!(stalled("Barks\n- a", "Barks\n- a\n"));
+        assert!(!stalled("Barks\n- a", "## Barks\n- a"));
     }
 
     #[test]

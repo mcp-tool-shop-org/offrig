@@ -369,6 +369,7 @@ impl Worker {
         let ollama = Ollama::new(&self.base);
         let prior = store.outputs(h.id)?;
         let mut stored_turn = prior.iter().map(|o| o.turn).max().unwrap_or(0);
+        let mut previous: Option<String> = None;
         let mut instruction = match (&sent_back, runner::best(&prior)) {
             (Some(fb), Some(best)) => format!(
                 "A reviewer sent your previous output back with this feedback:\n{fb}\n\nRevise it to \
@@ -412,9 +413,18 @@ impl Worker {
                 tokens: reply.tokens,
             })?;
             store.heartbeat(h.id)?;
-            match runner::after_turn(h, turn, &outcomes) {
+            let next = match runner::after_turn(h, turn, &outcomes) {
+                Next::Revise if previous.as_deref().is_some_and(|p| runner::stalled(p, &reply.text)) => {
+                    Next::Review {
+                        why: "the revision came back unchanged; the model is not acting on the failed checks".into(),
+                    }
+                }
+                n => n,
+            };
+            match next {
                 Next::Revise => {
                     instruction = runner::revise_instruction(&reply.text, &outcomes);
+                    previous = Some(reply.text.clone());
                 }
                 Next::Complete => {
                     store.transition(

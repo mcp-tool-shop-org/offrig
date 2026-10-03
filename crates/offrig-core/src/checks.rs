@@ -106,7 +106,9 @@ fn run(text: &str, c: &Check) -> (bool, String) {
                 if found {
                     format!("heading \"{want}\" present")
                 } else {
-                    format!("needs a heading containing \"{want}\"; none found")
+                    format!(
+                        "needs a Markdown heading line containing \"{want}\" (for example `## {want}`); none found"
+                    )
                 },
             )
         }
@@ -114,7 +116,7 @@ fn run(text: &str, c: &Check) -> (bool, String) {
             None => (
                 false,
                 format!(
-                    "needs at least {min} list items under a heading containing \"{heading}\"; that heading is missing"
+                    "needs at least {min} list items under a Markdown heading line containing \"{heading}\" (for example `## {heading}`); that heading is missing"
                 ),
             ),
             Some(n) => (
@@ -272,7 +274,11 @@ mod tests {
             text: "Rewards".into(),
         });
         assert!(!miss.pass);
-        assert!(miss.detail.contains("needs a heading"), "{}", miss.detail);
+        assert!(
+            miss.detail.contains("needs a Markdown heading line"),
+            "{}",
+            miss.detail
+        );
         assert_eq!(
             heading_text("**bold** words after"),
             None,
