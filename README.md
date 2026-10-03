@@ -242,7 +242,45 @@ work goes to review. qwen3:4b spent about 4,000 tokens thinking per turn, even o
 lines of lore. A queue keeps every slot busy only when it holds enough independent
 handoffs; a dependency chain runs one at a time.
 
-Not yet verified live: a frontier-tier run (4 × RTX PRO 6000 at $8.36/hr), and a chat
+### Frontier and SGLang runs (2026-10-03, $4.27 booked)
+
+| Run | Pod | Ready after | Queue | Booked |
+|---|---|---|---|---|
+| frontier-mini (Qwen3-Coder-30B FP8) | 1 × RTX PRO 6000 | 5.5 min | 4 handoffs in 15 s | $0.30 |
+| frontier-mini-awq (Qwen3-Coder-30B AWQ) | 1 × RTX PRO 6000 | 4 min | 4 handoffs | $0.25 |
+| **frontier (Qwen3-Coder-480B AWQ)** | **4 × RTX PRO 6000** | **22 min** (252 GB at 278 MB/s, then load) | **31 handoffs in 20 s** | **$3.59** |
+| 30B swarm sweep | 1 × RTX PRO 6000 | 10 min (slow pod placement) | sweep only | $0.43 |
+
+- SGLang v0.5.20 (cu130) runs on Blackwell: flashinfer attention, `awq_marlin` for the
+  4-bit MoE weights, tensor parallel over PCIe on four cards; `/dev/shm` was 352 GB.
+- The frontier's work was clearly better than the small models': in-world barks, and a
+  Rust module that compiled and passed its three tests (checked locally). The 30B FP8
+  run's version of the same task did not compile.
+- One loaded model serves a whole swarm; no copies are needed. Concurrency sweep with
+  384-token replies, total tokens per second:
+
+| Agents | 480B on 4 GPUs | 30B AWQ on 1 GPU |
+|---:|---:|---:|
+| 1 | 88 | 118 |
+| 8 | 394 | 809 |
+| 16 | 658 | 1,692 |
+| 32 | 990 | 2,525 |
+| 64 | 1,521 | 4,088 |
+| 128 | 2,289 | 6,762 |
+| 256 | 3,208 | 10,147 |
+| 512 | 4,059 | — |
+
+  Per-agent speed falls as agents are added (480B: 88 → 24 tok/s at 64), but total
+  throughput keeps rising; the 480B's gains flatten past 256. The frontier's KV cache
+  holds 398,526 tokens, so with real handoff contexts of 2-8k tokens the frontier tier
+  now runs 64 in flight and the one-card SGLang tiers 32.
+
+Found and fixed along the way: revisions padded output to pass a heading check (now a
+built-in `no_repeats` check, and revisions restructure in place); a role's own required
+output leaked into deliverables (the handoff now sets the format); heading feedback
+names the Markdown form; an unchanged revision stops instead of repeating.
+
+Not yet verified live: a chat
 sent from Zed's agent panel itself (the request shape Zed uses is tested directly).
 
 ## Standards compliance

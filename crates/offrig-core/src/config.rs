@@ -295,7 +295,11 @@ pub fn default_profiles() -> Vec<Profile> {
             models: vec![model("qwen3-coder-480b", 252.0, false)],
             // 4x comes and goes within minutes; wait for it rather than settle.
             wait_for_gpu_minutes: 120,
-            parallel: 16,
+            // Measured 2026-10-03 on this tier: 88 tok/s for one agent, 1,521 at 64,
+            // 2,289 at 128, 4,059 at 512 (384-token replies). SGLang holds 398,526
+            // tokens of KV, so with real handoff contexts of 2-8k tokens about 64 fit
+            // before the cache thrashes.
+            parallel: 64,
             recipe: Some(Recipe {
                 engine: Engine::Sglang,
                 image: SGLANG_IMAGE.into(),
@@ -341,7 +345,9 @@ fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
         context_length: 65_536,
         models: vec![model(served, size_gb, false)],
         wait_for_gpu_minutes: 0,
-        parallel: 8,
+        // A 30B AWQ on one card measured 10,147 tok/s at 256 agents and still rising
+        // (2026-10-03); 32 keeps real handoff contexts inside its KV cache.
+        parallel: 32,
         recipe: Some(Recipe {
             engine: Engine::Sglang,
             image: SGLANG_IMAGE.into(),
