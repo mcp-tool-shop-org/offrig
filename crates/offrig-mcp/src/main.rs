@@ -169,7 +169,8 @@ pub struct HandoffArgs {
     /// complete, invalid, violation, fail, retry: which handoff.
     #[serde(default)]
     pub handoff_id: Option<i64>,
-    /// complete, invalid, violation, fail, retry: why (kept in the handoff's history).
+    /// invalid, violation, fail, retry: why (kept in the handoff's history). Required
+    /// for those; complete defaults to "acceptance check met".
     #[serde(default)]
     pub reason: Option<String>,
     /// retry from invalid or violation: the override, recorded as such.
@@ -359,9 +360,10 @@ impl Sidecar {
                 s.unfinished_journal()?,
                 s.ready()?,
                 plans,
+                !s.active(Kind::Brief)?.is_empty(),
             ))
         });
-        let (budget, handoffs, journal, ready, open_plans) = match local {
+        let (budget, handoffs, journal, ready, open_plans, has_brief) = match local {
             Ok(v) => v,
             Err(e) => return fail(chain(&e), "check the project database at .offrig/offrig.db"),
         };
@@ -395,8 +397,16 @@ impl Sidecar {
             )
         } else if stale > 0 {
             format!("{stale} handoff(s) are past the {STALE_SECS}s timeout")
+        } else if let Some(pod) = open_plans.iter().find_map(|p| p["pod_id"].as_str()) {
+            format!(
+                "a session is live on pod {pod} and billing: work handoffs with offrig_ask, then offrig_shutdown"
+            )
+        } else if count(store::State::Running) + count(store::State::Dispatched) > 0 {
+            "handoffs are in flight with no live session: close each with offrig_handoffs (complete, invalid or fail)".into()
         } else if !ready.is_empty() {
             "handoffs are ready; plan a session or work them".into()
+        } else if has_brief {
+            "queue handoffs, each with an acceptance check".into()
         } else {
             "record the project brief and constraints, then queue handoffs".into()
         };
@@ -543,7 +553,7 @@ impl Sidecar {
             "budget": budget.as_ref().map(budget_json),
             "runpod_runway_hours_with_pod": runway.map(|h| (h * 10.0).round() / 10.0),
             "models": profile.models.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
-            "next_action": "launching arrives in phase 2; until then, queue handoffs against this plan",
+            "next_action": "queue the handoffs, then offrig_launch with this plan_id when the work is ready",
         }))
     }
 
@@ -717,7 +727,18 @@ impl Sidecar {
                         "pass the handoff's id from action=list",
                     );
                 };
-                let reason = a.reason.unwrap_or_default();
+                // A completion's reason is that its acceptance check passed; every other
+                // outcome must say what went wrong, so the history can be acted on.
+                let reason = match a.reason.as_deref().map(str::trim) {
+                    Some(r) if !r.is_empty() => r.to_string(),
+                    _ if act == "complete" => "acceptance check met".to_string(),
+                    _ => {
+                        return fail(
+                            format!("{act} needs a reason"),
+                            "pass reason: what failed, kept in the handoff's history",
+                        );
+                    }
+                };
                 let (to, ovr) = match act {
                     "complete" => (State::Complete, None),
                     "invalid" => (State::InvalidOutput, None),

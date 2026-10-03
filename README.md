@@ -168,9 +168,11 @@ Comments and layout in Zed's settings are preserved: edits go through a JSONC sy
 
 ## Tests
 
-`cargo test --workspace` runs 59 tests: the core library (RunPod parsing, pod spec,
-SSH config, Zed JSONC edits, guard rules, pull-log parsing, cost and idle logic) and the
-app (state handling plus click-through UI tests in egui's test harness). CI also runs
+`cargo test --workspace` runs 103 tests: the core library (RunPod parsing, pod spec,
+SSH config, Zed JSONC edits, guard rules, pull-log parsing, cost and idle logic, the
+store, roles, context assembly, the watchdog), the app (state handling plus click-through
+UI tests in egui's test harness) and the side-car (end to end over stdio, against a mock
+RunPod, and the real watchdog process). CI also runs
 fmt, clippy with warnings as errors, `cargo deny` and `atlas check`.
 
 ### Live test record (2026-10-02, medium tier, A100 80GB, about $0.45)
@@ -187,6 +189,27 @@ fmt, clippy with warnings as errors, `cargo deny` and `atlas check`.
 Bugs the live run found, now fixed and covered: a backgrounded `&&` list kept ssh's
 stdout open and hung the pull start; the pod list lacked GPU types without
 `includeMachine=true`; the launch check counted a running pod's price twice.
+
+### Side-car rehearsal (2026-10-03, small tier, RTX 2000 Ada, $0.08 booked)
+
+The installed `offrig-mcp` driven over stdio, the way an agent calls it:
+
+- `offrig_plan` priced 0.5 h at $0.15 worst case; `offrig_launch` committed it, started
+  the watchdog, and a second call returned the same job. One pod was rented, at $0.24/hr.
+- SSH up 100 s after the rent, `qwen3:4b` pulled, ready at 150 s.
+- `offrig_ask` ran a game-designer handoff in 46 s; the reply met its acceptance check
+  and kept the five-bullet constraint from memory.
+- The pod reached the internet (Wikipedia, GitHub API). Given data the pod fetched, the
+  model answered current questions correctly; asked cold, it said it had no live access.
+- `offrig_shutdown` from a fresh side-car process terminated the pod and closed the
+  books; the watchdog saw the plan close and exited. The local GPU stayed idle throughout.
+
+Found and fixed: the pod served one request at a time (`OLLAMA_NUM_PARALLEL=1`); four
+slots took 8 parallel requests from 40 to 102 tok/s on the same GPU, so every profile now
+has `parallel = 4`. `complete` was refused without a reason (it now defaults to
+"acceptance check met"; failures still need one). Status suggested recording a brief
+while a session was live. Thinking text that leaks into a reply is stripped, and a reply
+emptied by thinking says to raise `max_tokens`.
 
 Not yet verified live: a frontier-tier run (4 × RTX PRO 6000 at $8.36/hr), and a chat
 sent from Zed's agent panel itself (the request shape Zed uses is tested directly).

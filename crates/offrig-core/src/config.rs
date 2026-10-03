@@ -70,6 +70,15 @@ pub struct Profile {
     /// giving up. Nothing is rented while waiting. 0 fails at once.
     #[serde(default)]
     pub wait_for_gpu_minutes: u32,
+    /// Requests the pod model serves at once (`OLLAMA_NUM_PARALLEL`). Each slot holds
+    /// its own context window in VRAM. The 2026-10-03 rehearsal measured 40 tok/s with
+    /// one slot and 102 tok/s with four on the same GPU, under 8 parallel requests.
+    #[serde(default = "default_parallel")]
+    pub parallel: u32,
+}
+
+fn default_parallel() -> u32 {
+    4
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,6 +149,7 @@ pub fn default_profiles() -> Vec<Profile> {
             // must never share a name with a local one.
             models: vec![model("qwen3:4b", 2.5, false)],
             wait_for_gpu_minutes: 0,
+            parallel: 4,
         },
         Profile {
             name: "medium".into(),
@@ -163,6 +173,7 @@ pub fn default_profiles() -> Vec<Profile> {
                 model("gpt-oss:120b", 65.0, false),
             ],
             wait_for_gpu_minutes: 0,
+            parallel: 4,
         },
         Profile {
             name: "frontier".into(),
@@ -182,6 +193,7 @@ pub fn default_profiles() -> Vec<Profile> {
             models: vec![model("qwen3-coder:480b", 290.0, false)],
             // 4x comes and goes within minutes; wait for it rather than settle.
             wait_for_gpu_minutes: 120,
+            parallel: 4,
         },
     ]
 }

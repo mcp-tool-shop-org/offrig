@@ -48,7 +48,10 @@ pub fn ollama_env(profile: &Profile) -> BTreeMap<String, String> {
     );
     env.insert("OLLAMA_FLASH_ATTENTION".into(), "1".into());
     env.insert("OLLAMA_KV_CACHE_TYPE".into(), "q8_0".into());
-    env.insert("OLLAMA_NUM_PARALLEL".into(), "1".into());
+    env.insert(
+        "OLLAMA_NUM_PARALLEL".into(),
+        profile.parallel.max(1).to_string(),
+    );
     env
 }
 
@@ -95,6 +98,20 @@ mod tests {
         assert_eq!(body.network_volume_id, None);
         assert_eq!(body.docker_entrypoint, ["bash", "-c"]);
         assert_eq!(body.name, "offrig-medium");
+    }
+
+    #[test]
+    fn pod_serves_requests_in_parallel_slots() {
+        let cfg = Config::default();
+        for name in ["small", "medium", "frontier"] {
+            let p = cfg.profile(name).expect("profile");
+            assert_eq!(ollama_env(p)["OLLAMA_NUM_PARALLEL"], "4", "{name}");
+        }
+        // A config saved before the field existed still gets slots.
+        let mut v = serde_json::to_value(cfg.profile("small").expect("small")).expect("json");
+        v.as_object_mut().expect("object").remove("parallel");
+        let old: Profile = serde_json::from_value(v).expect("old profile");
+        assert_eq!(old.parallel, 4);
     }
 
     #[test]

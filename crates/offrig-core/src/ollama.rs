@@ -186,10 +186,18 @@ impl Ollama {
         if let Some(err) = v.get("error") {
             return Err(Error::Ollama(format!("{what}: {err}")));
         }
-        v["choices"][0]["message"]["content"]
+        let content = v["choices"][0]["message"]["content"]
             .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| Error::Ollama(format!("{what}: the reply carried no message content")))
+            .ok_or_else(|| {
+                Error::Ollama(format!("{what}: the reply carried no message content"))
+            })?;
+        let answer = strip_thinking(content);
+        if answer.is_empty() && v["choices"][0]["finish_reason"] == "length" {
+            return Err(Error::Ollama(format!(
+                "{what}: the model spent its whole token limit thinking; raise max_tokens"
+            )));
+        }
+        Ok(answer.to_string())
     }
 
     /// A streamed chat with one tool offered, through the OpenAI-compatible endpoint
@@ -307,6 +315,16 @@ impl SseChat {
     }
 }
 
+/// The answer without a thinking model's reasoning. Ollama normally moves it to a
+/// separate field, but qwen3 on Ollama 0.35 was seen leaking it into the content,
+/// closing tag included, even with thinking switched off (rehearsal, 2026-10-03).
+pub fn strip_thinking(content: &str) -> &str {
+    match content.rfind("</think>") {
+        Some(i) => content[i + "</think>".len()..].trim(),
+        None => content.trim(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +368,29 @@ mod tests {
             s.feed(r#"data: {"error":{"message":"model not found"}}"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn thinking_is_stripped_from_answers() {
+        assert_eq!(
+            strip_thinking(
+                "  plain answer 
+"
+            ),
+            "plain answer"
+        );
+        assert_eq!(
+            strip_thinking(
+                "We are given the data...
+Line 1
+</think>
+
+2026-10-03
+v0.35.1"
+            ),
+            "2026-10-03
+v0.35.1"
+        );
+        assert_eq!(strip_thinking("<think>hmm</think>"), "");
     }
 }

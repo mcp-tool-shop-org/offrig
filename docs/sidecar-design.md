@@ -231,8 +231,8 @@ the reaper.
    and context assembly in offrig-core, with tests. Then the MCP server with the read
    tools and plan, memory and handoff tools, tested over stdio. Register it with Claude
    Code.
-2. **Launch and jobs.** Done 2026-10-02, tested against a mock RunPod; the live
-   rehearsal on the small tier waits for funds. `offrig_launch` (plan id only,
+2. **Launch and jobs.** Done 2026-10-02, tested against a mock RunPod, and rehearsed
+   live on the small tier 2026-10-03 ($0.08; see the README's record). `offrig_launch` (plan id only,
    idempotent, preflight before any commit, a failed post-rent setup terminates the pod),
    `offrig_job`, `offrig_ask` (context from the store, untrusted reply) and
    `offrig_shutdown` (refused with handoffs in flight unless given a reason). The

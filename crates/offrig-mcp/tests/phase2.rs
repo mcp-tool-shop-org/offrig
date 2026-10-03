@@ -206,6 +206,31 @@ async fn launch_job_ask_and_shutdown_against_a_mock_runpod() {
     let st = call("offrig_handoffs", json!({"action": "list"})).await;
     assert_eq!(body(&st)["handoffs"][0]["state"], "pending");
 
+    // A failure outcome must say what failed; the hint says how.
+    let bare = call(
+        "offrig_handoffs",
+        json!({"action": "fail", "handoff_id": 1}),
+    )
+    .await;
+    assert_eq!(bare.is_error, Some(true));
+    assert!(
+        body(&bare)["next_action"]
+            .as_str()
+            .is_some_and(|n| n.contains("pass reason")),
+        "{:?}",
+        body(&bare)
+    );
+
+    // While the pod is up, status points at the live session, not at setup.
+    let live = call("offrig_status", json!({})).await;
+    assert!(
+        body(&live)["next_action"]
+            .as_str()
+            .is_some_and(|n| n.contains("live on pod p1")),
+        "{:?}",
+        body(&live)
+    );
+
     let down = call("offrig_shutdown", json!({"plan_id": plan_id})).await;
     assert_eq!(down.is_error, Some(false), "{:?}", body(&down));
     assert!(

@@ -344,7 +344,12 @@ pub fn ask(
         "model": model,
         "reply": reply,
         "reply_is_untrusted_model_output": true,
-        "context": { "memory_included": assembled.included, "memory_dropped": assembled.dropped, "over_budget": assembled.over_budget },
+        "context": {
+            "always_injected": briefs.iter().chain(&constraints).map(|r| r.id).collect::<Vec<_>>(),
+            "memory_included": assembled.included,
+            "memory_dropped": assembled.dropped,
+            "over_budget": assembled.over_budget,
+        },
     }))
 }
 
