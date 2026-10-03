@@ -1,30 +1,61 @@
 # offrig
 
-Run big models on RunPod and use them from Zed, with a guarantee: they never run on
-your own GPU. A desktop app and a CLI over one Rust library.
+Run big models on rented RunPod GPUs, with a guarantee: they never run on your own
+GPU. A desktop app, a CLI and an MCP side-car for agents, over one Rust library.
+
+The side-car lets an agent plan a paid session under a human-set budget, rent the GPUs,
+and hand a queue of role-headed tasks to a detached runner. The runner keeps every model
+slot busy, revises only against checks that failed, and shuts the pod down when the queue
+is empty. A watchdog terminates the pod at the plan's deadline even if everything else is
+gone.
+
+## Status
+
+Proven live on 2026-10-02 and 2026-10-03, about $5 in all:
+
+- **Frontier:** 4 × RTX PRO 6000 (384 GB) serving Qwen3-Coder-480B (4-bit AWQ) on SGLang,
+  ready in 22 minutes, then 31 handoffs drained in 20 seconds, for $3.59.
+- **Swarm data:** one loaded model serves hundreds of agents at once. The 480B reached
+  4,059 tok/s at 512 agents; a 30B on one card reached 10,147 tok/s at 256.
+- **Runner:** a queue with dependencies and review send-backs, worked with nobody driving,
+  the pod shut down on drain.
+- **Guarantee:** the local GPU stayed idle through every run.
+
+Built and tested, waiting on a decision: staging the frontier weights on a network volume,
+about $21/month (see [Staging](#staging-weights-on-a-network-volume)).
+
+Next: the first real frontier queue, planned in full before launch; code handoffs compiled
+and tested on the pod.
 
 ## What it does
 
 From one window (or one command), offrig:
 
 1. shows your RunPod balance, live GPU prices and how long the balance will last;
-2. launches a pod for a tier (small, medium or frontier) and pulls its models onto the pod;
+2. launches a pod for a tier, from 1 small card on Ollama up to 4 × RTX PRO 6000 on SGLang,
+   and loads its models on the pod;
 3. opens an SSH tunnel to the pod;
 4. adds the pod's models to Zed as their own provider;
 5. runs seven checks that the models cannot land on this machine;
 6. shuts the pod down, or terminates it after a stretch with every GPU idle.
 
+Through the side-car, an agent also plans sessions against a budget, keeps project memory
+across compaction and restarts, and runs handoff queues unattended (see
+[The side-car](#the-side-car-for-agents)).
+
 ## The guarantee, and how it holds
 
 - **The model server is unreachable except through the tunnel.** The pod runs a pinned
-  Ollama (`ollama/ollama:0.35.0`) bound to the pod's own loopback, and the pod exposes
-  only `22/tcp`. There is no public HTTP endpoint to find or abuse.
+  engine, Ollama (`ollama/ollama:0.35.0`) or SGLang (`lmsysorg/sglang:v0.5.20-cu130`),
+  bound to the pod's own loopback, and the pod exposes only `22/tcp`. There is no public
+  HTTP endpoint to find or abuse. A recipe cannot move the engine off loopback.
 - **Zed talks to the tunnel, on its own port.** The tunnel listens on `127.0.0.1:11435`.
   Your local Ollama is on `11434`. offrig refuses to put the tunnel on `11434`, so a dead
   tunnel cannot fall through to the local server: the request fails instead.
 - **Zed never switches providers.** The pod's models are a separate `offrig` provider in
   Zed. If the pod is down, choosing one of them errors; Zed does not try another provider.
-- **The weights never exist locally.** Models are pulled on the pod, by the pod.
+- **The weights never exist locally.** Models are pulled on the pod, by the pod (or
+  downloaded there from Hugging Face, or read from a staged network volume).
 
 The guard checks verify this each time, from facts offrig can observe:
 
@@ -46,8 +77,12 @@ Zed, and a RunPod account.
 1. Put your RunPod API key in the user environment variable `RUNPOD_API_KEY`.
 2. Add your SSH public key in RunPod's account settings. offrig uses
    `~/.ssh/runpod_rustline` if present, then `~/.ssh/id_ed25519`.
-3. Build: `cargo build --release`. This makes `target/release/offrig-app.exe` (the app)
-   and `target/release/offrig.exe` (the CLI).
+3. Build: `cargo build --release`. This makes `target/release/offrig-app.exe` (the app),
+   `target/release/offrig.exe` (the CLI) and `target/release/offrig-mcp.exe` (the
+   side-car).
+4. For agents, register the side-car with Claude Code at user scope:
+   `claude mcp add --scope user offrig -- <path>\offrig-mcp.exe`. It opens a project's
+   store only on first use, so it is harmless in projects that never use it.
 
 ## Use
 
@@ -70,6 +105,8 @@ offrig pull <model>           pull another model onto the pod
 offrig connect                open the pod's /workspace in Zed for remote editing
 offrig down medium --yes      terminate the pod
 offrig zed-remove             take the provider out of Zed
+offrig budget 15              set this project's spending cap for agent sessions (human only)
+offrig stage frontier --dc EUR-IS-1 --yes   stage weights on a network volume (bills monthly)
 ```
 
 ## The side-car (for agents)
@@ -171,6 +208,11 @@ offrig stage frontier --remove --yes         deletes the volume (the undo)
 - Closing the app with a pod running asks whether to terminate it or keep it running.
 - offrig only touches pods it named (`offrig-<profile>`). Other pods are listed, never
   changed.
+- For agent sessions, the cap is enforced before any spend: a plan's worst case (live
+  price × max hours) is committed against the human-set budget and refused over it, and
+  a launch takes only a plan id, so an agent cannot name its own price.
+- Every side-car launch has a watchdog that terminates the pod at the plan's deadline,
+  and the runner shuts the pod down as soon as its queue is empty.
 
 ## What it changes on your machine
 
@@ -205,12 +247,17 @@ Comments and layout in Zed's settings are preserved: edits go through a JSONC sy
 
 ## Tests
 
-`cargo test --workspace` runs 103 tests: the core library (RunPod parsing, pod spec,
-SSH config, Zed JSONC edits, guard rules, pull-log parsing, cost and idle logic, the
-store, roles, context assembly, the watchdog), the app (state handling plus click-through
-UI tests in egui's test harness) and the side-car (end to end over stdio, against a mock
-RunPod, and the real watchdog process). CI also runs
-fmt, clippy with warnings as errors, `cargo deny` and `atlas check`.
+`cargo test --workspace` runs 130 tests:
+
+- **The core library:** RunPod parsing, pod specs for both engines, SSH config, Zed JSONC
+  edits, guard rules, cost and idle logic, the store and its migrations, roles, context
+  assembly, deterministic checks, the runner's decisions, the watchdog, and staging,
+  including a mock RunPod that proves a failed stage terminates its pod.
+- **The app:** state handling plus click-through UI tests in egui's test harness.
+- **The side-car:** end to end over stdio against a mock RunPod, the real watchdog
+  process, and the real runner process against a mock pod model.
+
+CI also runs fmt, clippy with warnings as errors, `cargo deny` and `atlas check`.
 
 ### Live test record (2026-10-02, medium tier, A100 80GB, about $0.45)
 
@@ -313,9 +360,11 @@ sent from Zed's agent panel itself (the request shape Zed uses is tested directl
 Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 3 exemplary).
 
-- **PIN_PER_STEP: 2.** The pod image is pinned to a version tag (`ollama/ollama:0.35.0`,
-  verified on Docker Hub), the compiler to 1.98.1, dependencies by `Cargo.lock`, and the
-  Atlas engine to the fleet's 1.24.0. Models are pinned by tag but not by digest.
+- **PIN_PER_STEP: 2.** Pod images are pinned to version tags (`ollama/ollama:0.35.0`,
+  `lmsysorg/sglang:v0.5.20-cu130`; a recipe refuses `latest`), the compiler to 1.98.1,
+  dependencies by `Cargo.lock`, and the Atlas engine to the fleet's 1.24.0. Each handoff
+  turn records its model, role hash and prompt hash. Models are pinned by tag or repo id,
+  not by digest.
 - **ANDON_AUTHORITY: 3.** Every step halts the run on a defect: a plan whose weights
   exceed the disk is refused before any spend; a failed pull stops the launch; a Zed edit
   that does not read back is not written; a broken settings file is reported, never
@@ -327,7 +376,9 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
   `cost`). Front ends hold no logic beyond presentation.
 - **UNCERTAINTY_GATED_HUMANS: 2.** offrig asks only where the outcome is costly or
   lossy: launching under an hour of runway, terminating a pod (with what is lost stated),
-  and quitting with a pod still billing.
+  and quitting with a pod still billing. Two decisions belong to a human alone, and no
+  agent tool can make them: the budget cap and staging a volume, which bills monthly.
+  Handoff output that code cannot check waits in review instead of completing.
 - **EXTERNAL_VERIFIER: n/a.** No specialized claims.
 
 **Compensators**
@@ -341,15 +392,21 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 | Write the SSH alias | delete the marked block in `~/.ssh/config` | config as before | the operator |
 | Pull a model on the pod | `ollama rm <model>` on the pod, or terminate the pod | model gone | the operator |
 | Kill an orphaned offrig tunnel | none needed; only offrig's own `ssh` is ever killed | port free | offrig |
+| Side-car launch (`offrig_launch`) | `offrig_shutdown`; automatic if setup fails; the watchdog at the deadline; the runner when its queue drains | pod terminated, plan closed with measured spend | the calling agent, with the watchdog as backstop |
+| Stage a volume (`offrig stage --yes`, bills monthly) | `offrig stage <profile> --remove --yes` | volume deleted, profile back to downloading | the human who staged it |
 
 ## Layout
 
 ```text
-crates/offrig-core   library: RunPod client, pod spec, tunnel, remote ops, Zed and SSH
-                     edits, guard, cost and idle logic, session workflow
+crates/offrig-core   library: RunPod client, pod specs and engine recipes, tunnel, remote
+                     ops, Zed and SSH edits, guard, cost and idle logic, session workflow,
+                     project store, roles, context assembly, checks, runner decisions,
+                     watchdog, staging
 crates/offrig-cli    `offrig` command line
 crates/offrig-app    `offrig-app` desktop app (egui)
-crates/offrig-mcp    `offrig-mcp` side-car: MCP server for agents
+crates/offrig-mcp    `offrig-mcp` side-car: MCP server for agents, plus the detached
+                     watchdog and runner processes
+docs/                the side-car's design and its research grounding
 atlas/               Atlas map of the repo (regenerate with `atlas map`)
 ```
 
