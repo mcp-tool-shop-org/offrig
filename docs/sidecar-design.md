@@ -231,9 +231,14 @@ the reaper.
    and context assembly in offrig-core, with tests. Then the MCP server with the read
    tools and plan, memory and handoff tools, tested over stdio. Register it with Claude
    Code.
-2. **Launch and jobs.** `offrig_launch`, `offrig_job` and `offrig_shutdown` as background
-   jobs with reconcile on start and a watchdog that runs without the agent. `offrig_ask`
-   with role rendering. Rehearsed on the small tier.
+2. **Launch and jobs.** Done 2026-10-02, tested against a mock RunPod; the live
+   rehearsal on the small tier waits for funds. `offrig_launch` (plan id only,
+   idempotent, preflight before any commit, a failed post-rent setup terminates the pod),
+   `offrig_job`, `offrig_ask` (context from the store, untrusted reply) and
+   `offrig_shutdown` (refused with handoffs in flight unless given a reason). The
+   watchdog is a detached process (`offrig-mcp --watchdog <plan>`) that leaves the host's
+   job object where Windows allows, so closing the session does not kill it. Schema v2
+   adds the plan clock and jobs, with a tested migration from v1.
 3. **Pod runner and engine recipe.** SGLang frontier recipe (TP=4, AWQ, fp8 KV),
    multi-turn runner on the pod, branch per handoff, acceptance checks run on the pod,
    and harvest to git. A paid frontier run once Mike funds it.

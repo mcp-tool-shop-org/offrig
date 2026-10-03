@@ -33,7 +33,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-cli",
-      "qualifyingSourceCommits": 1,
+      "qualifyingSourceCommits": 2,
       "rebaseline": null
     },
     {
@@ -53,7 +53,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 5,
+      "qualifyingSourceCommits": 6,
       "rebaseline": null
     },
     {
@@ -69,7 +69,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-mcp",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 2,
       "rebaseline": null
     },
     {
@@ -143,8 +143,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 10,
-        "lines": 281,
+        "commits": 11,
+        "lines": 289,
         "path": "atlas/README.md"
       },
       {
@@ -153,18 +153,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 10,
-        "lines": 1385,
+        "commits": 11,
+        "lines": 1416,
         "path": "atlas/page.json"
       },
       {
-        "commits": 10,
-        "lines": 1024,
+        "commits": 11,
+        "lines": 1084,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 10,
-        "lines": 4306,
+        "commits": 11,
+        "lines": 4358,
         "path": "atlas/structure.json"
       },
       {
@@ -283,13 +283,13 @@
         "path": "crates/offrig-mcp/Cargo.toml"
       },
       {
-        "commits": 1,
-        "lines": 603,
+        "commits": 2,
+        "lines": 698,
         "path": "crates/offrig-mcp/src/main.rs"
       },
       {
-        "commits": 1,
-        "lines": 186,
+        "commits": 2,
+        "lines": 202,
         "path": "crates/offrig-mcp/tests/stdio.rs"
       },
       {
@@ -433,8 +433,8 @@
         "path": "docs/screenshots/app-tunnel-open.png"
       },
       {
-        "commits": 1,
-        "lines": 246,
+        "commits": 2,
+        "lines": 256,
         "path": "docs/sidecar-design.md"
       },
       {
@@ -563,56 +563,56 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-02T23:13:24.744Z",
+  "generatedAt": "2026-10-03T00:49:16.936Z",
   "generatedFrom": {
-    "commit": "8bbf0bdc4e31535c9680ec50bf63c5658f41d489"
+    "commit": "e768dd732bb047a8a9cfa8a14d52319d30431581"
   },
   "pairs": [
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 7,
-      "shared": 7,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 7,
-      "shared": 7,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 7,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 7,
-      "shared": 7,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 7,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 7,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 13.75,
+    "appliedChangesetLimit": 14.5,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -621,16 +621,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-02T19:05:32-04:00",
-    "inScopeFiles": 55,
+    "headDate": "2026-10-02T19:13:25-04:00",
+    "inScopeFiles": 58,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 10,
+    "qualifyingCommits": 12,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-05T23:05:32.000Z",
+    "since": "2026-04-05T23:13:25.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

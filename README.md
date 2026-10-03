@@ -85,7 +85,11 @@ so a session survives compaction or a restart without re-explaining anything.
 | `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
-| `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check), lists them, previews role blocks |
+| `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check), lists them, previews role blocks, records outcomes (complete, invalid, violation, fail, retry) |
+| `offrig_launch` | **Spends.** Takes only a `plan_id`: commits the worst case, waits for GPUs renting nothing, boots the pod, opens the tunnel, pulls the models, starts the watchdog. Idempotent per plan |
+| `offrig_job` | Launch progress, watchdog liveness, minutes left, spend so far |
+| `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
+| `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason |
 
 Roles come from Role OS (dossiers and starter-pack cards) plus four game roles shipped
 here in Role OS's formats: game-designer, systems-designer, narrative-designer,
@@ -96,7 +100,13 @@ offrig budget 15          set this project's cap (run in the project directory)
 offrig budget             show cap, committed, spent, remaining
 ```
 
-Launching, job tracking, `offrig_ask` and shutdown through the side-car are phase 2.
+Every launch starts a **watchdog**: a separate process that terminates the pod at the
+plan's deadline (committed time + max hours) even if the agent, the session or the
+side-car is gone. It never acts on a failed lookup, terminates exactly once, closes the
+books, and logs to `.offrig/watchdog-<plan>.log`. If getting a rented pod ready fails,
+the launch terminates it instead of leaving it billing.
+
+The runner on the pod and the SGLang frontier recipe are phase 3.
 The design and its evidence are in [docs/sidecar-design.md](docs/sidecar-design.md).
 ## Tiers
 

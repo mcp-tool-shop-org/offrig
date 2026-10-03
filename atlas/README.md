@@ -1,27 +1,32 @@
 # offrig: how it works
 
-Mapped at 2026-10-02 from commit 8bbf0bd by Atlas 1.24.0.
+Mapped at 2026-10-03 from commit e768dd7 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-5 parts, mostly Rust (24 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
+5 parts, mostly Rust (27 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
 
-## What changed since 2026-10-02 (d64c817)
+## What changed since 2026-10-02 (8bbf0bd)
 
-Nothing structural changed since 2026-10-02; 3 files changed content.
+- ci now also runs crates/offrig-core/src/watchdog.rs.
+- In crates/offrig-mcp/src/main.rs, `main` gained a step, `open`, before `now_unix`.
+- In crates/offrig-mcp/src/main.rs, `main` gained a step, `now_unix`, before `date_utc`.
+- In crates/offrig-mcp/src/main.rs, `main` gained a step, `date_utc`, before `from_env`.
+- And 4 more changes to the order of work.
+- 3 files added and 8 changed content, across 3 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/context.rs and 13 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
+1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/config.rs, crates/offrig-core/src/context.rs and 15 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
 2. **offrig** (a command built from crates/offrig-cli, which nothing ships). Runs crates/offrig-cli/src/main.rs.
 3. **offrig-app** (a command built from crates/offrig-app, which nothing ships). Runs crates/offrig-app/src/main.rs.
 4. **offrig-mcp** (a command built from crates/offrig-mcp, which nothing ships). Runs crates/offrig-mcp/src/main.rs.
 
 ## What happens through ci
 
-1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 14 files in offrig-core, and crates/offrig-mcp/tests/ in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
+1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 15 files in offrig-core, and crates/offrig-mcp/tests/ in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
 
 ## Who reads the results
 
@@ -81,7 +86,7 @@ Read those in order to follow one run of offrig end to end. This path follows of
 ## What this map cannot see
 
 - 4 writes and 1 read use paths built at run time and are not named here.
-- 1 write and 7 reads go to a path their caller passes, not to this repository.
+- 2 writes and 7 reads go to a path their caller passes, not to this repository.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.

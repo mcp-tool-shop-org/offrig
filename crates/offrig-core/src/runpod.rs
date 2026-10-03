@@ -164,6 +164,14 @@ impl RunPod {
             .ok()
             .filter(|k| !k.trim().is_empty())
             .ok_or(Error::MissingApiKey)?;
+        // Tests point the binaries at a mock RunPod. Debug builds only: a release
+        // binary can never be redirected to send the key somewhere else.
+        #[cfg(debug_assertions)]
+        if let Ok(base) = std::env::var("OFFRIG_TEST_RUNPOD_BASE")
+            && !base.is_empty()
+        {
+            return Ok(Self::new(key, &base, &format!("{base}/graphql")));
+        }
         Ok(Self::new(key, REST_BASE, GRAPHQL_URL))
     }
 

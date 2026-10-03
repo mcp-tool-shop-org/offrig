@@ -169,6 +169,29 @@ impl Ollama {
         .map(|_| ())
     }
 
+    /// One non-streamed chat turn through the OpenAI-compatible endpoint. Returns the
+    /// reply text. Reasoning models may put their thinking in a separate field; only
+    /// the answer is returned.
+    pub fn chat(&self, model: &str, prompt: &str, max_tokens: Option<u32>) -> Result<String> {
+        let what = "chat";
+        let mut body = json!({
+            "model": model,
+            "stream": false,
+            "messages": [{ "role": "user", "content": prompt }],
+        });
+        if let Some(n) = max_tokens {
+            body["max_tokens"] = json!(n);
+        }
+        let v = self.post("/v1/chat/completions", &body, what)?;
+        if let Some(err) = v.get("error") {
+            return Err(Error::Ollama(format!("{what}: {err}")));
+        }
+        v["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| Error::Ollama(format!("{what}: the reply carried no message content")))
+    }
+
     /// A streamed chat with one tool offered, through the OpenAI-compatible endpoint
     /// Zed uses. Proves the model answers, streams, and can call a tool.
     pub fn chat_check(&self, model: &str) -> Result<ChatCheck> {

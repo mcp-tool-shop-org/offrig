@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -54,7 +54,20 @@ CREATE TABLE IF NOT EXISTS plans (
   state         TEXT NOT NULL DEFAULT 'planned' CHECK (state IN ('planned','committed','closed','cancelled')),
   pod_id        TEXT,
   created_at    INTEGER NOT NULL,
-  note          TEXT
+  note          TEXT,
+  committed_at  INTEGER,
+  started_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id          INTEGER PRIMARY KEY,
+  plan_id     INTEGER NOT NULL REFERENCES plans(id),
+  kind        TEXT NOT NULL,
+  state       TEXT NOT NULL CHECK (state IN ('running','done','failed','cancelled')),
+  progress    TEXT NOT NULL DEFAULT '{}',
+  error       TEXT,
+  started_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ledger (
@@ -237,6 +250,31 @@ pub struct Plan {
     pub pod_id: Option<String>,
     pub created_at: i64,
     pub note: Option<String>,
+    /// When the worst case was committed (the plan's clock starts here).
+    pub committed_at: Option<i64>,
+    /// When the pod was created.
+    pub started_at: Option<i64>,
+}
+
+impl Plan {
+    /// The moment the plan's time is up: committed + max_hours. The watchdog
+    /// terminates the pod at this time whether or not any agent is still around.
+    pub fn deadline(&self) -> Option<i64> {
+        self.committed_at
+            .map(|t| t + (self.max_hours * 3600.0).round() as i64)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Job {
+    pub id: i64,
+    pub plan_id: i64,
+    pub kind: String,
+    pub state: String,
+    pub progress: serde_json::Value,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -431,8 +469,11 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self> {
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
-            .map_err(db("setting pragmas"))?;
+        // The side-car and its watchdog share this file from two processes.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(db("setting pragmas"))?;
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(db("reading the schema version"))?;
@@ -440,6 +481,14 @@ impl Store {
             return Err(Error::Refused(format!(
                 "the project database is schema v{version}; this offrig knows v{SCHEMA_VERSION}. Update offrig."
             )));
+        }
+        if version == 1 {
+            // v1 -> v2: plans gain their clock; the jobs table is new (created below).
+            conn.execute_batch(
+                "ALTER TABLE plans ADD COLUMN committed_at INTEGER;
+                 ALTER TABLE plans ADD COLUMN started_at INTEGER;",
+            )
+            .map_err(db("migrating the schema to v2"))?;
         }
         conn.execute_batch(SCHEMA)
             .map_err(db("creating the schema"))?;
@@ -702,7 +751,8 @@ impl Store {
     pub fn plan(&self, id: i64) -> Result<Option<Plan>> {
         self.conn
             .query_row(
-                "SELECT id, profile, gpu_count, gpu_types, max_hours, max_price_hr, worst_case, state, pod_id, created_at, note
+                "SELECT id, profile, gpu_count, gpu_types, max_hours, max_price_hr, worst_case, state, pod_id, created_at, note,
+                        committed_at, started_at
                  FROM plans WHERE id = ?1",
                 params![id],
                 |r| {
@@ -719,6 +769,8 @@ impl Store {
                         pod_id: r.get(8)?,
                         created_at: r.get(9)?,
                         note: r.get(10)?,
+                        committed_at: r.get(11)?,
+                        started_at: r.get(12)?,
                     })
                 },
             )
@@ -755,8 +807,8 @@ impl Store {
         )
         .map_err(db("writing a commit"))?;
         tx.execute(
-            "UPDATE plans SET state = 'committed' WHERE id = ?1",
-            params![id],
+            "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1",
+            params![id, now_unix()],
         )
         .map_err(db("marking the plan committed"))?;
         tx.commit().map_err(db("committing a plan"))?;
@@ -764,14 +816,124 @@ impl Store {
             .ok_or_else(|| Error::Refused("plan vanished after commit".into()))
     }
 
+    /// Record the pod a plan rented and when, so cost and the deadline can be
+    /// computed later by anyone (the side-car, the watchdog, a restarted session).
     pub fn attach_pod(&self, plan_id: i64, pod_id: &str) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE plans SET pod_id = ?1 WHERE id = ?2",
-                params![pod_id, plan_id],
+                "UPDATE plans SET pod_id = ?1, started_at = COALESCE(started_at, ?3) WHERE id = ?2",
+                params![pod_id, plan_id, now_unix()],
             )
             .map_err(db("attaching a pod to a plan"))?;
         Ok(())
+    }
+
+    /// Committed plans: the ones that may be renting right now.
+    pub fn open_plans(&self) -> Result<Vec<Plan>> {
+        let ids: Vec<i64> = {
+            let mut st = self
+                .conn
+                .prepare("SELECT id FROM plans WHERE state = 'committed' ORDER BY id")
+                .map_err(db("preparing an open-plan read"))?;
+            st.query_map([], |r| r.get(0))
+                .map_err(db("reading open plans"))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db("reading open plans"))?
+        };
+        ids.into_iter()
+            .filter_map(|id| self.plan(id).transpose())
+            .collect()
+    }
+
+    // ---- settings (small key/value facts, e.g. watchdog heartbeats)
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(db("writing a setting"))?;
+        Ok(())
+    }
+
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db("reading a setting"))
+    }
+
+    // ---- jobs (long work run in the background; state survives restarts)
+
+    pub fn create_job(&self, plan_id: i64, kind: &str) -> Result<i64> {
+        let now = now_unix();
+        self.conn
+            .execute(
+                "INSERT INTO jobs(plan_id, kind, state, started_at, updated_at) VALUES (?1, ?2, 'running', ?3, ?3)",
+                params![plan_id, kind, now],
+            )
+            .map_err(db("creating a job"))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_job(
+        &self,
+        id: i64,
+        state: &str,
+        progress: &serde_json::Value,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE jobs SET state = ?1, progress = ?2, error = ?3, updated_at = ?4 WHERE id = ?5",
+                params![state, progress.to_string(), error, now_unix(), id],
+            )
+            .map_err(db("updating a job"))?;
+        Ok(())
+    }
+
+    fn job_row(r: &Row<'_>) -> rusqlite::Result<Job> {
+        let progress: String = r.get(4)?;
+        Ok(Job {
+            id: r.get(0)?,
+            plan_id: r.get(1)?,
+            kind: r.get(2)?,
+            state: r.get(3)?,
+            progress: serde_json::from_str(&progress).unwrap_or(serde_json::Value::Null),
+            error: r.get(5)?,
+            started_at: r.get(6)?,
+            updated_at: r.get(7)?,
+        })
+    }
+
+    pub fn job(&self, id: i64) -> Result<Option<Job>> {
+        self.conn
+            .query_row(
+                "SELECT id, plan_id, kind, state, progress, error, started_at, updated_at FROM jobs WHERE id = ?1",
+                params![id],
+                Self::job_row,
+            )
+            .optional()
+            .map_err(db("reading a job"))
+    }
+
+    /// The newest job for a plan: how a retried launch finds the one already running.
+    pub fn job_for_plan(&self, plan_id: i64, kind: &str) -> Result<Option<Job>> {
+        self.conn
+            .query_row(
+                "SELECT id, plan_id, kind, state, progress, error, started_at, updated_at
+                 FROM jobs WHERE plan_id = ?1 AND kind = ?2 ORDER BY id DESC LIMIT 1",
+                params![plan_id, kind],
+                Self::job_row,
+            )
+            .optional()
+            .map_err(db("reading a plan's job"))
     }
 
     /// Close a plan with its actual spend: release the whole commit, record actual.
@@ -1427,6 +1589,78 @@ mod tests {
             !is_stale(&p, later + 99_999, 1800),
             "pending work is not in flight"
         );
+    }
+
+    #[test]
+    fn v1_databases_migrate_to_v2_without_losing_rows() {
+        let dir = std::env::temp_dir().join(format!("offrig-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("v1.db");
+        {
+            // A v1 plans table, as phase 1 wrote it.
+            let c = Connection::open(&path).expect("open");
+            c.execute_batch(
+                "CREATE TABLE plans (id INTEGER PRIMARY KEY, profile TEXT NOT NULL, gpu_count INTEGER NOT NULL,
+                   gpu_types TEXT NOT NULL, max_hours REAL NOT NULL, max_price_hr REAL NOT NULL, worst_case REAL NOT NULL,
+                   state TEXT NOT NULL DEFAULT 'planned', pod_id TEXT, created_at INTEGER NOT NULL, note TEXT);
+                 INSERT INTO plans(profile, gpu_count, gpu_types, max_hours, max_price_hr, worst_case, created_at)
+                   VALUES ('medium', 1, '[]', 2.0, 2.09, 4.18, 1);
+                 PRAGMA user_version = 1;",
+            )
+            .expect("v1 schema");
+        }
+        let s = Store::open(&path).expect("migrates");
+        let p = s.plan(1).expect("read").expect("kept");
+        assert_eq!(p.profile, "medium");
+        assert_eq!(p.committed_at, None);
+        assert!(
+            s.create_job(1, "launch").is_ok(),
+            "jobs table exists after migration"
+        );
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn committing_starts_the_clock_and_jobs_track_progress() {
+        let s = store();
+        s.set_budget_cap(15.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "small".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 2.0,
+                max_price_hr: 0.25,
+                note: None,
+            })
+            .expect("plan");
+        assert_eq!(p.deadline(), None, "no clock until committed");
+        let c = s.commit_plan(p.id).expect("commit");
+        let start = c.committed_at.expect("clock started");
+        assert_eq!(c.deadline(), Some(start + 7200));
+        s.attach_pod(p.id, "pod1").expect("attach");
+        assert_eq!(
+            s.plan(p.id).expect("r").expect("e").pod_id.as_deref(),
+            Some("pod1")
+        );
+        assert_eq!(s.open_plans().expect("open").len(), 1);
+        let j = s.create_job(p.id, "launch").expect("job");
+        s.update_job(
+            j,
+            "running",
+            &serde_json::json!({"step": "waiting for GPUs"}),
+            None,
+        )
+        .expect("update");
+        let job = s
+            .job_for_plan(p.id, "launch")
+            .expect("read")
+            .expect("exists");
+        assert_eq!(job.id, j);
+        assert_eq!(job.progress["step"], "waiting for GPUs");
+        s.close_plan(p.id, 0.1).expect("close");
+        assert!(s.open_plans().expect("open").is_empty());
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub mod spec;
 pub mod sshconfig;
 pub mod store;
 pub mod tunnel;
+pub mod watchdog;
 pub mod zed;
 
 pub use error::{Error, Result};
