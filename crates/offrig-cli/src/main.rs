@@ -106,6 +106,20 @@ enum Cmd {
         #[arg(long)]
         project: Option<std::path::PathBuf>,
     },
+    /// Stage a recipe profile's weights on a RunPod network volume so launches skip
+    /// the download. The volume bills monthly until removed; only a human stages.
+    Stage {
+        profile: String,
+        /// Data center for the volume (one with network storage and the profile's GPUs)
+        #[arg(long)]
+        dc: Option<String>,
+        /// Delete the profile's volume and return it to downloading at launch
+        #[arg(long)]
+        remove: bool,
+        /// Confirm the monthly charge (or the deletion)
+        #[arg(long)]
+        yes: bool,
+    },
     /// Terminate the profile's pod
     Down {
         profile: Option<String>,
@@ -458,6 +472,12 @@ fn run(cli: Cli) -> Result<()> {
             println!("opened {target} in Zed");
             Ok(())
         }
+        Cmd::Stage {
+            profile,
+            dc,
+            remove,
+            yes,
+        } => stage_cmd(&profile, dc, remove, yes),
         Cmd::Down { profile, yes } => {
             let (s, p) = session_for(&profile)?;
             let Some(pod) = s.current_pod(&p)? else {
@@ -483,11 +503,100 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// Record (or clear) where a profile's weights are staged, in the saved config.
+fn set_staging(
+    cfg: &mut Config,
+    name: &str,
+    volume: Option<String>,
+    dc: Option<String>,
+) -> Result<()> {
+    let p = cfg
+        .profiles
+        .iter_mut()
+        .find(|p| p.name == name)
+        .with_context(|| format!("no profile {name}"))?;
+    p.network_volume_id = volume;
+    p.data_center_id = dc;
+    cfg.save().context("saving the offrig config")
+}
+
+fn stage_cmd(name: &str, dc: Option<String>, remove: bool, yes: bool) -> Result<()> {
+    let mut cfg = load()?;
+    let p = pick(&cfg, &Some(name.to_string()))?.clone();
+    let rp = offrig_core::runpod::RunPod::from_env()?;
+    if remove {
+        let Some(vol) = p.network_volume_id.clone() else {
+            bail!("profile {} has no staged volume", p.name);
+        };
+        if !yes {
+            bail!(
+                "this deletes network volume {vol} and the weights on it; launches of {} go back to downloading. Re-run with --yes.",
+                p.name
+            );
+        }
+        rp.delete_volume(&vol)?;
+        set_staging(&mut cfg, &p.name, None, None)?;
+        println!(
+            "deleted volume {vol}; {} downloads its weights at launch again",
+            p.name
+        );
+        return Ok(());
+    }
+    // Before anything that creates or costs.
+    offrig_core::stage::stageable(&p)?;
+    let dc = dc
+        .or_else(|| p.data_center_id.clone())
+        .context("pass --dc <data center id>: one with network storage and the profile's GPUs")?;
+    let size = offrig_core::stage::volume_size_gb(&p);
+    if !yes {
+        bail!(
+            "staging {} creates (or reuses) a {size} GB network volume in {dc}: about ${:.2}/month, \
+             billed until `offrig stage {} --remove --yes`, plus a staging pod for roughly 20 minutes. \
+             Its pods will then launch only in {dc}. Re-run with --yes.",
+            p.name,
+            offrig_core::stage::monthly_usd(size),
+            p.name
+        );
+    }
+    let (vol, created) = offrig_core::stage::ensure_volume(&rp, &p, &dc)?;
+    println!(
+        "{} volume {} ({} GB) in {}",
+        if created { "created" } else { "reusing" },
+        vol.id,
+        vol.size,
+        vol.data_center_id
+    );
+    // Record the volume before filling it, so a failed fill is never an orphan the
+    // config forgets: `--remove` can always find it.
+    set_staging(
+        &mut cfg,
+        &p.name,
+        Some(vol.id.clone()),
+        Some(vol.data_center_id.clone()),
+    )?;
+    let mut last = HashMap::new();
+    if let Err(e) = offrig_core::stage::fill(&cfg, rp, &p, &vol, &mut print_event(&mut last)) {
+        bail!(
+            "staging failed: {}. The staging pod was terminated. Volume {} is kept and still \
+             bills: run `offrig stage {} --yes` to resume, or `offrig stage {} --remove --yes`.",
+            chain(&e),
+            vol.id,
+            p.name,
+            p.name
+        );
+    }
+    println!(
+        "{} is staged on {} in {}: its launches skip the download and run Hugging Face offline",
+        p.name, vol.id, vol.data_center_id
+    );
+    Ok(())
+}
+
 fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
     s.plan_check(p)?;
     // Prices and the balance come from RunPod's GraphQL API. Launching needs only
     // REST, so if GraphQL is down or retired, warn and launch without the estimate.
-    let offers = match s.rp.gpu_offers(p.gpu_count) {
+    let offers = match s.rp.gpu_offers_in(p.gpu_count, p.data_center_id.as_deref()) {
         Ok(o) => o,
         Err(e) => {
             println!(

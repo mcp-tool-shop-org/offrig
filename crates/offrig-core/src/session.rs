@@ -195,7 +195,13 @@ impl Session {
     /// Whether any of the body's GPU types is free at its count. `None` when the
     /// price API cannot say (it is GraphQL, which RunPod may retire).
     fn capacity_free(&self, body: &crate::runpod::PodCreate) -> Option<bool> {
-        let offers = self.rp.gpu_offers(body.gpu_count).ok()?;
+        let offers = self
+            .rp
+            .gpu_offers_in(
+                body.gpu_count,
+                body.data_center_ids.first().map(String::as_str),
+            )
+            .ok()?;
         Some(
             offers
                 .iter()

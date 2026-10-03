@@ -61,9 +61,13 @@ pub struct Profile {
     /// GPU types in priority order. RunPod takes the first with free capacity.
     pub gpu_type_ids: Vec<String>,
     pub gpu_count: u32,
-    /// Keep weights on a network volume so a new pod skips the download.
+    /// Keep weights on a network volume so a new pod skips the download. Set by
+    /// `offrig stage`, which also sets `data_center_id`.
     #[serde(default)]
     pub network_volume_id: Option<String>,
+    /// The data center pods must launch in: a network volume lives in one.
+    #[serde(default)]
+    pub data_center_id: Option<String>,
     /// Pod-local volume size when no network volume is attached.
     pub volume_gb: u32,
     pub container_disk_gb: u32,
@@ -239,6 +243,7 @@ pub fn default_profiles() -> Vec<Profile> {
             ],
             gpu_count: 1,
             network_volume_id: None,
+            data_center_id: None,
             volume_gb: 30,
             container_disk_gb: 30,
             context_length: 32_768,
@@ -263,6 +268,7 @@ pub fn default_profiles() -> Vec<Profile> {
             ],
             gpu_count: 1,
             network_volume_id: None,
+            data_center_id: None,
             volume_gb: 150,
             container_disk_gb: 30,
             context_length: 65_536,
@@ -286,6 +292,7 @@ pub fn default_profiles() -> Vec<Profile> {
             ],
             gpu_count: 4,
             network_volume_id: None,
+            data_center_id: None,
             volume_gb: 400,
             container_disk_gb: 40,
             context_length: 65_536,
@@ -340,6 +347,7 @@ fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
         ],
         gpu_count: 1,
         network_volume_id: None,
+        data_center_id: None,
         volume_gb: 80,
         container_disk_gb: 40,
         context_length: 65_536,
@@ -437,6 +445,12 @@ impl Config {
             }
             if let Some(r) = &p.recipe {
                 r.validate(&p.name, p.models.len())?;
+            }
+            if p.network_volume_id.is_some() && p.data_center_id.is_none() {
+                return Err(Error::Config(format!(
+                    "profile {}: a network volume needs data_center_id (the volume's data center)",
+                    p.name
+                )));
             }
         }
         Ok(())

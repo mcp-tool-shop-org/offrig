@@ -535,9 +535,13 @@ impl Sidecar {
             }
         };
         let (count, types) = (profile.gpu_count, profile.gpu_type_ids.clone());
+        let dc = profile.data_center_id.clone();
         let res = tokio::task::spawn_blocking(move || {
             let rp = RunPod::from_env()?;
-            Ok::<_, offrig_core::Error>((rp.gpu_offers(count)?, rp.account().ok()))
+            Ok::<_, offrig_core::Error>((
+                rp.gpu_offers_in(count, dc.as_deref())?,
+                rp.account().ok(),
+            ))
         })
         .await;
         let (offers, account) = match res {

@@ -362,6 +362,22 @@ unconfirmed.
   pre-staged with the weights is the cure for repeated frontier runs.**
   `HF_HUB_ENABLE_HF_TRANSFER` is ignored by huggingface_hub 1.x; hf_xet is the default.
 
+## Staging (network volumes)
+
+The frontier's first launch spent about 20 of 22 minutes downloading 252 GB. Mike:
+"Staging is imperative." RunPod network volumes cost $0.07/GB/month for the first TB
+(docs.runpod.io, 2026-10-03), bill whether or not a pod runs, and tie pods to one
+data center. Live on 2026-10-03, the data centers with network storage and RTX PRO 6000
+were EUR-IS-1, EU-RO-1, US-CO-1, US-MO-2, US-NC-2 and CA-MTL-3; 4× was free only in
+EUR-IS-1 and EU-RO-1. A "global volume" mentioned on one RunPod page is unconfirmed; the
+design assumes the data-center lock.
+
+→ **`offrig stage` is a CLI command, never an agent tool: a recurring charge is the
+human's call, like the budget cap. Its compensator is `offrig stage --remove`.** The
+download pod is guarded and terminated on every exit path (tested). Launches go
+offline only behind a completion marker. Whether to create the frontier volume, and
+where, is open: Mike chose to build it first (2026-10-03).
+
 ## Decisions
 
 - 2026-10-02, Mike: the frontier tier serves with SGLang (TP=4, AWQ, fp8 KV). Small and medium stay on Ollama. Amended 2026-10-03 on the 3b evidence: KV stays full precision on sm_120, where fp8 KV was reported to corrupt output.

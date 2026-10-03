@@ -22,6 +22,7 @@ pub mod runpod;
 pub mod session;
 pub mod spec;
 pub mod sshconfig;
+pub mod stage;
 pub mod store;
 pub mod tunnel;
 pub mod watchdog;

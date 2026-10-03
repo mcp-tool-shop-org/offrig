@@ -137,6 +137,30 @@ while it waits, Ctrl+C or the app's Cancel launch stops it, and if RunPod's pric
 simply retries the create each minute. Large multi-GPU setups come and go within minutes.
 Prices are secure-cloud prices, read live; the pricing page is not the available price.
 
+### Staging weights on a network volume
+
+A recipe profile downloads its weights at every launch: for the frontier that was about
+20 of 22 minutes to ready (252 GB, $8.36/hr). Staging puts them on a RunPod network
+volume once:
+
+```text
+offrig stage frontier --dc EUR-IS-1          shows the monthly cost, changes nothing
+offrig stage frontier --dc EUR-IS-1 --yes    creates the volume and downloads the weights
+offrig stage frontier --remove --yes         deletes the volume (the undo)
+```
+
+- The volume bills monthly whether a pod runs or not (300 GB for the frontier is about
+  $21/month at $0.07/GB), so only a human stages; no agent tool can.
+- A volume lives in one data center, so the profile's pods then launch only there, and
+  offers and plans are priced there. Pick one with network storage and the profile's
+  GPUs; `offrig gpus` and RunPod's console show where they are.
+- The download runs on the cheapest GPU pod available in that data center. The pod is
+  terminated on success, on failure, or on timeout.
+- The volume is recorded in the profile before the download starts, so a failed stage
+  is never forgotten; re-run to resume, or `--remove`.
+- A staged launch runs Hugging Face offline, only when the stage completed (a marker on
+  the volume). A half-staged volume downloads the rest instead of failing.
+
 ## Money safety
 
 - Before a launch, offrig shows the cheapest free match and your runway with the pod
@@ -158,6 +182,7 @@ Prices are secure-cloud prices, read live; the pricing page is not the available
 | SSH alias `offrig` | `~/.ssh/config`, between `# >>> offrig:offrig >>>` markers | delete the marked block |
 | Pod host keys | `~/.ssh/known_hosts_offrig` | delete the file |
 | Settings | `%APPDATA%\offrig\config.toml` | delete the file |
+| Staged weights (only with `offrig stage --yes`) | a RunPod network volume `offrig-<profile>`; bills monthly | `offrig stage <profile> --remove --yes` |
 
 Comments and layout in Zed's settings are preserved: edits go through a JSONC syntax tree.
 

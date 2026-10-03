@@ -283,6 +283,16 @@ impl RunPod {
         read_json(resp, &format!("create network volume {name}"))
     }
 
+    pub fn delete_volume(&self, id: &str) -> Result<()> {
+        let resp = self
+            .agent
+            .delete(self.url(&format!("/networkvolumes/{id}")))
+            .header("Authorization", self.auth())
+            .call()
+            .map_err(|e| Error::http("delete network volume", e))?;
+        read_ok(resp, &format!("delete network volume {id}"))
+    }
+
     fn graphql<T: DeserializeOwned>(&self, query: &str, what: &str) -> Result<T> {
         #[derive(Deserialize)]
         struct Resp<T> {
@@ -333,6 +343,16 @@ impl RunPod {
 
     /// Secure-cloud offers for every GPU type at `gpu_count`, cheapest available first.
     pub fn gpu_offers(&self, gpu_count: u32) -> Result<Vec<GpuOffer>> {
+        self.gpu_offers_in(gpu_count, None)
+    }
+
+    /// Offers in one data center (a profile pinned to a staged volume can only rent
+    /// there), or across all of them.
+    pub fn gpu_offers_in(
+        &self,
+        gpu_count: u32,
+        data_center: Option<&str>,
+    ) -> Result<Vec<GpuOffer>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Price {
@@ -358,8 +378,12 @@ impl RunPod {
         }
         let query = format!(
             "query {{ gpuTypes {{ id displayName memoryInGb secureCloud \
-             lowestPrice(input: {{gpuCount: {gpu_count}, secureCloud: true}}) \
-             {{ uninterruptablePrice stockStatus }} }} }}"
+             lowestPrice(input: {{gpuCount: {gpu_count}, secureCloud: true{dc}}}) \
+             {{ uninterruptablePrice stockStatus }} }} }}",
+            dc = data_center
+                .filter(|d| d.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+                .map(|d| format!(", dataCenterId: \"{d}\""))
+                .unwrap_or_default()
         );
         let d: Data = self.graphql(&query, "gpu offers")?;
         let mut offers: Vec<GpuOffer> = d

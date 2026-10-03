@@ -51,6 +51,10 @@ mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh
 printf '%s\n' "${PUBLIC_KEY:-}" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
 ssh-keygen -A >/dev/null
 /usr/sbin/sshd -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AllowTcpForwarding=local
+if [ -f "/workspace/offrig/staged/$OFFRIG_STAGE_KEY" ]; then
+  export HF_HUB_OFFLINE=1
+  echo "[offrig] weights staged on the volume; Hugging Face offline"
+fi
 echo "[offrig] sshd up, starting sglang: $OFFRIG_MODEL as $OFFRIG_SERVED"
 python3 -m sglang.launch_server --model-path "$OFFRIG_MODEL" --served-model-name "$OFFRIG_SERVED" \
   --host 127.0.0.1 --port "$OFFRIG_PORT" $OFFRIG_ARGS > /workspace/offrig/engine.log 2>&1
@@ -110,6 +114,7 @@ pub fn engine_env(profile: &Profile, r: &Recipe) -> BTreeMap<String, String> {
     env.insert("OFFRIG_PORT".into(), REMOTE_OLLAMA_PORT.to_string());
     env.insert("OFFRIG_ARGS".into(), engine_args(profile, r).join(" "));
     env.insert("HF_HOME".into(), HF_DIR.into());
+    env.insert("OFFRIG_STAGE_KEY".into(), crate::stage::stage_key(&r.model));
     if let Some(sec) = &r.hf_token_secret {
         // RunPod substitutes the secret at start; the token is never in this spec.
         env.insert("HF_TOKEN".into(), format!("{{{{ RUNPOD_SECRET_{sec} }}}}"));
@@ -138,7 +143,7 @@ pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
         volume_in_gb: (!on_volume).then_some(profile.volume_gb),
         network_volume_id: profile.network_volume_id.clone(),
         volume_mount_path: "/workspace".into(),
-        data_center_ids: vec![],
+        data_center_ids: profile.data_center_id.iter().cloned().collect(),
         docker_entrypoint: vec!["bash".into(), "-c".into()],
         docker_start_cmd: vec![start.into()],
         env,
@@ -250,6 +255,35 @@ mod tests {
         assert!(
             !frontier.args.iter().any(|a| a.starts_with("fp8")),
             "no fp8 KV on sm_120 by default"
+        );
+    }
+
+    #[test]
+    fn a_staged_profile_launches_in_its_volumes_data_center_and_goes_offline() {
+        let cfg = Config::default();
+        let mut p = cfg.profile("frontier").expect("frontier").clone();
+        p.network_volume_id = Some("vol1".into());
+        p.data_center_id = Some("EUR-IS-1".into());
+        let body = pod_create(&cfg, &p);
+        assert_eq!(body.data_center_ids, ["EUR-IS-1"]);
+        assert_eq!(body.network_volume_id.as_deref(), Some("vol1"));
+        assert_eq!(body.volume_in_gb, None);
+        assert_eq!(
+            body.env["OFFRIG_STAGE_KEY"],
+            "QuantTrio__Qwen3-Coder-480B-A35B-Instruct-AWQ"
+        );
+        let marker = BOOTSTRAP_SGLANG
+            .find("staged/$OFFRIG_STAGE_KEY")
+            .expect("marker check");
+        let engine = BOOTSTRAP_SGLANG
+            .find("sglang.launch_server")
+            .expect("engine");
+        assert!(marker < engine && BOOTSTRAP_SGLANG.contains("HF_HUB_OFFLINE=1"));
+        assert!(
+            pod_create(&cfg, cfg.profile("frontier").expect("f"))
+                .data_center_ids
+                .is_empty(),
+            "unstaged profiles take any data center"
         );
     }
 
