@@ -9,6 +9,10 @@ use crate::error::{Error, Result};
 
 /// The pinned pod image. Moving it is a reviewed change, never a floating `latest`.
 pub const OLLAMA_IMAGE: &str = "ollama/ollama:0.35.0";
+/// The pinned SGLang image for the recipe tiers. CUDA 13 builds are the line that
+/// covers Blackwell (sm_120); v0.5.20 over v0.5.21, which was a day old on
+/// 2026-10-03. Research and sources: docs/sidecar-design.md, phase 3b.
+pub const SGLANG_IMAGE: &str = "lmsysorg/sglang:v0.5.20-cu130";
 /// Ollama's port inside the pod. It listens on 127.0.0.1 only and is never exposed.
 pub const REMOTE_OLLAMA_PORT: u16 = 11434;
 /// The local Ollama's port on this machine. The tunnel must never use it.
@@ -75,6 +79,42 @@ pub struct Profile {
     /// one slot and 102 tok/s with four on the same GPU, under 8 parallel requests.
     #[serde(default = "default_parallel")]
     pub parallel: u32,
+    /// Serve with another engine than the pinned Ollama. `None` is Ollama, with
+    /// `models` pulled from its registry. With a recipe, the engine downloads
+    /// `recipe.model` from Hugging Face at start and serves it as `models[0].name`.
+    #[serde(default)]
+    pub recipe: Option<Recipe>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    Sglang,
+}
+
+/// How a non-Ollama engine is started on the pod. Engine knowledge lives here, in
+/// data, not in code (the engine-room rule in docs/sidecar-design.md).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Recipe {
+    pub engine: Engine,
+    /// A pinned image tag, never `latest`.
+    pub image: String,
+    /// Hugging Face repo id of the weights.
+    pub model: String,
+    /// Extra server arguments, one token each (no spaces inside a token).
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Name of a RunPod secret holding a Hugging Face token, for gated repos. It is
+    /// referenced as `{{ RUNPOD_SECRET_<name> }}`, so the token never enters the pod
+    /// spec or this file.
+    #[serde(default)]
+    pub hf_token_secret: Option<String>,
+}
+
+impl Profile {
+    pub fn engine(&self) -> Option<Engine> {
+        self.recipe.as_ref().map(|r| r.engine)
+    }
 }
 
 fn default_parallel() -> u32 {
@@ -129,6 +169,63 @@ fn model(name: &str, size_gb: f64, images: bool) -> ModelEntry {
     }
 }
 
+impl Recipe {
+    pub fn validate(&self, profile: &str, models: usize) -> Result<()> {
+        let bad = |why: String| Err(Error::Config(format!("profile {profile}: {why}")));
+        match self.image.rsplit_once(':') {
+            Some((_, tag)) if !tag.is_empty() && tag != "latest" && !tag.contains('/') => {}
+            _ => {
+                return bad(format!(
+                    "recipe image {:?} needs a pinned tag, not latest",
+                    self.image
+                ));
+            }
+        }
+        if self.model.trim().is_empty() || self.model.contains(char::is_whitespace) {
+            return bad(format!(
+                "recipe model {:?} must be a Hugging Face repo id",
+                self.model
+            ));
+        }
+        if let Some(a) = self
+            .args
+            .iter()
+            .find(|a| a.is_empty() || a.contains(char::is_whitespace))
+        {
+            return bad(format!("recipe arg {a:?} must be one token with no spaces"));
+        }
+        if let Some(sec) = &self.hf_token_secret
+            && (sec.is_empty()
+                || !sec
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        {
+            return bad(format!(
+                "hf_token_secret {sec:?} must be a RunPod secret name"
+            ));
+        }
+        if let Some(a) = self.args.iter().find(|a| {
+            [
+                "--tp",
+                "--tp-size",
+                "--tensor-parallel-size",
+                "--context-length",
+                "--port",
+                "--host",
+            ]
+            .contains(&a.split('=').next().unwrap_or(a))
+        }) {
+            return bad(format!(
+                "recipe arg {a} is set by offrig (GPU count, context length, loopback port); remove it"
+            ));
+        }
+        if models != 1 {
+            return bad("a recipe serves exactly one model; list it once in models".into());
+        }
+        Ok(())
+    }
+}
+
 pub fn default_profiles() -> Vec<Profile> {
     vec![
         Profile {
@@ -150,6 +247,7 @@ pub fn default_profiles() -> Vec<Profile> {
             models: vec![model("qwen3:4b", 2.5, false)],
             wait_for_gpu_minutes: 0,
             parallel: 4,
+            recipe: None,
         },
         Profile {
             name: "medium".into(),
@@ -174,6 +272,7 @@ pub fn default_profiles() -> Vec<Profile> {
             ],
             wait_for_gpu_minutes: 0,
             parallel: 4,
+            recipe: None,
         },
         Profile {
             name: "frontier".into(),
@@ -190,12 +289,72 @@ pub fn default_profiles() -> Vec<Profile> {
             volume_gb: 400,
             container_disk_gb: 40,
             context_length: 65_536,
-            models: vec![model("qwen3-coder:480b", 290.0, false)],
+            // AWQ 4-bit, 252 GB on disk (measured from the HF API 2026-10-03; the card's
+            // "236" is GiB), leaves about 130 GB across the 4 GPUs for context.
+            // Full-precision KV: fp8 KV corrupted output on sm_120 in reports.
+            models: vec![model("qwen3-coder-480b", 252.0, false)],
             // 4x comes and goes within minutes; wait for it rather than settle.
             wait_for_gpu_minutes: 120,
-            parallel: 4,
+            parallel: 16,
+            recipe: Some(Recipe {
+                engine: Engine::Sglang,
+                image: SGLANG_IMAGE.into(),
+                model: "QuantTrio/Qwen3-Coder-480B-A35B-Instruct-AWQ".into(),
+                args: vec![
+                    "--tool-call-parser".into(),
+                    "qwen3_coder".into(),
+                    "--mem-fraction-static".into(),
+                    "0.88".into(),
+                ],
+                hf_token_secret: None,
+            }),
         },
+        rehearsal(
+            "frontier-mini",
+            "qwen3-coder-30b",
+            31.0,
+            "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8",
+        ),
+        rehearsal(
+            "frontier-mini-awq",
+            "qwen3-coder-30b-awq",
+            17.0,
+            "QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ",
+        ),
     ]
+}
+
+/// The frontier engine path on one RTX PRO 6000, with a 30B model: the same image,
+/// engine and flags, for cents instead of dollars.
+fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
+    Profile {
+        name: name.into(),
+        tier: Tier::Medium,
+        gpu_type_ids: vec![
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition".into(),
+            "NVIDIA RTX PRO 6000 Blackwell Workstation Edition".into(),
+        ],
+        gpu_count: 1,
+        network_volume_id: None,
+        volume_gb: 80,
+        container_disk_gb: 40,
+        context_length: 65_536,
+        models: vec![model(served, size_gb, false)],
+        wait_for_gpu_minutes: 0,
+        parallel: 8,
+        recipe: Some(Recipe {
+            engine: Engine::Sglang,
+            image: SGLANG_IMAGE.into(),
+            model: repo.into(),
+            args: vec![
+                "--tool-call-parser".into(),
+                "qwen3_coder".into(),
+                "--mem-fraction-static".into(),
+                "0.88".into(),
+            ],
+            hf_token_secret: None,
+        }),
+    }
 }
 
 /// Prefer the key this rig registered with RunPod, then the OpenSSH default.
@@ -270,6 +429,9 @@ impl Config {
                     p.name
                 )));
             }
+            if let Some(r) = &p.recipe {
+                r.validate(&p.name, p.models.len())?;
+            }
         }
         Ok(())
     }
@@ -313,6 +475,42 @@ mod tests {
         let back: Config = toml::from_str(&text).expect("config should parse back");
         assert_eq!(cfg, back);
         assert_eq!(cfg.zed_api_url(), "http://127.0.0.1:11435/v1");
+    }
+
+    #[test]
+    fn recipes_are_pinned_and_leave_parallelism_and_ports_to_offrig() {
+        let base = Config::default()
+            .profile("frontier-mini")
+            .expect("rehearsal")
+            .recipe
+            .clone()
+            .expect("recipe");
+        let check = |f: &dyn Fn(&mut Recipe), models: usize| {
+            let mut r = base.clone();
+            f(&mut r);
+            r.validate("t", models)
+        };
+        assert!(check(&|_| {}, 1).is_ok());
+        assert!(
+            check(&|r| r.image = "lmsysorg/sglang:latest".into(), 1).is_err(),
+            "latest refused"
+        );
+        assert!(
+            check(&|r| r.image = "lmsysorg/sglang".into(), 1).is_err(),
+            "untagged refused"
+        );
+        assert!(
+            check(&|r| r.args.push("--tp".into()), 1).is_err(),
+            "tp comes from gpu_count"
+        );
+        assert!(
+            check(&|r| r.args.push("--host=0.0.0.0".into()), 1).is_err(),
+            "never off loopback"
+        );
+        assert!(check(&|r| r.args.push("two words".into()), 1).is_err());
+        assert!(check(&|r| r.hf_token_secret = Some("hf token".into()), 1).is_err());
+        assert!(check(&|r| r.hf_token_secret = Some("hf_token".into()), 1).is_ok());
+        assert!(check(&|_| {}, 2).is_err(), "one model per recipe");
     }
 
     #[test]

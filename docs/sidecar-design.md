@@ -331,9 +331,39 @@ empties, which is the session compensator itself; the watchdog stays the backsto
 UNCERTAINTY_GATED_HUMANS 2: work that code cannot check is routed to review, not
 auto-accepted. EXTERNAL_VERIFIER: n/a (deterministic checks only).
 
+## Phase 3b: recipe engines (SGLang)
+
+Facts gathered by a research agent on 2026-10-03, from Docker Hub, the SGLang releases
+and docs, Hugging Face model cards and the RunPod docs. † marks second-hand or
+unconfirmed.
+
+- SGLang v0.5.21 (2026-10-02) and v0.5.20 (2026-09-18) ship CUDA 13 images (`-cu130`).
+  The CUDA 12 images are retired at v0.5.19, and there is no separate Blackwell tag.
+  → **Pin `lmsysorg/sglang:v0.5.20-cu130`, not a day-old release.**
+- fp8 KV cache corrupted output on sm_120 in two reports: sgl-project/sglang#19603, and
+  the rtx6kpro notes†. → **Full-precision KV by default. AWQ 252 GB on 384 GB still
+  leaves about 130 GB for context.**
+- `/v1/models` answers 200 while SGLang is still warming up; `/health` waits for it
+  (gpustack PR #6302†). → **Readiness needs both `/health` and the served model listed.**
+- Qwen3-Coder-480B AWQ: `QuantTrio/Qwen3-Coder-480B-A35B-Instruct-AWQ`, 252 GB
+  (measured from the HF API). No report found of it running under SGLang on sm_120. →
+  **Two cheap rehearsals first on one RTX PRO 6000: `frontier-mini` (FP8 30B) for the
+  engine path, and `frontier-mini-awq` (QuantTrio's AWQ 30B, 17 GB) for the 4-bit MoE
+  kernels.** If either fails, the community's sm_120 fallback is
+  `--attention-backend triton --moe-runner-backend triton`†.
+- Qwen3-Coder is non-thinking (model card). → **The thinking cost measured on qwen3:4b
+  does not apply at the frontier.**
+- RunPod secrets: `{{ RUNPOD_SECRET_<name> }}` in env. Substitution is documented for
+  pods and templates, but not for the REST `POST /pods` env†. → **Supported. It will
+  be verified the first time a gated model is used.**
+- First download of 252 GB is estimated at 20 to 40 minutes, plus 5 to 15 minutes of
+  load. The estimate is unmeasured†. → **75-minute engine timeout. A network volume
+  pre-staged with the weights is the cure for repeated frontier runs.**
+  `HF_HUB_ENABLE_HF_TRANSFER` is ignored by huggingface_hub 1.x; hf_xet is the default.
+
 ## Decisions
 
-- 2026-10-02, Mike: the frontier tier serves with SGLang (TP=4, AWQ, fp8 KV). Small and medium stay on Ollama.
+- 2026-10-02, Mike: the frontier tier serves with SGLang (TP=4, AWQ, fp8 KV). Small and medium stay on Ollama. Amended 2026-10-03 on the 3b evidence: KV stays full precision on sm_120, where fp8 KV was reported to corrupt output.
 - 2026-10-02, Mike: register the side-car with Claude Code at user scope. Because it then starts in every project, the store opens on first use, never on start.
 - One database per project, at `<project>/.offrig/offrig.db`, so memory travels with the code (the proposal; not overruled).
 - 2026-10-03, Mike: phase 3 green-lit. Order: 3a runner, 3b SGLang frontier recipe (rehearsed on 1× RTX PRO 6000 first), 3c first real frontier queue.

@@ -182,7 +182,10 @@ fn ensure_tunnel(s: &Session) -> Result<Option<Tunnel>> {
         return Ok(None);
     }
     let mut last = HashMap::new();
-    Ok(Some(s.open_tunnel(&mut print_event(&mut last))?))
+    Ok(Some(s.open_tunnel(
+        s.cfg.active()?,
+        &mut print_event(&mut last),
+    )?))
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -320,7 +323,7 @@ fn run(cli: Cli) -> Result<()> {
                 &stop,
                 &mut print_event(&mut last),
             )?;
-            let tunnel = s.open_tunnel(&mut print_event(&mut last))?;
+            let tunnel = s.open_tunnel(&p, &mut print_event(&mut last))?;
             s.ensure_models(&p, &mut print_event(&mut last))?;
             if !no_zed {
                 configure_zed(&s, &p, default_model.as_deref())?;
@@ -375,14 +378,11 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Models { profile } => {
             let (s, p) = session_for(&profile)?;
             require_pod(&s, &p)?;
-            let json = remote::pod_tags_json(&s.cfg.ssh_alias)?;
+            // The OpenAI model list: Ollama and recipe engines both serve it.
+            let json = remote::pod_models_json(&s.cfg.ssh_alias)?;
             let v: serde_json::Value = serde_json::from_str(&json)?;
-            for m in v["models"].as_array().cloned().unwrap_or_default() {
-                println!(
-                    "  {} ({:.1} GB)",
-                    m["name"].as_str().unwrap_or("?"),
-                    m["size"].as_f64().unwrap_or(0.0) / 1e9
-                );
+            for id in offrig_core::ollama::model_ids(&v) {
+                println!("  {id}");
             }
             Ok(())
         }
@@ -612,7 +612,7 @@ fn hold(
     let mut last = HashMap::new();
     let mut tunnel = match tunnel {
         Some(t) => t,
-        None => s.open_tunnel(&mut print_event(&mut last))?,
+        None => s.open_tunnel(p, &mut print_event(&mut last))?,
     };
     let mut idle = s
         .cfg
@@ -636,7 +636,7 @@ fn hold(
                 Some(fresh) => s.write_ssh(&fresh)?,
                 None => bail!("the pod is gone"),
             }
-            tunnel = s.open_tunnel(&mut print_event(&mut last))?;
+            tunnel = s.open_tunnel(p, &mut print_event(&mut last))?;
         }
         if Instant::now() >= next_sample {
             next_sample = Instant::now() + Duration::from_secs(60);

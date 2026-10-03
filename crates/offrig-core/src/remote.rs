@@ -235,17 +235,64 @@ pub fn bootstrap_log(alias: &str) -> Result<String> {
 }
 
 /// The pod's model list read on the pod itself, for the tunnel identity check.
-pub fn pod_tags_json(alias: &str) -> Result<String> {
+/// The pod engine's OpenAI model list, read on the pod itself (both engines serve it).
+pub fn pod_models_json(alias: &str) -> Result<String> {
     ssh_exec(
         alias,
-        "curl -s http://127.0.0.1:11434/api/tags",
+        "curl -s http://127.0.0.1:11434/v1/models",
         Duration::from_secs(30),
     )
+}
+
+/// A recipe engine while it starts: bytes downloaded, whether it still runs, and the
+/// last lines of its log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineState {
+    pub hf_bytes: u64,
+    pub running: bool,
+    pub log_tail: String,
+}
+
+pub const ENGINE_STATE_SCRIPT: &str = "du -sb /workspace/hf 2>/dev/null | cut -f1; \
+if pgrep -f sglang.launch_server >/dev/null; then echo running; else echo stopped; fi; \
+tail -n 6 /workspace/offrig/engine.log 2>/dev/null";
+
+pub fn parse_engine_state(out: &str) -> EngineState {
+    let mut lines = out.lines();
+    let hf_bytes = lines
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+        .unwrap_or(0);
+    let running = lines.next().is_some_and(|l| l.trim() == "running");
+    EngineState {
+        hf_bytes,
+        running,
+        log_tail: lines.collect::<Vec<_>>().join("\n"),
+    }
+}
+
+pub fn engine_state(alias: &str) -> Result<EngineState> {
+    Ok(parse_engine_state(&ssh_exec(
+        alias,
+        ENGINE_STATE_SCRIPT,
+        Duration::from_secs(30),
+    )?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_state_reads_bytes_liveness_and_log() {
+        let s = parse_engine_state("31457280000\nrunning\nLoading safetensors 40%\nstill loading");
+        assert_eq!(s.hf_bytes, 31_457_280_000);
+        assert!(s.running);
+        assert_eq!(s.log_tail, "Loading safetensors 40%\nstill loading");
+        let dead = parse_engine_state("\nstopped\n[offrig] engine exited with status 1");
+        assert_eq!(dead.hf_bytes, 0);
+        assert!(!dead.running && dead.log_tail.contains("status 1"));
+    }
 
     #[test]
     fn parses_nvidia_smi_rows_and_skips_noise() {

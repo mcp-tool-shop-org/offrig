@@ -40,6 +40,9 @@ pub struct ZedOutcome {
 pub const POD_READY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const SSH_READY_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 pub const OLLAMA_READY_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+/// A recipe engine downloads its weights from Hugging Face, then loads them: about
+/// 21 minutes for 252 GB at 200 MB/s plus the load. The plan deadline still rules.
+pub const ENGINE_READY_TIMEOUT: Duration = Duration::from_secs(75 * 60);
 
 /// Refuse a profile whose models already exist in the local Ollama: the same name
 /// could then be served on this machine. Checked before any money is spent.
@@ -296,8 +299,9 @@ impl Session {
         })
     }
 
-    /// Open the tunnel and wait for the pod's Ollama to answer through it.
-    pub fn open_tunnel(&self, on: &mut dyn FnMut(Event)) -> Result<Tunnel> {
+    /// Open the tunnel. For Ollama, wait for it to answer through the tunnel; a recipe
+    /// engine answers only once its weights load, which `ensure_models` waits for.
+    pub fn open_tunnel(&self, profile: &Profile, on: &mut dyn FnMut(Event)) -> Result<Tunnel> {
         let mut tunnel = Tunnel::start(
             &self.cfg.ssh_alias,
             self.cfg.tunnel_port,
@@ -307,6 +311,9 @@ impl Session {
             "tunnel up on 127.0.0.1:{}",
             self.cfg.tunnel_port
         )));
+        if profile.recipe.is_some() {
+            return Ok(tunnel);
+        }
         let ollama = Ollama::new(&self.cfg.tunnel_base_url());
         let deadline = Instant::now() + OLLAMA_READY_TIMEOUT;
         loop {
@@ -332,8 +339,12 @@ impl Session {
         }
     }
 
-    /// Pull every profile model that is missing, on the pod, and wait for them.
+    /// Pull every profile model that is missing, on the pod, and wait for them. A
+    /// recipe engine fetches its own weights; this waits until it serves them.
     pub fn ensure_models(&self, profile: &Profile, on: &mut dyn FnMut(Event)) -> Result<()> {
+        if profile.recipe.is_some() {
+            return self.wait_engine(profile, ENGINE_READY_TIMEOUT, on);
+        }
         let ollama = Ollama::new(&self.cfg.tunnel_base_url());
         let have: Vec<String> = ollama.tags()?.into_iter().map(|t| t.name).collect();
         let mut pending: Vec<String> = profile
@@ -381,8 +392,81 @@ impl Session {
         Ok(())
     }
 
-    /// Zed model entries for the profile's models, using what Ollama says each can do.
+    /// Wait until the recipe engine serves the profile's model through the tunnel,
+    /// reporting download and load progress; fail at once if the engine exits.
+    pub fn wait_engine(
+        &self,
+        profile: &Profile,
+        limit: Duration,
+        on: &mut dyn FnMut(Event),
+    ) -> Result<()> {
+        let want = profile
+            .models
+            .first()
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
+        let api = Ollama::new(&self.cfg.tunnel_base_url());
+        let started = Instant::now();
+        let mut next_look = Instant::now();
+        loop {
+            if api.answers("/health")
+                && let Ok(ids) = api.openai_models()
+                && ids.iter().any(|i| i == &want)
+            {
+                on(Event::Step(format!(
+                    "engine serving {want} after {}s",
+                    started.elapsed().as_secs()
+                )));
+                return Ok(());
+            }
+            if Instant::now() >= next_look {
+                next_look = Instant::now() + Duration::from_secs(20);
+                if let Ok(st) = remote::engine_state(&self.cfg.ssh_alias) {
+                    let last = st.log_tail.lines().last().unwrap_or("").trim().to_string();
+                    if !st.running && started.elapsed() > Duration::from_secs(30) {
+                        return Err(Error::Engine(format!(
+                            "the engine stopped before serving {want}: {}",
+                            st.log_tail.trim()
+                        )));
+                    }
+                    on(Event::Step(format!(
+                        "engine starting: {:.1} GB of weights on disk ({}s){}",
+                        st.hf_bytes as f64 / 1e9,
+                        started.elapsed().as_secs(),
+                        if last.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; {}", clip_line(&last, 120))
+                        }
+                    )));
+                }
+            }
+            if started.elapsed() >= limit {
+                return Err(Error::Timeout(format!(
+                    "the engine did not serve {want} within {} minutes",
+                    limit.as_secs() / 60
+                )));
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
+    /// Zed model entries for the profile's models. Ollama says what each can do; a
+    /// recipe engine's model is described by the profile.
     pub fn zed_models(&self, profile: &Profile) -> Result<Vec<ZedModel>> {
+        if profile.recipe.is_some() {
+            return Ok(profile
+                .models
+                .iter()
+                .map(|m| ZedModel {
+                    name: m.name.clone(),
+                    display_name: format!("RunPod · {}", m.name),
+                    max_tokens: profile.context_length,
+                    tools: m.tools,
+                    images: m.images,
+                })
+                .collect());
+        }
         let ollama = Ollama::new(&self.cfg.tunnel_base_url());
         profile
             .models
@@ -472,6 +556,13 @@ impl Session {
         on(Event::Step(format!("terminated {} ({})", pod.name, pod.id)));
         Ok(())
     }
+}
+
+fn clip_line(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    format!("{}...", s.chars().take(max).collect::<String>())
 }
 
 #[cfg(test)]

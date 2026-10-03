@@ -107,8 +107,8 @@ side-car is gone. It never acts on a failed lookup, terminates exactly once, clo
 books, and logs to `.offrig/watchdog-<plan>.log`. If getting a rented pod ready fails,
 the launch terminates it instead of leaving it billing.
 
-The runner on the pod and the SGLang frontier recipe are phase 3.
 The design and its evidence are in [docs/sidecar-design.md](docs/sidecar-design.md).
+
 ## Tiers
 
 Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defaults:
@@ -117,7 +117,18 @@ Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defau
 |---|---|---|---|
 | small | 1 × RTX 2000 Ada / A4000 class | `qwen3:4b` | about $0.25/hr |
 | medium | 1 × RTX PRO 6000 (96 GB); A100 or H100 80 GB if none is free | `qwen3-coder:30b-a3b-q8_0`, `gpt-oss:120b` | $2.09/hr (A100 fallback $1.59) |
-| frontier | 4 × RTX PRO 6000 (384 GB) | `qwen3-coder:480b` (290 GB), about 90 GB left for context | $8.36/hr |
+| frontier | 4 × RTX PRO 6000 (384 GB), **SGLang** | Qwen3-Coder-480B AWQ 4-bit (252 GB), about 130 GB left for context | $8.36/hr |
+| frontier-mini | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B FP8 (31 GB): the frontier engine path, rehearsed cheaply | about $1.7/hr |
+| frontier-mini-awq | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B AWQ (17 GB): the frontier's 4-bit MoE kernels, rehearsed cheaply | about $1.7/hr |
+
+A profile with a `recipe` runs another engine than Ollama: a pinned image
+(`lmsysorg/sglang:v0.5.20-cu130`), a Hugging Face model it downloads at start, and
+extra server arguments. offrig sets tensor parallelism from the GPU count, the context
+length from the profile, and keeps the engine on the pod's loopback; a recipe cannot
+override those. For a gated repo, `hf_token_secret` names a RunPod secret, referenced as
+`{{ RUNPOD_SECRET_<name> }}` so the token never enters the pod spec. The launch waits
+for the engine's `/health` and model list, reports weights on disk while it downloads,
+and stops at once (with the engine's log) if the engine exits.
 
 Each profile lists GPU types in priority order; RunPod takes the first with capacity.
 When none is free, a profile can wait (`wait_for_gpu_minutes`; frontier waits up to 120 minutes):

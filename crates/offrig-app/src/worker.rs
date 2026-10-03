@@ -352,7 +352,8 @@ impl Worker {
     fn open_tunnel(&mut self) -> Result<()> {
         self.want_tunnel = true;
         self.tunnel = None;
-        let t = self.session.open_tunnel(&mut self.events())?;
+        let p = self.profile()?;
+        let t = self.session.open_tunnel(&p, &mut self.events())?;
         self.tunnel = Some(t);
         self.out.send(Update::Tunnel(true));
         Ok(())

@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use offrig_core::checks;
-use offrig_core::config::Config;
+use offrig_core::config::{Config, Profile};
 use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
 use offrig_core::ollama::Ollama;
@@ -89,7 +89,7 @@ fn log(project: &Path, plan_id: i64, msg: &str) {
 
 /// Where the pod model answers: through the runner's own tunnel, or (debug builds,
 /// tests only) a base URL from the environment.
-fn endpoint(cfg: &Config, plan_pod: &str) -> Result<(String, Option<Tunnel>)> {
+fn endpoint(cfg: &Config, profile: &Profile, plan_pod: &str) -> Result<(String, Option<Tunnel>)> {
     #[cfg(debug_assertions)]
     if let Ok(base) = std::env::var("OFFRIG_TEST_OLLAMA_BASE") {
         return Ok((base, None));
@@ -104,7 +104,7 @@ fn endpoint(cfg: &Config, plan_pod: &str) -> Result<(String, Option<Tunnel>)> {
     let session = Session::with_client(own.clone(), RunPod::from_env()?);
     let pod = session.rp.get_pod(plan_pod)?;
     session.write_ssh(&pod)?;
-    let t = session.open_tunnel(&mut |_| {})?;
+    let t = session.open_tunnel(profile, &mut |_| {})?;
     Ok((own.tunnel_base_url(), Some(t)))
 }
 
@@ -135,7 +135,7 @@ pub fn run(cfg: &Config, project: &Path, plan_id: i64, keep_pod: bool) -> anyhow
         &format!("runner started: {model}, {slots} in flight"),
     );
 
-    let (base, mut tunnel) = match endpoint(cfg, &pod_id) {
+    let (base, mut tunnel) = match endpoint(cfg, &profile, &pod_id) {
         Ok(v) => v,
         Err(e) => {
             store.update_job(
@@ -168,7 +168,7 @@ pub fn run(cfg: &Config, project: &Path, plan_id: i64, keep_pod: bool) -> anyhow
             && !t.is_alive()
         {
             log(project, plan_id, "tunnel died; reopening");
-            tunnel = match endpoint(cfg, &pod_id) {
+            tunnel = match endpoint(cfg, &profile, &pod_id) {
                 Ok((_, t)) => t,
                 Err(e) => {
                     log(project, plan_id, &format!("reopen failed: {}", chain(&e)));

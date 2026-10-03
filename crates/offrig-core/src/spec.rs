@@ -1,10 +1,11 @@
-//! Turns a profile into a `POST /pods` body. The pod runs the pinned Ollama image
-//! with a bootstrap that adds sshd, and exposes only 22/tcp: Ollama listens on the
-//! pod's loopback, so the one way to reach it is the SSH tunnel.
+//! Turns a profile into a `POST /pods` body. The pod runs the pinned Ollama image, or
+//! a recipe's engine image, with a bootstrap that adds sshd, and exposes only 22/tcp:
+//! the engine listens on the pod's loopback, so the one way to reach it is the SSH
+//! tunnel.
 
 use std::collections::BTreeMap;
 
-use crate::config::{Config, OLLAMA_IMAGE, Profile, REMOTE_OLLAMA_PORT};
+use crate::config::{Config, Engine, OLLAMA_IMAGE, Profile, REMOTE_OLLAMA_PORT, Recipe};
 use crate::runpod::PodCreate;
 
 /// Where weights live on the pod. On a network volume they outlive the pod.
@@ -28,6 +29,33 @@ ssh-keygen -A >/dev/null
 mkdir -p "$OLLAMA_MODELS"
 echo "[offrig] sshd up, starting ollama on $OLLAMA_HOST"
 exec ollama serve
+"#;
+
+/// Where a recipe engine keeps Hugging Face downloads (on the volume).
+pub const HF_DIR: &str = "/workspace/hf";
+/// The engine's own log on the pod, read when it fails.
+pub const ENGINE_LOG: &str = "/workspace/offrig/engine.log";
+
+/// Runs as `bash -c` in place of the SGLang image's entrypoint. sshd comes first so a
+/// failed engine can still be read over ssh; the container stays up after the engine
+/// exits for the same reason (the launch reads the log, then terminates the pod).
+pub const BOOTSTRAP_SGLANG: &str = r#"set -u
+mkdir -p /workspace/offrig /workspace/hf
+exec > >(tee -a /workspace/offrig/bootstrap.log) 2>&1
+echo "[offrig] bootstrap start $(date -u +%FT%TZ)"
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v sshd >/dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-server >/dev/null
+fi
+mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh
+printf '%s\n' "${PUBLIC_KEY:-}" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+ssh-keygen -A >/dev/null
+/usr/sbin/sshd -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AllowTcpForwarding=local
+echo "[offrig] sshd up, starting sglang: $OFFRIG_MODEL as $OFFRIG_SERVED"
+python3 -m sglang.launch_server --model-path "$OFFRIG_MODEL" --served-model-name "$OFFRIG_SERVED" \
+  --host 127.0.0.1 --port "$OFFRIG_PORT" $OFFRIG_ARGS > /workspace/offrig/engine.log 2>&1
+echo "[offrig] engine exited with status $?" | tee -a /workspace/offrig/engine.log
+sleep infinity
 "#;
 
 pub fn pod_name(profile: &Profile) -> String {
@@ -55,11 +83,51 @@ pub fn ollama_env(profile: &Profile) -> BTreeMap<String, String> {
     env
 }
 
+/// The engine's arguments: tensor parallel and context length come from the profile,
+/// so they cannot disagree with the GPUs rented; the recipe adds the rest.
+pub fn engine_args(profile: &Profile, r: &Recipe) -> Vec<String> {
+    let mut a = vec![
+        "--tp-size".to_string(),
+        profile.gpu_count.to_string(),
+        "--context-length".to_string(),
+        profile.context_length.to_string(),
+    ];
+    a.extend(r.args.iter().cloned());
+    a
+}
+
+pub fn engine_env(profile: &Profile, r: &Recipe) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert("OFFRIG_MODEL".into(), r.model.clone());
+    env.insert(
+        "OFFRIG_SERVED".into(),
+        profile
+            .models
+            .first()
+            .map(|m| m.name.clone())
+            .unwrap_or_default(),
+    );
+    env.insert("OFFRIG_PORT".into(), REMOTE_OLLAMA_PORT.to_string());
+    env.insert("OFFRIG_ARGS".into(), engine_args(profile, r).join(" "));
+    env.insert("HF_HOME".into(), HF_DIR.into());
+    if let Some(sec) = &r.hf_token_secret {
+        // RunPod substitutes the secret at start; the token is never in this spec.
+        env.insert("HF_TOKEN".into(), format!("{{{{ RUNPOD_SECRET_{sec} }}}}"));
+    }
+    env
+}
+
 pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
     let on_volume = profile.network_volume_id.is_some();
+    let (image, start, env) = match &profile.recipe {
+        Some(r) => match r.engine {
+            Engine::Sglang => (r.image.clone(), BOOTSTRAP_SGLANG, engine_env(profile, r)),
+        },
+        None => (OLLAMA_IMAGE.to_string(), BOOTSTRAP, ollama_env(profile)),
+    };
     PodCreate {
         name: pod_name(profile),
-        image_name: OLLAMA_IMAGE.into(),
+        image_name: image,
         gpu_type_ids: profile.gpu_type_ids.clone(),
         gpu_type_priority: "custom".into(),
         gpu_count: profile.gpu_count,
@@ -72,8 +140,8 @@ pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
         volume_mount_path: "/workspace".into(),
         data_center_ids: vec![],
         docker_entrypoint: vec!["bash".into(), "-c".into()],
-        docker_start_cmd: vec![BOOTSTRAP.into()],
-        env: ollama_env(profile),
+        docker_start_cmd: vec![start.into()],
+        env,
     }
 }
 
@@ -103,8 +171,9 @@ mod tests {
     #[test]
     fn pod_serves_requests_in_parallel_slots() {
         let cfg = Config::default();
-        for name in ["small", "medium", "frontier"] {
+        for name in ["small", "medium"] {
             let p = cfg.profile(name).expect("profile");
+            assert!(p.recipe.is_none(), "{name} stays on Ollama");
             assert_eq!(ollama_env(p)["OLLAMA_NUM_PARALLEL"], "4", "{name}");
         }
         // A config saved before the field existed still gets slots.
@@ -112,6 +181,76 @@ mod tests {
         v.as_object_mut().expect("object").remove("parallel");
         let old: Profile = serde_json::from_value(v).expect("old profile");
         assert_eq!(old.parallel, 4);
+    }
+
+    #[test]
+    fn a_recipe_pod_serves_its_engine_on_loopback_with_the_token_as_a_secret() {
+        let cfg = Config::default();
+        let mut p = cfg.profile("frontier").expect("frontier").clone();
+        let r = p.recipe.as_mut().expect("the frontier tier runs a recipe");
+        r.hf_token_secret = Some("hf_token".into());
+        let body = pod_create(&cfg, &p);
+        assert_eq!(body.ports, ["22/tcp"], "only ssh is exposed");
+        assert_eq!(body.image_name, p.recipe.as_ref().expect("recipe").image);
+        assert!(!body.image_name.ends_with(":latest"));
+        assert_eq!(body.env["OFFRIG_PORT"], "11434");
+        assert!(
+            BOOTSTRAP_SGLANG.contains("--host 127.0.0.1"),
+            "never 0.0.0.0"
+        );
+        let args = &body.env["OFFRIG_ARGS"];
+        assert!(args.starts_with("--tp-size 4 --context-length "), "{args}");
+        assert_eq!(body.env["HF_TOKEN"], "{{ RUNPOD_SECRET_hf_token }}");
+        assert!(
+            !body.env.values().any(|v| v.starts_with("hf_")),
+            "no raw token"
+        );
+        let sshd = BOOTSTRAP_SGLANG.find("/usr/sbin/sshd").expect("sshd");
+        let engine = BOOTSTRAP_SGLANG
+            .find("sglang.launch_server")
+            .expect("engine");
+        assert!(sshd < engine, "sshd first, so a failed engine can be read");
+        assert!(BOOTSTRAP_SGLANG.contains("AllowTcpForwarding=local"));
+    }
+
+    #[test]
+    fn rehearsal_profiles_share_the_frontier_engine() {
+        let cfg = Config::default();
+        let frontier = cfg
+            .profile("frontier")
+            .expect("frontier")
+            .recipe
+            .clone()
+            .expect("recipe");
+        for name in ["frontier-mini", "frontier-mini-awq"] {
+            let p = cfg.profile(name).expect("rehearsal profile");
+            let r = p.recipe.as_ref().expect("recipe");
+            assert_eq!(
+                (r.engine, &r.image, &r.args),
+                (frontier.engine, &frontier.image, &frontier.args),
+                "{name}"
+            );
+            assert_eq!(p.gpu_count, 1);
+            assert!(
+                p.gpu_type_ids[0].starts_with("NVIDIA RTX PRO 6000"),
+                "{name} runs on the frontier's GPU type"
+            );
+        }
+        assert!(frontier.model.contains("AWQ"));
+        assert!(
+            cfg.profile("frontier-mini-awq")
+                .expect("awq")
+                .recipe
+                .as_ref()
+                .expect("r")
+                .model
+                .contains("AWQ"),
+            "the AWQ rehearsal exercises the frontier's 4-bit MoE kernels"
+        );
+        assert!(
+            !frontier.args.iter().any(|a| a.starts_with("fp8")),
+            "no fp8 KV on sm_120 by default"
+        );
     }
 
     #[test]

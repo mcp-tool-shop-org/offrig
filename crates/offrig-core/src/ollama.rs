@@ -117,7 +117,37 @@ impl Ollama {
         }
         serde_json::from_str(&text).map_err(|e| Error::decode(what, e))
     }
+}
 
+/// Model ids from an OpenAI-compatible `GET /v1/models`, which Ollama and SGLang both
+/// serve.
+pub fn model_ids(v: &Value) -> Vec<String> {
+    v["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl Ollama {
+    /// True when `path` answers 200. SGLang's `/health` does so only once the model is
+    /// loaded and warm; its `/v1/models` answers earlier.
+    pub fn answers(&self, path: &str) -> bool {
+        self.agent
+            .get(format!("{}{}", self.base, path))
+            .call()
+            .is_ok_and(|r| r.status().as_u16() == 200)
+    }
+
+    pub fn openai_models(&self) -> Result<Vec<String>> {
+        Ok(model_ids(&self.get("/v1/models", "model list")?))
+    }
+}
+
+impl Ollama {
     pub fn version(&self) -> Result<String> {
         let v = self.get("/api/version", "ollama version")?;
         Ok(v["version"].as_str().unwrap_or_default().to_string())

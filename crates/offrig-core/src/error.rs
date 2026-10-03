@@ -62,6 +62,9 @@ pub enum Error {
     #[error("ollama: {0}")]
     Ollama(String),
 
+    #[error("engine: {0}")]
+    Engine(String),
+
     #[error("cancelled while {0}")]
     Cancelled(String),
 

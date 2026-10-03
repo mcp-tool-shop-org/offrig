@@ -206,7 +206,7 @@ fn launch(
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled("getting the pod ready".into()));
         }
-        let tunnel = session.open_tunnel(&mut |e| progress.event(e))?;
+        let tunnel = session.open_tunnel(&profile, &mut |e| progress.event(e))?;
         *lock(&shared.tunnel) = Some(tunnel);
         session.ensure_models(&profile, &mut |e| progress.event(e))?;
         Ok(json!({
@@ -255,7 +255,7 @@ fn ensure_tunnel(cfg: &Config, store: &Store, shared: &Shared) -> Result<String>
     let pod_id = plan.pod_id.clone().unwrap_or_default();
     let pod = session.rp.get_pod(&pod_id)?;
     session.write_ssh(&pod)?;
-    let t = session.open_tunnel(&mut |_| {})?;
+    let t = session.open_tunnel(cfg.profile(&plan.profile)?, &mut |_| {})?;
     *lock(&shared.tunnel) = Some(t);
     Ok(plan.profile)
 }

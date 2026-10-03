@@ -169,15 +169,11 @@ pub fn evaluate(f: &Facts) -> Vec<Check> {
     out
 }
 
+/// Model ids from an OpenAI `/v1/models` body (Ollama and SGLang both serve it).
 fn tag_names(json: &str) -> Option<Vec<String>> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    Some(
-        v["models"]
-            .as_array()?
-            .iter()
-            .filter_map(|m| m["name"].as_str().map(str::to_string))
-            .collect(),
-    )
+    v["data"].as_array()?;
+    Some(crate::ollama::model_ids(&v))
 }
 
 pub fn gather(cfg: &Config, pod: &Pod, zed_settings: &Path) -> Result<Facts> {
@@ -201,11 +197,8 @@ pub fn gather(cfg: &Config, pod: &Pod, zed_settings: &Path) -> Result<Facts> {
         zed_models,
         zed_local_ollama_models: zed::local_ollama_models(&text, zed_settings)?,
         pod_ports: pod.ports.clone(),
-        tunnel_models: tunnel
-            .tags()
-            .ok()
-            .map(|t| t.into_iter().map(|m| m.name).collect()),
-        pod_models: remote::pod_tags_json(&cfg.ssh_alias)
+        tunnel_models: tunnel.openai_models().ok(),
+        pod_models: remote::pod_models_json(&cfg.ssh_alias)
             .ok()
             .as_deref()
             .and_then(tag_names),
@@ -350,11 +343,16 @@ mod tests {
     }
 
     #[test]
-    fn tag_names_reads_ollama_json() {
+    fn tag_names_reads_the_openai_model_list() {
         assert_eq!(
-            tag_names(r#"{"models":[{"name":"a:1"},{"name":"b:2"}]}"#),
+            tag_names(r#"{"object":"list","data":[{"id":"a:1"},{"id":"b:2"}]}"#),
             Some(v(&["a:1", "b:2"]))
         );
         assert_eq!(tag_names("not json"), None);
+        assert_eq!(
+            tag_names("{\"detail\":\"Not Found\"}"),
+            None,
+            "an error body is not an empty list"
+        );
     }
 }
