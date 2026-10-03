@@ -866,7 +866,7 @@ impl Sidecar {
                         "next_action": match h.state {
                             State::Complete => "record what it produced (decisions, facts), then take the next ready handoff",
                             State::InvalidOutput | State::OwnershipViolation => "blocked: fix the cause, then retry with override_reason",
-                            _ => "work it again with offrig_ask",
+                            _ => "a runner working the queue picks it up; otherwise offrig_run, or offrig_ask for one turn",
                         },
                     })),
                     Err(e) => fail(

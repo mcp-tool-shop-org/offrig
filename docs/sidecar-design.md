@@ -241,7 +241,8 @@ the reaper.
    job object where Windows allows, so closing the session does not kill it. Schema v2
    adds the plan clock and jobs, with a tested migration from v1.
 3. **Runner and engine recipe.** 3a, the handoff runner: built 2026-10-03, tested end
-   to end against a mock pod model; live rehearsal next. 3b, the SGLang frontier recipe
+   to end against a mock pod model, and rehearsed live the same day ($0.04; see the
+   README's record). 3b, the SGLang frontier recipe
    (TP=4, AWQ, fp8 KV), rehearsed on 1× RTX PRO 6000 first. 3c, the first real frontier
    queue, once Mike funds it. Later: code handoffs with a branch each, run on the pod.
 

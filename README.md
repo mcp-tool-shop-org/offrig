@@ -212,6 +212,25 @@ has `parallel = 4`. `complete` was refused without a reason (it now defaults to
 while a session was live. Thinking text that leaks into a reply is stripped, and a reply
 emptied by thinking says to raise `max_tokens`.
 
+### Runner rehearsal (2026-10-03, small tier, RTX 2000 Ada, $0.04 booked)
+
+Five handoffs, one depending on another, worked by `offrig_run` with nobody driving:
+
+- Four handoffs in flight at once on four slots (12.9 GB of 16 GB VRAM); the dependent
+  started the moment its dependency completed and built on its result.
+- The three handoffs whose checks covered acceptance completed on their own; the rival
+  backstories (partial checks) and the lore (no checks) went to review.
+- Review sent the lore back ("the river is named after the project"); the live runner
+  adopted it and revised against the feedback ("Veyl River").
+- The queue drained in 6.5 minutes (6 turns, 20,861 tokens); the runner shut the pod
+  down itself.
+
+Learned: deterministic checks verify structure, not design quality. The 4B model passed
+"three verbs" with thin verbs, so `accept_on_checks` is for structural work and design
+work goes to review. qwen3:4b spent about 4,000 tokens thinking per turn, even on three
+lines of lore. A queue keeps every slot busy only when it holds enough independent
+handoffs; a dependency chain runs one at a time.
+
 Not yet verified live: a frontier-tier run (4 × RTX PRO 6000 at $8.36/hr), and a chat
 sent from Zed's agent panel itself (the request shape Zed uses is tested directly).
 
