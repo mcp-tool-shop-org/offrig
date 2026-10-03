@@ -9,16 +9,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use offrig_core::config::Config;
-use offrig_core::context::{self, Parts};
 use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
 use offrig_core::ollama::Ollama;
 use offrig_core::remote::PullState;
 use offrig_core::runpod::RunPod;
 use offrig_core::session::{Event, Session, Wait};
-use offrig_core::store::{Kind, Query, State, Store};
+use offrig_core::store::{State, Store};
 use offrig_core::tunnel::Tunnel;
-use offrig_core::{Error, Result, roles, spec, watchdog};
+use offrig_core::{Error, Result, roles, runner, spec, watchdog};
 use serde_json::{Value, json};
 
 /// State shared by every tool call in one side-car process.
@@ -281,6 +280,14 @@ pub fn ask(
             h.state.as_str()
         )));
     }
+    if let Some(p) = store.open_plans()?.into_iter().find(|p| p.pod_id.is_some())
+        && crate::runner::alive(&store, p.id, now_unix())
+    {
+        return Err(Error::Refused(
+            "a runner is working this queue; follow it with offrig_job, or wait for it to finish"
+                .into(),
+        ));
+    }
     let profile_name = ensure_tunnel(cfg, &store, shared)?;
     let model = match model {
         Some(m) => m,
@@ -291,32 +298,13 @@ pub fn ask(
             .map(|m| m.name.clone())
             .ok_or_else(|| Error::Refused(format!("profile {profile_name} lists no models")))?,
     };
-    let role = roles::load(&h.role_id, cfg.role_os_dir.as_deref().map(Path::new))?;
-    let block = roles::render(&role);
-    let briefs = store.active(Kind::Brief)?;
-    let constraints = store.active(Kind::Constraint)?;
-    let retrieved: Vec<_> = store
-        .search(&Query {
-            text: h.mission.clone(),
-            limit: 8,
-            ..Default::default()
-        })?
-        .into_iter()
-        .filter(|r| matches!(r.kind, Kind::Decision | Kind::Fact))
-        .collect();
-    let checkpoint = store.latest_checkpoint(handoff_id)?;
-    let assembled = context::assemble(
-        &Parts {
-            role_block: &block,
-            briefs: &briefs,
-            constraints: &constraints,
-            handoff: &h,
-            retrieved: &retrieved,
-            checkpoint: checkpoint.as_ref(),
-            instruction,
-        },
+    let prep = runner::prepare(
+        &store,
+        cfg.role_os_dir.as_deref().map(Path::new),
+        &h,
+        instruction,
         ASK_CONTEXT_CHARS,
-    );
+    )?;
     if h.state == State::Pending {
         store.transition(
             handoff_id,
@@ -334,10 +322,10 @@ pub fn ask(
     store.set_run_details(
         handoff_id,
         &model,
-        &roles::fingerprint(&block),
-        &roles::fingerprint(&assembled.text),
+        &roles::fingerprint(&prep.role_block),
+        &roles::fingerprint(&prep.assembled.text),
     )?;
-    let reply = Ollama::new(&cfg.tunnel_base_url()).chat(&model, &assembled.text, None)?;
+    let reply = Ollama::new(&cfg.tunnel_base_url()).chat(&model, &prep.assembled.text, None)?;
     store.heartbeat(handoff_id)?;
     Ok(json!({
         "handoff_id": handoff_id,
@@ -345,10 +333,10 @@ pub fn ask(
         "reply": reply,
         "reply_is_untrusted_model_output": true,
         "context": {
-            "always_injected": briefs.iter().chain(&constraints).map(|r| r.id).collect::<Vec<_>>(),
-            "memory_included": assembled.included,
-            "memory_dropped": assembled.dropped,
-            "over_budget": assembled.over_budget,
+            "always_injected": prep.injected,
+            "memory_included": prep.assembled.included,
+            "memory_dropped": prep.assembled.dropped,
+            "over_budget": prep.assembled.over_budget,
         },
     }))
 }

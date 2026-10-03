@@ -13,10 +13,11 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
+use crate::checks::{Check, Outcome};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -103,8 +104,22 @@ CREATE TABLE IF NOT EXISTS handoffs (
   prompt_hash   TEXT,
   result_record INTEGER REFERENCES records(id),
   created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
+  updated_at    INTEGER NOT NULL,
+  checks        TEXT NOT NULL DEFAULT '[]',
+  accept_on_checks INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS outputs (
+  id          INTEGER PRIMARY KEY,
+  handoff_id  INTEGER NOT NULL REFERENCES handoffs(id),
+  turn        INTEGER NOT NULL,
+  body        TEXT NOT NULL,
+  outcomes    TEXT NOT NULL DEFAULT '[]',
+  model       TEXT NOT NULL,
+  tokens      INTEGER,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS outputs_handoff ON outputs(handoff_id, turn);
 
 CREATE TABLE IF NOT EXISTS handoff_events (
   id          INTEGER PRIMARY KEY,
@@ -119,6 +134,19 @@ CREATE TABLE IF NOT EXISTS handoff_events (
 
 pub struct Store {
     conn: Connection,
+}
+
+/// True when `table` exists and has no column `col` (a migration should add it).
+fn table_lacks(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+    let mut st = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(db("reading a table's columns"))?;
+    let cols: Vec<String> = st
+        .query_map([], |r| r.get(1))
+        .map_err(db("reading a table's columns"))?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db("reading a table's columns"))?;
+    Ok(!cols.is_empty() && !cols.iter().any(|c| c == col))
 }
 
 fn db(what: &str) -> impl FnOnce(rusqlite::Error) -> Error + '_ {
@@ -320,6 +348,8 @@ pub enum State {
     TimedOut,
     InvalidOutput,
     OwnershipViolation,
+    /// The runner finished its turns; the orchestrating agent judges the output.
+    Review,
 }
 
 impl State {
@@ -333,6 +363,7 @@ impl State {
             State::TimedOut => "timed_out",
             State::InvalidOutput => "invalid_output",
             State::OwnershipViolation => "ownership_violation",
+            State::Review => "review",
         }
     }
 
@@ -346,6 +377,7 @@ impl State {
             "timed_out" => State::TimedOut,
             "invalid_output" => State::InvalidOutput,
             "ownership_violation" => State::OwnershipViolation,
+            "review" => State::Review,
             other => return Err(Error::Refused(format!("unknown handoff state {other:?}"))),
         })
     }
@@ -369,7 +401,10 @@ impl State {
                 TimedOut,
                 InvalidOutput,
                 OwnershipViolation,
+                Review,
             ],
+            // Approve, reject, or send back with feedback.
+            Review => &[Complete, InvalidOutput, Dispatched],
             Complete => &[],
             Failed | TimedOut => &[Dispatched],
             InvalidOutput | OwnershipViolation => &[],
@@ -407,6 +442,11 @@ pub struct Handoff {
     pub result_record: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Deterministic checks the runner evaluates on every turn's output.
+    pub checks: Vec<Check>,
+    /// The checks cover the acceptance check: passing them completes the handoff
+    /// without review.
+    pub accept_on_checks: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -418,9 +458,12 @@ pub struct NewHandoff {
     /// Paths the handoff may change. Anything else is an ownership violation.
     pub scope: Vec<String>,
     pub depends_on: Vec<i64>,
+    pub checks: Vec<Check>,
+    /// Requires `checks`.
+    pub accept_on_checks: bool,
 }
 
-const HANDOFF_COLS: &str = "id, role_id, mission, acceptance, scope, depends_on, state, attempts, branch, model, role_hash, prompt_hash, result_record, created_at, updated_at";
+const HANDOFF_COLS: &str = "id, role_id, mission, acceptance, scope, depends_on, state, attempts, branch, model, role_hash, prompt_hash, result_record, created_at, updated_at, checks, accept_on_checks";
 
 fn handoff_row(r: &Row<'_>) -> rusqlite::Result<Handoff> {
     let scope: String = r.get(4)?;
@@ -442,6 +485,8 @@ fn handoff_row(r: &Row<'_>) -> rusqlite::Result<Handoff> {
         result_record: r.get(12)?,
         created_at: r.get(13)?,
         updated_at: r.get(14)?,
+        checks: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+        accept_on_checks: r.get(16)?,
     })
 }
 
@@ -449,6 +494,28 @@ fn handoff_row(r: &Row<'_>) -> rusqlite::Result<Handoff> {
 /// so what is shown as stale and what gets reaped are the same set by construction.
 pub fn is_stale(h: &Handoff, now: i64, timeout_secs: i64) -> bool {
     h.state.in_flight() && now - h.updated_at > timeout_secs
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Output {
+    pub id: i64,
+    pub handoff_id: i64,
+    /// 1 is the draft; each revision adds one.
+    pub turn: i64,
+    pub body: String,
+    pub outcomes: Vec<Outcome>,
+    pub model: String,
+    pub tokens: Option<i64>,
+    pub created_at: i64,
+}
+
+pub struct NewOutput<'a> {
+    pub handoff_id: i64,
+    pub turn: i64,
+    pub body: &'a str,
+    pub outcomes: &'a [Outcome],
+    pub model: &'a str,
+    pub tokens: Option<i64>,
 }
 
 // ---------------------------------------------------------------- the store
@@ -489,6 +556,18 @@ impl Store {
                  ALTER TABLE plans ADD COLUMN started_at INTEGER;",
             )
             .map_err(db("migrating the schema to v2"))?;
+        }
+        if (1..3).contains(&version) {
+            // v2 -> v3: handoffs gain deterministic checks; the outputs table is new.
+            for (col, ty) in [
+                ("checks", "TEXT NOT NULL DEFAULT '[]'"),
+                ("accept_on_checks", "INTEGER NOT NULL DEFAULT 0"),
+            ] {
+                if table_lacks(&conn, "handoffs", col)? {
+                    conn.execute_batch(&format!("ALTER TABLE handoffs ADD COLUMN {col} {ty};"))
+                        .map_err(db("migrating the schema to v3"))?;
+                }
+            }
         }
         conn.execute_batch(SCHEMA)
             .map_err(db("creating the schema"))?;
@@ -1038,6 +1117,12 @@ impl Store {
                     .into(),
             ));
         }
+        if h.accept_on_checks && h.checks.is_empty() {
+            return Err(Error::Refused(
+                "accept_on_checks needs checks: without them nothing can be accepted by code"
+                    .into(),
+            ));
+        }
         for d in &h.depends_on {
             if self.handoff(*d)?.is_none() {
                 return Err(Error::Refused(format!(
@@ -1048,15 +1133,17 @@ impl Store {
         let now = now_unix();
         self.conn
             .execute(
-                "INSERT INTO handoffs(role_id, mission, acceptance, scope, depends_on, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                "INSERT INTO handoffs(role_id, mission, acceptance, scope, depends_on, created_at, updated_at, checks, accept_on_checks)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)",
                 params![
                     h.role_id.trim(),
                     h.mission.trim(),
                     h.acceptance.trim(),
                     serde_json::to_string(&h.scope).unwrap_or_else(|_| "[]".into()),
                     serde_json::to_string(&h.depends_on).unwrap_or_else(|_| "[]".into()),
-                    now
+                    now,
+                    serde_json::to_string(&h.checks).unwrap_or_else(|_| "[]".into()),
+                    h.accept_on_checks
                 ],
             )
             .map_err(db("adding a handoff"))?;
@@ -1217,6 +1304,57 @@ impl Store {
             )?;
         }
         Ok(stale)
+    }
+
+    /// Store one turn's output with its check outcomes. Returns the output id.
+    pub fn add_output(&self, o: NewOutput<'_>) -> Result<i64> {
+        self.conn
+            .execute(
+                "INSERT INTO outputs(handoff_id, turn, body, outcomes, model, tokens, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    o.handoff_id,
+                    o.turn,
+                    o.body,
+                    serde_json::to_string(o.outcomes).unwrap_or_else(|_| "[]".into()),
+                    o.model,
+                    o.tokens,
+                    now_unix()
+                ],
+            )
+            .map_err(db("storing an output"))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Every stored turn of a handoff, oldest first.
+    pub fn outputs(&self, handoff_id: i64) -> Result<Vec<Output>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT id, handoff_id, turn, body, outcomes, model, tokens, created_at
+                 FROM outputs WHERE handoff_id = ?1 ORDER BY id",
+            )
+            .map_err(db("preparing an output read"))?;
+        st.query_map(params![handoff_id], |r| {
+            Ok(Output {
+                id: r.get(0)?,
+                handoff_id: r.get(1)?,
+                turn: r.get(2)?,
+                body: r.get(3)?,
+                outcomes: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+                model: r.get(5)?,
+                tokens: r.get(6)?,
+                created_at: r.get(7)?,
+            })
+        })
+        .map_err(db("reading outputs"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db("reading outputs"))
+    }
+
+    /// The latest output of a handoff: its result once it is complete or in review.
+    pub fn latest_output(&self, handoff_id: i64) -> Result<Option<Output>> {
+        Ok(self.outputs(handoff_id)?.pop())
     }
 
     pub fn events(&self, handoff_id: i64) -> Result<Vec<(String, String, String, bool)>> {
@@ -1473,6 +1611,7 @@ mod tests {
             acceptance: "cargo test parser".into(),
             scope: vec!["src/parser.rs".into()],
             depends_on: deps,
+            ..Default::default()
         })
         .expect("add")
     }
@@ -1619,6 +1758,85 @@ mod tests {
         );
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_handoffs_migrate_to_v3_with_checks_and_outputs() {
+        let dir = std::env::temp_dir().join(format!("offrig-migrate3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("v2.db");
+        {
+            let c = Connection::open(&path).expect("open");
+            c.execute_batch(
+                "CREATE TABLE handoffs (id INTEGER PRIMARY KEY, role_id TEXT NOT NULL, mission TEXT NOT NULL,
+                   acceptance TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '[]', depends_on TEXT NOT NULL DEFAULT '[]',
+                   state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, branch TEXT, model TEXT,
+                   role_hash TEXT, prompt_hash TEXT, result_record INTEGER, created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL);
+                 INSERT INTO handoffs(role_id, mission, acceptance, created_at, updated_at)
+                   VALUES ('game-designer', 'duel verbs', 'three verbs', 1, 1);
+                 PRAGMA user_version = 2;",
+            )
+            .expect("v2 schema");
+        }
+        let s = Store::open(&path).expect("migrates");
+        let h = s.handoff(1).expect("read").expect("kept");
+        assert_eq!(h.mission, "duel verbs");
+        assert!(h.checks.is_empty() && !h.accept_on_checks);
+        let id = s
+            .add_output(NewOutput {
+                handoff_id: 1,
+                turn: 1,
+                body: "draft",
+                outcomes: &[],
+                model: "qwen3:4b",
+                tokens: Some(12),
+            })
+            .expect("outputs table exists");
+        assert_eq!(s.latest_output(1).expect("read").expect("one").id, id);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn review_closes_by_approval_rejection_or_feedback() {
+        let s = store();
+        let h = s
+            .add_handoff(NewHandoff {
+                role_id: "game-designer".into(),
+                mission: "duel verbs".into(),
+                acceptance: "three verbs".into(),
+                checks: vec![Check::Heading {
+                    text: "Verbs".into(),
+                }],
+                ..Default::default()
+            })
+            .expect("add");
+        for (to, why) in [
+            (State::Dispatched, "runner"),
+            (State::Running, "drafting"),
+            (State::Review, "turns done"),
+        ] {
+            s.transition(h, to, why, None).expect("lawful");
+        }
+        let row = s.handoff(h).expect("read").expect("exists");
+        assert!(!row.state.in_flight() && !row.state.blocked() && !row.state.terminal());
+        assert_eq!(row.checks.len(), 1);
+        let back = s
+            .transition(h, State::Dispatched, "add a failure state", None)
+            .expect("feedback");
+        assert_eq!(back.attempts, 2, "a send-back is a new attempt");
+        assert!(
+            s.add_handoff(NewHandoff {
+                role_id: "x".into(),
+                mission: "m".into(),
+                acceptance: "a".into(),
+                accept_on_checks: true,
+                ..Default::default()
+            })
+            .is_err(),
+            "accept_on_checks without checks is refused"
+        );
     }
 
     #[test]

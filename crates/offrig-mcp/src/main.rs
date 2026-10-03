@@ -8,6 +8,7 @@
 //! `offrig budget`; no tool here can raise it.
 
 mod ops;
+mod runner;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -161,10 +162,12 @@ pub struct RecordArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct HandoffArgs {
-    /// add, list, roles (available role ids), preview (render a role block), or a
-    /// state change for handoff_id: complete (its acceptance check passed), invalid
-    /// (the check failed), violation (it changed files outside its scope), fail, or
-    /// retry (back to dispatched; needs override_reason when blocked).
+    /// add, list, roles (available role ids), preview (render a role block), output (a
+    /// handoff's best result, its checks and turns; also written to
+    /// .offrig/out/handoff-<id>.md), or a state change for handoff_id: complete (its
+    /// acceptance check passed), invalid (the check failed), violation (it changed files
+    /// outside its scope), fail, or retry (back to dispatched; from review the reason is
+    /// the feedback the runner revises against; needs override_reason when blocked).
     pub action: String,
     /// complete, invalid, violation, fail, retry: which handoff.
     #[serde(default)]
@@ -191,12 +194,33 @@ pub struct HandoffArgs {
     /// add: handoff ids that must complete first.
     #[serde(default)]
     pub depends_on: Vec<i64>,
+    /// add: deterministic checks the runner evaluates on every turn, each an object
+    /// with a "check" field: {"check":"heading","text":"Verbs"},
+    /// {"check":"items","heading":"Verbs","min":3}, {"check":"contains","text":"x","min":1},
+    /// {"check":"absent","text":"TODO"}, {"check":"words","min":200,"max":900}.
+    /// A failed check drives a revision turn that quotes it.
+    #[serde(default)]
+    pub checks: Vec<Value>,
+    /// add: the checks fully cover the acceptance check, so passing them completes the
+    /// handoff without review. Leave false when any part needs judgement.
+    #[serde(default)]
+    pub accept_on_checks: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct LaunchArgs {
     /// A plan from offrig_plan. Launching spends money up to the plan's worst case.
     pub plan_id: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RunArgs {
+    /// A launched plan whose job reports ready.
+    pub plan_id: i64,
+    /// Keep the pod when the queue runs dry (for example, to send review feedback back
+    /// to it). By default the runner shuts the pod down so it stops billing.
+    #[serde(default)]
+    pub keep_pod: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -236,10 +260,22 @@ fn spawn_watchdog(project: &Path, plan_id: i64) -> Result<(), String> {
     if std::env::var_os("OFFRIG_TEST_NO_WATCHDOG").is_some() {
         return Ok(());
     }
+    spawn_detached(project, &["--watchdog".into(), plan_id.to_string()])
+}
+
+fn spawn_runner(project: &Path, plan_id: i64, keep_pod: bool) -> Result<(), String> {
+    let mut args = vec!["--runner".to_string(), plan_id.to_string()];
+    if keep_pod {
+        args.push("--keep-pod".into());
+    }
+    spawn_detached(project, &args)
+}
+
+/// Start this binary again as a detached process that outlives the session.
+fn spawn_detached(project: &Path, args: &[String]) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--watchdog")
-        .arg(plan_id.to_string())
+    cmd.args(args)
         .arg("--project")
         .arg(project)
         .stdin(std::process::Stdio::null())
@@ -252,7 +288,7 @@ fn spawn_watchdog(project: &Path, plan_id: i64) -> Result<(), String> {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         // Leave the host's job object when allowed, so closing the session does not
-        // take the watchdog with it; fall back to a plain detached process.
+        // take the process with it; fall back to a plain detached process.
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
         if cmd.spawn().is_ok() {
             return Ok(());
@@ -351,6 +387,7 @@ impl Sidecar {
                         "pod_id": p.pod_id,
                         "deadline": p.deadline().map(when),
                         "watchdog_alive": watchdog::alive(s, p.id, now, WATCHDOG_STALE_SECS),
+                        "runner_alive": runner::alive(s, p.id, now),
                     })
                 })
                 .collect();
@@ -399,10 +436,15 @@ impl Sidecar {
             format!("{stale} handoff(s) are past the {STALE_SECS}s timeout")
         } else if let Some(pod) = open_plans.iter().find_map(|p| p["pod_id"].as_str()) {
             format!(
-                "a session is live on pod {pod} and billing: work handoffs with offrig_ask, then offrig_shutdown"
+                "a session is live on pod {pod} and billing: run the queue with offrig_run (offrig_ask for a single turn), then offrig_shutdown"
             )
         } else if count(store::State::Running) + count(store::State::Dispatched) > 0 {
             "handoffs are in flight with no live session: close each with offrig_handoffs (complete, invalid or fail)".into()
+        } else if count(store::State::Review) > 0 {
+            format!(
+                "{} handoff(s) wait in review: read each with offrig_handoffs action=output, then complete, invalid or retry",
+                count(store::State::Review)
+            )
         } else if !ready.is_empty() {
             "handoffs are ready; plan a session or work them".into()
         } else if has_brief {
@@ -425,6 +467,7 @@ impl Sidecar {
                 "pending": count(store::State::Pending),
                 "in_flight": count(store::State::Dispatched) + count(store::State::Running),
                 "complete": count(store::State::Complete),
+                "review": count(store::State::Review),
                 "blocked": count(store::State::InvalidOutput) + count(store::State::OwnershipViolation),
                 "failed_or_timed_out": count(store::State::Failed) + count(store::State::TimedOut),
                 "stale": stale,
@@ -659,12 +702,18 @@ impl Sidecar {
                         "call offrig_handoffs with action=roles for valid ids",
                     );
                 }
+                let checks = match offrig_core::checks::parse(&a.checks) {
+                    Ok(c) => c,
+                    Err(e) => return fail(chain(&e), "fix that check and add again"),
+                };
                 let new = NewHandoff {
                     role_id: role,
                     mission: a.mission.unwrap_or_default(),
                     acceptance: a.acceptance.unwrap_or_default(),
                     scope: a.scope,
                     depends_on: a.depends_on,
+                    checks,
+                    accept_on_checks: a.accept_on_checks,
                 };
                 let res = self.with_store(|s| s.add_handoff(new));
                 match res {
@@ -720,6 +769,61 @@ impl Sidecar {
                     Err(e) => fail(chain(&e), "call action=roles for valid ids"),
                 }
             }
+            "output" => {
+                let Some(id) = a.handoff_id else {
+                    return fail(
+                        "output needs handoff_id",
+                        "pass the handoff's id from action=list",
+                    );
+                };
+                let res = self.with_store(|s| {
+                    let h = s.handoff(id)?;
+                    let outs = s.outputs(id)?;
+                    let why = s.events(id)?.into_iter().last().map(|e| e.2);
+                    Ok((h, outs, why))
+                });
+                let (h, outs, why) = match res {
+                    Ok((Some(h), o, w)) => (h, o, w),
+                    Ok((None, ..)) => return fail(format!("no handoff {id}"), "list the queue"),
+                    Err(e) => return fail(chain(&e), "check the project database"),
+                };
+                let Some(best) = offrig_core::runner::best(&outs) else {
+                    return fail(
+                        format!("handoff {id} has no output yet"),
+                        "run the queue with offrig_run",
+                    );
+                };
+                // Harvest the result to a file the agent can read and commit.
+                let dir = self.project.join(".offrig").join("out");
+                let file = dir.join(format!("handoff-{id}.md"));
+                let written = std::fs::create_dir_all(&dir)
+                    .and_then(|()| std::fs::write(&file, &best.body))
+                    .is_ok();
+                ok(json!({
+                    "id": id,
+                    "state": h.state.as_str(),
+                    "why": why,
+                    "mission": h.mission,
+                    "acceptance": h.acceptance,
+                    "accept_on_checks": h.accept_on_checks,
+                    "best_turn": best.turn,
+                    "checks": best.outcomes,
+                    "turns": outs.iter().map(|o| json!({
+                        "turn": o.turn,
+                        "passed": o.outcomes.iter().filter(|c| c.pass).count(),
+                        "of": o.outcomes.len(),
+                        "tokens": o.tokens,
+                    })).collect::<Vec<_>>(),
+                    "file": written.then(|| file.display().to_string()),
+                    "body": best.body,
+                    "body_is_untrusted_model_output": true,
+                    "next_action": if h.state == State::Review {
+                        "judge it against the acceptance check: action=complete, action=invalid with a reason, or action=retry with feedback as the reason"
+                    } else {
+                        "read it; record decisions or facts it settles with offrig_memory_record"
+                    },
+                }))
+            }
             act @ ("complete" | "invalid" | "violation" | "fail" | "retry") => {
                 let Some(id) = a.handoff_id else {
                     return fail(
@@ -746,7 +850,15 @@ impl Sidecar {
                     "fail" => (State::Failed, None),
                     _ => (State::Dispatched, a.override_reason.as_deref()),
                 };
-                match self.with_store(|s| s.transition(id, to, &reason, ovr)) {
+                let res = self.with_store(|s| {
+                    let from_review = s.handoff(id)?.is_some_and(|h| h.state == State::Review);
+                    let h = s.transition(id, to, &reason, ovr)?;
+                    if from_review && to == State::Dispatched {
+                        runner::record_feedback(s, id, &reason)?;
+                    }
+                    Ok(h)
+                });
+                match res {
                     Ok(h) => ok(json!({
                         "id": h.id,
                         "state": h.state.as_str(),
@@ -884,6 +996,86 @@ impl Sidecar {
             "watchdog": match &watchdog { Ok(()) => "started".to_string(), Err(e) => format!("FAILED to start: {e}; shut down by the deadline yourself") },
             "budget": budget.as_ref().map(budget_json),
             "next_action": "follow the launch with offrig_job every minute or two; nothing is ready until it says so",
+        }))
+    }
+
+    #[tool(
+        name = "offrig_run",
+        description = "Work the handoff queue on the pod without the agent: starts a detached runner that keeps every model slot busy, drafts each ready handoff, runs its checks, revises at most twice against the checks that failed, feeds finished results into dependent handoffs, and shuts the pod down when nothing is left to work (unless keep_pod). Handoffs whose checks pass and cover acceptance complete; the rest wait in review for offrig_handoffs action=output. Takes a launched plan_id; returns job_id for offrig_job. Safe to call again: a live runner is returned, not doubled.",
+        annotations(
+            title = "Run the queue",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn offrig_run(&self, Parameters(a): Parameters<RunArgs>) -> CallToolResult {
+        let id = a.plan_id;
+        let now = cost::now_unix();
+        let checked = self.with_store(|s| {
+            let plan = s.plan(id)?;
+            let launch = s.job_for_plan(id, "launch")?;
+            let run = s.job_for_plan(id, "run")?;
+            let alive = runner::alive(s, id, now);
+            let ready = s.ready()?.len();
+            let sent_back = s
+                .handoffs()?
+                .iter()
+                .filter(|h| h.state == State::Dispatched)
+                .count();
+            Ok((plan, launch, run, alive, ready + sent_back))
+        });
+        let (plan, launch, run, alive, workable) = match checked {
+            Ok(v) => v,
+            Err(e) => return fail(chain(&e), "check the project database"),
+        };
+        let Some(plan) = plan else {
+            return fail(format!("no plan {id}"), "plan and launch first");
+        };
+        if plan.state != "committed" || plan.pod_id.is_none() {
+            return fail(
+                format!("plan {id} has no live pod"),
+                "launch it with offrig_launch first",
+            );
+        }
+        if launch.as_ref().is_none_or(|j| j.state != "done") {
+            return fail(
+                "the launch is not ready yet",
+                "wait until offrig_job reports state done",
+            );
+        }
+        if alive && let Some(j) = run {
+            return ok(json!({
+                "job_id": j.id,
+                "plan_id": id,
+                "already_running": true,
+                "next_action": "follow it with offrig_job",
+            }));
+        }
+        if workable == 0 {
+            return fail(
+                "nothing is ready to run",
+                "queue handoffs with offrig_handoffs, or close the ones in review",
+            );
+        }
+        let job = match self.with_store(|s| s.create_job(id, "run")) {
+            Ok(j) => j,
+            Err(e) => return fail(chain(&e), "check the project database"),
+        };
+        if let Err(e) = spawn_runner(&self.project, id, a.keep_pod) {
+            let _ = self.with_store(|s| s.update_job(job, "failed", &json!({}), Some(&e)));
+            return fail(
+                format!("could not start the runner: {e}"),
+                "work handoffs with offrig_ask instead",
+            );
+        }
+        ok(json!({
+            "job_id": job,
+            "plan_id": id,
+            "workable": workable,
+            "keep_pod": a.keep_pod,
+            "next_action": "follow with offrig_job job_id; review handoffs that reach review with offrig_handoffs action=output",
         }))
     }
 
@@ -1045,9 +1237,13 @@ fn project_dir() -> anyhow::Result<PathBuf> {
 }
 
 fn watchdog_plan() -> Option<i64> {
+    flag_plan("--watchdog")
+}
+
+fn flag_plan(flag: &str) -> Option<i64> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        if a == "--watchdog" {
+        if a == flag {
             return args.next().and_then(|v| v.parse().ok());
         }
     }
@@ -1117,6 +1313,10 @@ async fn main() -> anyhow::Result<()> {
         return run_watchdog(&project, plan_id);
     }
     let cfg = Config::load()?;
+    if let Some(plan_id) = flag_plan("--runner") {
+        let keep_pod = std::env::args().any(|a| a == "--keep-pod");
+        return runner::run(&cfg, &project, plan_id, keep_pod);
+    }
     let sidecar = Sidecar::new(&project, cfg);
     let service = sidecar.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;

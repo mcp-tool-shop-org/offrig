@@ -85,10 +85,11 @@ so a session survives compaction or a restart without re-explaining anything.
 | `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
-| `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check), lists them, previews role blocks, records outcomes (complete, invalid, violation, fail, retry) |
+| `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check; optional deterministic checks), lists them, previews role blocks, shows a handoff's best output (also written to `.offrig/out/`), records outcomes (complete, invalid, violation, fail, retry with feedback) |
 | `offrig_launch` | **Spends.** Takes only a `plan_id`: commits the worst case, waits for GPUs renting nothing, boots the pod, opens the tunnel, pulls the models, starts the watchdog. Idempotent per plan |
 | `offrig_job` | Launch progress, watchdog liveness, minutes left, spend so far |
 | `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
+| `offrig_run` | Starts a detached runner that keeps every model slot busy: drafts each ready handoff, revises at most twice against failed checks, feeds results to dependent handoffs, then shuts the pod down when the queue is dry (unless `keep_pod`). Work that code cannot check waits in review |
 | `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason |
 
 Roles come from Role OS (dossiers and starter-pack cards) plus four game roles shipped

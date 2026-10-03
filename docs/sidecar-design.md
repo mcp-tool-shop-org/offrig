@@ -162,7 +162,7 @@ The pod is disposable and the database is not. The database sits with the projec
 side-car reads and writes it locally, and whatever runs on the pod reaches it through
 the side-car's tools.
 
-## Tool surface (10 tools, fixed order)
+## Tool surface (11 tools, fixed order)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -173,12 +173,13 @@ the side-car's tools.
 | `offrig_job` | read | Job state, progress, pull percent and `next_action`. |
 | `offrig_memory_search` | read | FTS over active records, filterable by kind, task and tag. Each result carries its source and date. |
 | `offrig_memory_record` | write | Adds a fact, decision, constraint or checkpoint, with provenance. `supersedes` is required when it contradicts a record. |
-| `offrig_handoffs` | write | Adds handoffs (role, mission, acceptance check, file scope, dependencies) to the queue, or lists them with state. |
+| `offrig_handoffs` | write | Adds handoffs (role, mission, acceptance check, deterministic checks, file scope, dependencies) to the queue, lists them, shows a handoff's best output, and records review outcomes. |
 | `offrig_ask` | read-ish | Sends one role-headed handoff turn to the pod model, with context assembled from memory, and returns the reply. |
+| `offrig_run` | **destroys at the end** | Starts the detached runner that works the queue on the pod model and shuts the pod down when nothing is left (unless `keep_pod`). Idempotent while a runner is alive. |
 | `offrig_shutdown` | **destroys** | Terminates the pod. Refuses while work is unharvested unless given a reason, and records the reason. |
 
-The full autonomous runner on the pod (multi-turn tool loop, branch per handoff, test
-runs) is phase 3, behind the same queue.
+The runner (phase 3a, below) works text handoffs. Code handoffs with a branch each, run
+on the pod, come later, behind the same queue.
 
 ## Memory store schema (SQLite + FTS5)
 
@@ -239,13 +240,100 @@ the reaper.
    watchdog is a detached process (`offrig-mcp --watchdog <plan>`) that leaves the host's
    job object where Windows allows, so closing the session does not kill it. Schema v2
    adds the plan clock and jobs, with a tested migration from v1.
-3. **Pod runner and engine recipe.** SGLang frontier recipe (TP=4, AWQ, fp8 KV),
-   multi-turn runner on the pod, branch per handoff, acceptance checks run on the pod,
-   and harvest to git. A paid frontier run once Mike funds it.
+3. **Runner and engine recipe.** 3a, the handoff runner: built 2026-10-03, tested end
+   to end against a mock pod model; live rehearsal next. 3b, the SGLang frontier recipe
+   (TP=4, AWQ, fp8 KV), rehearsed on 1× RTX PRO 6000 first. 3c, the first real frontier
+   queue, once Mike funds it. Later: code handoffs with a branch each, run on the pod.
+
+## Phase 3a: the handoff runner
+
+Research gathered by three research agents on 2026-10-03. † marks sources read as
+abstracts or summaries only; none were read in full. The numbers are the papers' headline
+claims.
+
+**Revision turns**
+- Huang et al. 2023, "Large Language Models Cannot Self-Correct Reasoning Yet"
+  (arXiv:2310.01798)†; Stechly, Valmeekam, Kambhampati 2024 (arXiv:2402.08115)†. Without
+  an external signal, self-correction often lowers accuracy: the model invents faults in
+  correct answers. A sound external verifier gives large gains.
+- Kamoi et al. 2024, TACL survey (arXiv:2406.01297)†. Prompted self-correction works
+  reliably only with reliable external feedback, or on easily decomposed tasks.
+- Xu et al. 2024, "Pride and Prejudice" (arXiv:2402.11436); Pan et al. 2024,
+  "Spontaneous Reward Hacking in Iterative Self-Refinement" (arXiv:2407.04549). A model
+  grading its own revisions scores them higher each round while human-judged quality
+  stalls or falls; smaller models are hit hardest.
+- Javaji et al. 2025, "Another Turn, Better Output?" (arXiv:2509.06770). Early turns
+  help. Vague "improve it" feedback plateaus or regresses; feedback on a named dimension
+  keeps helping.
+
+→ **A draft, then at most two revision turns. A revision runs only to fix named failed
+checks, and the turn quotes them. There is no free-form self-critique turn.**
+
+**Acceptance**
+- Tan et al. 2024, JudgeBench (arXiv:2410.12784)†. On objective correctness, strong
+  judges scored barely above chance.
+- Panickssery et al. 2024 (arXiv:2404.13076)†; Pombal et al. 2026 (arXiv:2604.06996)†.
+  Judges favour their own outputs. Even on binary rubrics, a judge was over 50% more
+  likely to wrongly pass a criterion when the output was its own.
+- Zhou et al. 2023, IFEval (arXiv:2311.07911)†. Verifiable instructions are checked by
+  code, without judge bias.
+- Lee et al. 2024, CheckEval (arXiv:2403.18771)†; Wei et al. 2025, RocketEval
+  (arXiv:2503.05142)†. Decomposed binary checklists make small judges agree more.
+  Furuhashi et al. 2025 (arXiv:2508.15218)† found the gains inconsistent; vague criteria
+  stay the real problem.
+
+→ **Handoffs carry optional deterministic checks (heading present, list items under a
+heading, words, substrings), evaluated in code. A handoff completes on its own only when
+its checks pass and its author marked them as covering the acceptance check
+(`accept_on_checks`). Otherwise it waits in `review` for the orchestrating agent, with
+the output and every check result. The pod model never grades its own work. A judge
+from a different model family is future work.**
+
+**Keeping the pod fed**
+- Kwon et al. 2023, PagedAttention (arXiv:2309.06180)†; Zheng et al. 2024, SGLang
+  RadixAttention (arXiv:2312.07104)†. KV memory caps concurrency, and shared prefixes
+  are reused across requests.
+- Red Hat 2025, "Ollama vs. vLLM"†. Ollama's throughput plateaus at its slot count;
+  extra requests only add latency. Measured here 2026-10-03: 1 slot gave 40 tok/s and
+  4 slots gave 102 tok/s, under 8 parallel requests.
+- Chen et al. 2026, CONCUR (arXiv:2601.22705)†. Too many long-lived agents thrash the KV
+  cache before memory is full; admission control won up to 4×.
+- Luo et al. 2025, Autellix (arXiv:2502.13965)†; Lin et al. 2024, Parrot
+  (arXiv:2405.19888)†. Program-level scheduling, which prioritises work already under
+  way and exposes the call graph, avoids head-of-line blocking.
+
+→ **In flight: the profile's `parallel` slots plus one. Order: revisions before new
+drafts, then the handoff with the longest chain of dependents. The role block and brief
+open every prompt byte-identical. Every turn has a `max_tokens` cap.**
+
+**Architecture.**
+- **Process.** `offrig_run` starts a detached process, `offrig-mcp --runner <plan>`, with
+  its own tunnel on `tunnel_port + 1`. Like the watchdog, it outlives the session.
+- **Queue.** It works ready handoffs concurrently through the turn loop above. Each turn
+  is stored in the `outputs` table and checked; the final output of a dependency is put
+  in its dependents' context.
+- **Progress.** It heartbeats in-flight handoffs and reports progress on a `run` job,
+  read with `offrig_job`.
+- **Stopping.** It exits when the plan stops being committed. When the queue has nothing
+  left to work, it shuts the pod down unless told to keep it.
+- **Review.** `offrig_handoffs action=output` shows a handoff's final output and checks.
+  `complete`, `invalid` or `retry` (with feedback recorded as a checkpoint) closes
+  review.
+- **Scope.** Text work products only. Code handoffs with a branch each, run on the pod,
+  come later.
+
+**Standards compliance (runner).** PIN_PER_STEP 2: each turn records model, role hash
+and prompt hash. ANDON_AUTHORITY 3: failed checks block auto-completion, blocked
+handoffs never auto-retry, and the runner stops when the plan closes (tested).
+NAMED_COMPENSATORS 3: the runner's only irreversible act is the shutdown when the queue
+empties, which is the session compensator itself; the watchdog stays the backstop.
+UNCERTAINTY_GATED_HUMANS 2: work that code cannot check is routed to review, not
+auto-accepted. EXTERNAL_VERIFIER: n/a (deterministic checks only).
 
 ## Decisions
 
 - 2026-10-02, Mike: the frontier tier serves with SGLang (TP=4, AWQ, fp8 KV). Small and medium stay on Ollama.
 - 2026-10-02, Mike: register the side-car with Claude Code at user scope. Because it then starts in every project, the store opens on first use, never on start.
 - One database per project, at `<project>/.offrig/offrig.db`, so memory travels with the code (the proposal; not overruled).
+- 2026-10-03, Mike: phase 3 green-lit. Order: 3a runner, 3b SGLang frontier recipe (rehearsed on 1× RTX PRO 6000 first), 3c first real frontier queue.
 - Open: whether Docker Sandboxes should isolate the agents that run handoffs (under evaluation).

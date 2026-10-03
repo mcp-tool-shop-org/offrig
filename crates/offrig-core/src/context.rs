@@ -13,8 +13,22 @@ pub struct Parts<'a> {
     /// Best match first; trimmed from the end when over budget.
     pub retrieved: &'a [Record],
     pub checkpoint: Option<&'a Record>,
+    /// Results of the handoffs this one depends on.
+    pub inputs: &'a [Input],
     pub instruction: &'a str,
 }
+
+/// A finished dependency's result, given to the handoffs that wait on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Input {
+    pub handoff_id: i64,
+    pub mission: String,
+    pub body: String,
+}
+
+/// Each input is cut to this many characters so one long result cannot crowd out
+/// the rest of the context.
+pub const INPUT_CHARS: usize = 6_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assembled {
@@ -75,6 +89,18 @@ pub fn assemble(p: &Parts<'_>, budget_chars: usize) -> Assembled {
         ));
     }
 
+    for i in p.inputs {
+        head.push_str(&format!(
+            "
+## Input from handoff #{} ({})
+{}
+",
+            i.handoff_id,
+            i.mission.trim(),
+            clip(i.body.trim(), INPUT_CHARS)
+        ));
+    }
+
     let mut tail = String::new();
     if let Some(cp) = p.checkpoint {
         tail.push_str("\n## Where you left off\n");
@@ -111,6 +137,21 @@ pub fn assemble(p: &Parts<'_>, budget_chars: usize) -> Assembled {
         dropped,
         over_budget,
     }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}
+[... cut at {max} characters]",
+        &s[..end]
+    )
 }
 
 #[cfg(test)]
@@ -152,7 +193,46 @@ mod tests {
             result_record: None,
             created_at: 0,
             updated_at: 0,
+            checks: vec![],
+            accept_on_checks: false,
         }
+    }
+
+    #[test]
+    fn dependency_results_follow_the_handoff_and_are_clipped() {
+        let h = handoff();
+        let long = "é".repeat(INPUT_CHARS); // two bytes each: the cut lands mid-character
+        let inputs = [
+            Input {
+                handoff_id: 3,
+                mission: "duel verbs".into(),
+                body: "- Draw
+- Feint"
+                    .into(),
+            },
+            Input {
+                handoff_id: 4,
+                mission: "lore".into(),
+                body: long,
+            },
+        ];
+        let a = assemble(
+            &Parts {
+                role_block: "## Role: Builder",
+                briefs: &[],
+                constraints: &[],
+                handoff: &h,
+                retrieved: &[],
+                checkpoint: None,
+                inputs: &inputs,
+                instruction: "Go.",
+            },
+            50_000,
+        );
+        let at = |s: &str| a.text.find(s).unwrap_or_else(|| panic!("missing {s}"));
+        assert!(at("## Handoff #7") < at("## Input from handoff #3 (duel verbs)"));
+        assert!(at("## Input from handoff #3") < at("## Now"));
+        assert!(a.text.contains("[... cut at 6000 characters]"));
     }
 
     #[test]
@@ -170,6 +250,7 @@ mod tests {
                 handoff: &h,
                 retrieved: &ret,
                 checkpoint: Some(&cp),
+                inputs: &[],
                 instruction: "Write the tests.",
             },
             10_000,
@@ -210,6 +291,7 @@ mod tests {
                     handoff: &h,
                     retrieved,
                     checkpoint: None,
+                    inputs: &[],
                     instruction: "Go.",
                 },
                 budget,

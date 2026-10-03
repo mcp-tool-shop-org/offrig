@@ -3,79 +3,18 @@
 //! terminating a pod at its plan's deadline. The binaries are debug builds, which
 //! honour OFFRIG_TEST_RUNPOD_BASE; release builds ignore it.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod common;
+
+use common::{count, mock, temp};
 use offrig_core::store::{NewHandoff, NewPlan, Store};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
-
-type Hits = Arc<Mutex<Vec<String>>>;
-
-/// A small HTTP server standing in for RunPod. `handler(route, body, nth)`.
-fn mock(handler: impl Fn(&str, &str, usize) -> (u16, String) + Send + 'static) -> (String, Hits) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let url = format!("http://{}", listener.local_addr().expect("addr"));
-    let hits: Hits = Arc::new(Mutex::new(Vec::new()));
-    let log = Arc::clone(&hits);
-    std::thread::spawn(move || {
-        for stream in listener.incoming().map_while(Result::ok) {
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let method = parts.next().unwrap_or("").to_string();
-            let path = parts
-                .next()
-                .unwrap_or("")
-                .split('?')
-                .next()
-                .unwrap_or("")
-                .to_string();
-            let route = format!("{method} {path}");
-            let mut len = 0usize;
-            loop {
-                let mut h = String::new();
-                if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
-                    break;
-                }
-                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-                    len = v.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut body = vec![0u8; len];
-            let _ = reader.read_exact(&mut body);
-            let body = String::from_utf8_lossy(&body).to_string();
-            let nth = {
-                let mut l = log.lock().expect("hits");
-                let n = l.iter().filter(|h| **h == route).count();
-                l.push(route.clone());
-                n
-            };
-            let (status, text) = handler(&route, &body, nth);
-            let resp = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                text.len()
-            );
-            let _ = reader.get_mut().write_all(resp.as_bytes());
-        }
-    });
-    (url, hits)
-}
-
-fn count(h: &Hits, route: &str) -> usize {
-    h.lock()
-        .expect("hits")
-        .iter()
-        .filter(|x| *x == route)
-        .count()
-}
 
 fn graphql(body: &str) -> String {
     if body.contains("myself") {
@@ -86,13 +25,6 @@ fn graphql(body: &str) -> String {
         {"id":"NVIDIA RTX 2000 Ada Generation","displayName":"RTX 2000 Ada","memoryInGb":16,"secureCloud":true,
          "lowestPrice":{"uninterruptablePrice":0.25,"stockStatus":"High"}}]}}"#
         .into()
-}
-
-fn temp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("offrig-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("temp dir");
-    d
 }
 
 fn body(r: &CallToolResult) -> Value {
@@ -161,6 +93,7 @@ async fn launch_job_ask_and_shutdown_against_a_mock_runpod() {
         "offrig_job",
         "offrig_ask",
         "offrig_shutdown",
+        "offrig_run",
     ] {
         assert!(names.contains(&want.to_string()), "missing {want}");
     }
@@ -220,6 +153,23 @@ async fn launch_job_ask_and_shutdown_against_a_mock_runpod() {
         "{:?}",
         body(&bare)
     );
+
+    // The runner waits for a ready launch, and there is no output to read yet.
+    let early = call("offrig_run", json!({"plan_id": plan_id})).await;
+    assert_eq!(early.is_error, Some(true));
+    assert!(
+        body(&early)["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("not ready")),
+        "{:?}",
+        body(&early)
+    );
+    let none = call(
+        "offrig_handoffs",
+        json!({"action": "output", "handoff_id": 1}),
+    )
+    .await;
+    assert_eq!(none.is_error, Some(true));
 
     // While the pod is up, status points at the live session, not at setup.
     let live = call("offrig_status", json!({})).await;

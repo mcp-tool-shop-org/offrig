@@ -173,6 +173,11 @@ impl Ollama {
     /// reply text. Reasoning models may put their thinking in a separate field; only
     /// the answer is returned.
     pub fn chat(&self, model: &str, prompt: &str, max_tokens: Option<u32>) -> Result<String> {
+        self.chat_reply(model, prompt, max_tokens).map(|r| r.text)
+    }
+
+    /// A non-streamed chat turn with its token count.
+    pub fn chat_reply(&self, model: &str, prompt: &str, max_tokens: Option<u32>) -> Result<Reply> {
         let what = "chat";
         let mut body = json!({
             "model": model,
@@ -197,7 +202,10 @@ impl Ollama {
                 "{what}: the model spent its whole token limit thinking; raise max_tokens"
             )));
         }
-        Ok(answer.to_string())
+        Ok(Reply {
+            text: answer.to_string(),
+            tokens: v["usage"]["completion_tokens"].as_i64(),
+        })
     }
 
     /// A streamed chat with one tool offered, through the OpenAI-compatible endpoint
@@ -313,6 +321,13 @@ impl SseChat {
         }
         Ok(false)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reply {
+    pub text: String,
+    /// Tokens generated, thinking included, when the server reports it.
+    pub tokens: Option<i64>,
 }
 
 /// The answer without a thinking model's reasoning. Ollama normally moves it to a

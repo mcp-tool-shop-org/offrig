@@ -6,6 +6,7 @@
 //! tunnel is down a request fails instead of landing on this machine. `guard` checks
 //! that this still holds.
 
+pub mod checks;
 pub mod config;
 pub mod context;
 pub mod cost;
@@ -16,6 +17,7 @@ pub mod ollama;
 pub mod proc;
 pub mod remote;
 pub mod roles;
+pub mod runner;
 pub mod runpod;
 pub mod session;
 pub mod spec;
