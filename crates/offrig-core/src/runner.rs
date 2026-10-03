@@ -199,6 +199,7 @@ pub fn describe(c: &Check) -> String {
         Check::Contains { text, min } if *min > 1 => format!("\"{text}\" at least {min} times"),
         Check::Contains { text, .. } => format!("the text \"{text}\""),
         Check::Absent { text } => format!("no \"{text}\" anywhere"),
+        Check::NoRepeats => "no line repeated".into(),
         Check::Words { min, max } => match (min, max) {
             (Some(a), Some(b)) => format!("{a} to {b} words"),
             (Some(a), None) => format!("at least {a} words"),
@@ -222,11 +223,21 @@ pub fn draft_instruction(h: &Handoff) -> String {
     s
 }
 
+/// The checks the runner evaluates: the handoff's own, plus the padding guard.
+pub fn effective_checks(h: &Handoff) -> Vec<Check> {
+    let mut c = h.checks.clone();
+    if !c.is_empty() && !c.contains(&Check::NoRepeats) {
+        c.push(Check::NoRepeats);
+    }
+    c
+}
+
 pub fn revise_instruction(previous: &str, outcomes: &[Outcome]) -> String {
     format!(
         "Your previous output failed these checks:\n{}\nRevise it to fix exactly these. Keep \
-         everything else that already works; do not rewrite what passed. Return the full \
-         revised deliverable, in Markdown, with no preamble.\n\nYour previous output:\n\n{}",
+         everything else that already works. Restructure in place rather than appending: \
+         return the complete deliverable once, with every item appearing a single time, in \
+         Markdown, with no preamble.\n\nYour previous output:\n\n{}",
         checks::feedback(outcomes),
         previous.trim()
     )
@@ -365,6 +376,25 @@ mod tests {
             Some(5),
             "oldest on a tie"
         );
+    }
+
+    #[test]
+    fn checked_handoffs_also_get_the_padding_guard() {
+        let checked = h(
+            1,
+            vec![],
+            vec![Check::Heading {
+                text: "Verbs".into(),
+            }],
+            true,
+        );
+        assert_eq!(effective_checks(&checked).last(), Some(&Check::NoRepeats));
+        assert!(
+            effective_checks(&h(2, vec![], vec![], false)).is_empty(),
+            "unchecked stays unchecked"
+        );
+        let r = revise_instruction("old", &[outcome(false)]);
+        assert!(r.contains("rather than appending"));
     }
 
     #[test]

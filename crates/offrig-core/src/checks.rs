@@ -25,6 +25,10 @@ pub enum Check {
     },
     /// `text` does not appear (case-insensitive).
     Absent { text: String },
+    /// No substantial line (40+ characters) appears twice. The runner adds this to
+    /// every checked handoff: a revision measured 2026-10-03 passed a heading check
+    /// by appending the heading and repeating the whole list under it.
+    NoRepeats,
     /// The word count is within the bounds given.
     Words {
         #[serde(default)]
@@ -55,7 +59,7 @@ pub fn parse(values: &[serde_json::Value]) -> Result<Vec<Check>> {
             serde_json::from_value::<Check>(v.clone()).map_err(|e| {
                 Error::Refused(format!(
                     "check {} is not valid ({e}); use one of heading{{text}}, items{{heading,min}}, \
-                     contains{{text,min?}}, absent{{text}}, words{{min?,max?}}, each with a \"check\" field",
+                     contains{{text,min?}}, absent{{text}}, words{{min?,max?}}, no_repeats, each with a \"check\" field",
                     i + 1
                 ))
             })
@@ -145,6 +149,26 @@ fn run(text: &str, c: &Check) -> (bool, String) {
                     format!("must not contain \"{want}\"; found {n} time(s)")
                 },
             )
+        }
+        Check::NoRepeats => {
+            let mut seen = std::collections::HashSet::new();
+            let repeated: Vec<&str> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.chars().count() >= 40)
+                .filter(|l| !seen.insert(*l))
+                .collect();
+            match repeated.first() {
+                None => (true, "no repeated lines".into()),
+                Some(l) => (
+                    false,
+                    format!(
+                        "must not repeat content: {} line(s) appear twice, e.g. \"{}\"; give each item once",
+                        repeated.len(),
+                        l.chars().take(60).collect::<String>()
+                    ),
+                ),
+            }
         }
         Check::Words { min, max } => {
             let n = text.split_whitespace().count();
@@ -325,6 +349,26 @@ mod tests {
             max: Some(5),
         });
         assert!(!long.pass && long.detail.starts_with("needs at most 5 words"));
+    }
+
+    #[test]
+    fn repeated_lines_fail_and_short_ones_do_not_count() {
+        let item = "- **Stamina Cap**: 100 stamina points, with no overflow beyond this limit.";
+        let padded = format!("{item}\n\n### Stamina\n{item}\n- ok\n- ok");
+        let o = evaluate(&padded, &[Check::NoRepeats]).remove(0);
+        assert!(
+            !o.pass && o.detail.contains("must not repeat"),
+            "{}",
+            o.detail
+        );
+        assert!(
+            evaluate(SPEC, &[Check::NoRepeats])[0].pass,
+            "short repeated lines are fine"
+        );
+        assert_eq!(
+            parse(&[json!({"check": "no_repeats"})]).expect("valid"),
+            [Check::NoRepeats]
+        );
     }
 
     #[test]

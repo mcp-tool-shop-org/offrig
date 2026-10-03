@@ -401,7 +401,7 @@ impl Worker {
             self.stats
                 .tokens
                 .fetch_add(reply.tokens.unwrap_or(0), Ordering::SeqCst);
-            let outcomes = checks::evaluate(&reply.text, &h.checks);
+            let outcomes = checks::evaluate(&reply.text, &runner::effective_checks(h));
             stored_turn += 1;
             store.add_output(NewOutput {
                 handoff_id: h.id,

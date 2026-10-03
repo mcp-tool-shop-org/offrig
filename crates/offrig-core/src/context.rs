@@ -61,6 +61,13 @@ pub fn line(r: &Record) -> String {
     )
 }
 
+/// Roles set voice and focus; the handoff sets the deliverable. Measured 2026-10-03:
+/// without this line, a role's own required output (spec, tuning knobs, risks) was
+/// written into deliverables that asked for a list.
+pub const PRECEDENCE: &str = "The mission and \"Done when\" set this deliverable's content and \
+format. Where the role's required output or working habits ask for more (alternatives, \
+specs, risks, citations), leave them out unless this handoff asks for them.";
+
 pub fn assemble(p: &Parts<'_>, budget_chars: usize) -> Assembled {
     let mut head = String::new();
     head.push_str(p.role_block.trim_end());
@@ -77,10 +84,11 @@ pub fn assemble(p: &Parts<'_>, budget_chars: usize) -> Assembled {
     }
     let h = p.handoff;
     head.push_str(&format!(
-        "\n## Handoff #{}\nMission: {}\nDone when: {}\n",
+        "\n## Handoff #{}\nMission: {}\nDone when: {}\n{}\n",
         h.id,
         h.mission.trim(),
-        h.acceptance.trim()
+        h.acceptance.trim(),
+        PRECEDENCE
     ));
     if !h.scope.is_empty() {
         head.push_str(&format!(
@@ -232,6 +240,10 @@ mod tests {
         let at = |s: &str| a.text.find(s).unwrap_or_else(|| panic!("missing {s}"));
         assert!(at("## Handoff #7") < at("## Input from handoff #3 (duel verbs)"));
         assert!(at("## Input from handoff #3") < at("## Now"));
+        assert!(
+            at("Done when:") < at(PRECEDENCE),
+            "the handoff's format rules over the role's"
+        );
         assert!(a.text.contains("[... cut at 6000 characters]"));
     }
 
