@@ -130,9 +130,11 @@ impl Session {
         Self { rp, cfg }
     }
 
-    /// The live offrig pod for a profile, matched by its name.
+    /// The live offrig pod for a profile in this session's lane, matched by its exact
+    /// lane name. Another lane's pod, or a plain-lane pod seen from a project lane,
+    /// is never this one.
     pub fn current_pod(&self, profile: &Profile) -> Result<Option<Pod>> {
-        let name = spec::pod_name(profile);
+        let name = spec::pod_name(&self.cfg, profile);
         Ok(self
             .rp
             .list_pods()?

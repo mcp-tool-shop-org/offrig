@@ -15,6 +15,7 @@ use offrig_core::checks;
 use offrig_core::config::{Config, Profile};
 use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
+use offrig_core::lanes::LaneCtx;
 use offrig_core::ollama::Ollama;
 use offrig_core::roles;
 use offrig_core::runner::{self, Next};
@@ -94,21 +95,24 @@ fn endpoint(cfg: &Config, profile: &Profile, plan_pod: &str) -> Result<(String, 
     if let Ok(base) = std::env::var("OFFRIG_TEST_OLLAMA_BASE") {
         return Ok((base, None));
     }
+    // The runner's tunnel is the lane's own port plus one, so it never shares the
+    // side-car's tunnel and never reaches another lane's port.
     let mut own = cfg.clone();
     own.tunnel_port = cfg.tunnel_port + 1;
-    if own.tunnel_port == 11434 {
+    if own.tunnel_port == offrig_core::config::LOCAL_OLLAMA_PORT {
         return Err(Error::Refused(
             "the runner's tunnel port would be the local Ollama's".into(),
         ));
     }
     let session = Session::with_client(own.clone(), RunPod::from_env()?);
     let pod = session.rp.get_pod(plan_pod)?;
+    ops::ensure_owned(&own, &pod)?;
     session.write_ssh(&pod)?;
     let t = session.open_tunnel(profile, &mut |_| {})?;
     Ok((own.tunnel_base_url(), Some(t)))
 }
 
-pub fn run(cfg: &Config, project: &Path, plan_id: i64, keep_pod: bool) -> anyhow::Result<()> {
+pub fn run(ctx: &LaneCtx, project: &Path, plan_id: i64, keep_pod: bool) -> anyhow::Result<()> {
     let db = project.join(".offrig").join("offrig.db");
     let store = Store::open(&db)?;
     let plan = store
@@ -118,6 +122,8 @@ pub fn run(cfg: &Config, project: &Path, plan_id: i64, keep_pod: bool) -> anyhow
         .pod_id
         .clone()
         .ok_or_else(|| Error::Refused(format!("plan {plan_id} has no pod")))?;
+    // The plan's own lane, not the global config: its alias, tunnel port and pod name.
+    let cfg = &ctx.cfg_for_plan(&store, &plan)?;
     let profile = cfg.profile(&plan.profile)?.clone();
     let model = profile
         .models
@@ -281,6 +287,7 @@ pub fn run(cfg: &Config, project: &Path, plan_id: i64, keep_pod: bool) -> anyhow
         match ops::shutdown(
             &db,
             &ops::Shared::default(),
+            ctx,
             plan_id,
             Some("runner: queue drained"),
         ) {

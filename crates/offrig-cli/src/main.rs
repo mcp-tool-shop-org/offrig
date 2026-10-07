@@ -270,8 +270,10 @@ fn run(cli: Cli) -> Result<()> {
                     .map_or("unlimited".into(), |h| format!("{h:.1} h"))
             );
             for p in s.rp.list_pods()? {
-                let ours = if p.name.starts_with("offrig-") {
+                let ours = if s.cfg.owns_pod(&p.name) {
                     "offrig"
+                } else if p.name.starts_with("offrig-") {
+                    "lane  "
                 } else {
                     "other "
                 };
@@ -776,7 +778,7 @@ fn hold(
     }
     println!(
         "tunnel closed; {} is still running (stop it with `offrig down {} --yes`)",
-        spec::pod_name(p),
+        spec::pod_name(&s.cfg, p),
         p.name
     );
     Ok(())

@@ -43,6 +43,11 @@ pub struct Config {
     pub role_os_dir: Option<String>,
     pub active_profile: String,
     pub profiles: Vec<Profile>,
+    /// The lane this config runs in: `None` is the plain lane (the CLI, the app, Zed),
+    /// `Some(tag)` is a project lane (the side-car). Never read from or written to the
+    /// file; [`Config::in_lane`] sets it together with the lane's alias and port.
+    #[serde(skip)]
+    pub lane_tag: Option<String>,
 }
 
 /// `ROLE_OS_DIR`, else the studio's checkout if present.
@@ -232,6 +237,7 @@ impl Default for Config {
             role_os_dir: default_role_os_dir(),
             active_profile: "medium".into(),
             profiles: default_profiles(),
+            lane_tag: None,
         }
     }
 }
@@ -514,10 +520,21 @@ pub fn default_identity_file() -> String {
     "~/.ssh/id_ed25519".into()
 }
 
-pub fn config_path() -> Result<PathBuf> {
+/// offrig's config directory: `OFFRIG_CONFIG_DIR` when set (tests and sandboxes point
+/// it at a temp dir so nothing touches the real one), else `<config dir>/offrig`.
+pub fn config_dir() -> Result<PathBuf> {
+    if let Some(d) = std::env::var_os("OFFRIG_CONFIG_DIR")
+        && !d.is_empty()
+    {
+        return Ok(PathBuf::from(d));
+    }
     let dir = dirs::config_dir()
         .ok_or_else(|| Error::Config("no config directory on this system".into()))?;
-    Ok(dir.join("offrig").join("config.toml"))
+    Ok(dir.join("offrig"))
+}
+
+pub fn config_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("config.toml"))
 }
 
 impl Config {
@@ -600,6 +617,33 @@ impl Config {
 
     pub fn active(&self) -> Result<&Profile> {
         self.profile(&self.active_profile)
+    }
+
+    /// The name this config gives the pod for a profile: `offrig-<profile>` on the
+    /// plain lane, `offrig-<tag>-<profile>` on a project lane. A pod's lane is in its
+    /// name, so one lane's launch, status and shutdown never match another's pod.
+    pub fn pod_name(&self, profile: &Profile) -> String {
+        match &self.lane_tag {
+            None => format!("offrig-{}", profile.name),
+            Some(tag) => format!("offrig-{tag}-{}", profile.name),
+        }
+    }
+
+    /// Whether `name` is a pod of this config's lane: exactly the name some configured
+    /// profile gets here. Nothing else on the account is ever this lane's.
+    pub fn owns_pod(&self, name: &str) -> bool {
+        self.profiles.iter().any(|p| self.pod_name(p) == name)
+    }
+
+    /// This config as seen from `lane`: its ssh alias, its tunnel port and its pod
+    /// names. Refused if the result would tunnel on the local Ollama's port.
+    pub fn in_lane(&self, lane: &crate::lanes::Lane) -> Result<Config> {
+        let mut c = self.clone();
+        c.ssh_alias = lane.ssh_alias.clone();
+        c.tunnel_port = lane.tunnel_port;
+        c.lane_tag = lane.tag.clone();
+        c.validate()?;
+        Ok(c)
     }
 
     pub fn tunnel_base_url(&self) -> String {

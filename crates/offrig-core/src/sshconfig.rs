@@ -189,6 +189,40 @@ mod tests {
     }
 
     #[test]
+    fn each_lane_rewrites_only_its_own_block_and_the_plain_block_is_unchanged() {
+        let plain = entry("offrig", "1.1.1.1", 1);
+        let before = upsert(
+            "Host a
+", &plain,
+        );
+        let a = upsert(&before, &entry("offrig-aspire-si", "2.2.2.2", 2));
+        let both = upsert(&a, &entry("offrig-ai-jam-sessions", "3.3.3.3", 3));
+        // A second launch by lane aspire-si moves only aspire-si's block.
+        let moved = upsert(&both, &entry("offrig-aspire-si", "9.9.9.9", 9));
+        assert_eq!(
+            moved.matches("# >>> offrig:offrig-aspire-si >>>").count(),
+            1
+        );
+        assert!(moved.contains("HostName 9.9.9.9") && !moved.contains("2.2.2.2"));
+        assert!(
+            moved.contains("HostName 3.3.3.3"),
+            "another lane is untouched"
+        );
+        assert!(
+            moved.contains(&render_block(&plain)),
+            "the plain lane's block is byte-for-byte unchanged"
+        );
+        assert!(render_block(&plain).starts_with(
+            "# >>> offrig:offrig >>>
+"
+        ));
+        // Removing one lane leaves the others.
+        let gone = remove(&moved, "offrig-aspire-si");
+        assert!(!gone.contains("offrig-aspire-si") && gone.contains("Host offrig-ai-jam-sessions"));
+        assert!(gone.contains(&render_block(&plain)));
+    }
+
+    #[test]
     fn remove_restores_surrounding_text() {
         let base = "Host a\n    User x\n";
         let with = upsert(base, &entry("offrig", "1.1.1.1", 1));
