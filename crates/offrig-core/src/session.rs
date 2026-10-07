@@ -19,8 +19,18 @@ use crate::zed::{self, DefaultModel, ZedModel};
 pub enum Event {
     Step(String),
     Pod(Box<Pod>),
-    Pull { model: String, state: PullState },
+    Pull {
+        model: String,
+        state: PullState,
+    },
     Warn(String),
+    /// One more look at a market with no free capacity: the check number, how long the
+    /// wait has run and its limit. Nothing is rented while this repeats.
+    Waiting {
+        attempt: u32,
+        waited_secs: u64,
+        limit_secs: u64,
+    },
 }
 
 pub struct Session {
@@ -85,7 +95,9 @@ pub fn is_no_capacity(e: &Error) -> bool {
 fn no_capacity(body: &crate::runpod::PodCreate, waited: Duration) -> Error {
     let what = format!("{}x of [{}]", body.gpu_count, body.gpu_type_ids.join(" | "));
     Error::NoCapacity(if waited.is_zero() {
-        format!("RunPod has no {what} free right now; try again later or set a wait")
+        format!(
+            "RunPod has no {what} free right now; try again later or set a wait              (offrig_plan wait_minutes, `offrig up --wait`, or the profile's wait_for_gpu_minutes)"
+        )
     } else {
         format!(
             "RunPod had no {what} free during a {} minute wait; nothing was rented",
@@ -116,6 +128,21 @@ impl Wait {
         }
     }
 }
+
+/// The longest a launch may wait for capacity: the plan's own `wait_minutes`, else the
+/// profile's `wait_for_gpu_minutes`, cut to what the plan's deadline leaves minus
+/// `RESERVE`. A pod that appears with only minutes left could do no work, and the
+/// watchdog ends it at the deadline regardless, so the wait stays inside the plan's
+/// committed time. Nothing is rented while waiting, so the committed worst case is
+/// never exceeded by waiting.
+pub fn capacity_wait(plan_minutes: Option<u32>, profile_minutes: u32, secs_left: u64) -> Duration {
+    let asked = u64::from(plan_minutes.unwrap_or(profile_minutes)) * 60;
+    Duration::from_secs(asked.min(secs_left.saturating_sub(WAIT_RESERVE.as_secs())))
+}
+
+/// Time kept out of a capacity wait, so a pod found at the last moment is not
+/// terminated by the watchdog before it can be used.
+pub const WAIT_RESERVE: Duration = Duration::from_secs(5 * 60);
 
 impl Session {
     pub fn new(cfg: Config) -> Result<Self> {
@@ -262,6 +289,7 @@ impl Session {
         let started = Instant::now();
         let what = format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | "));
         let mut next_note = started;
+        let mut attempt = 0u32;
         loop {
             if cancel.load(Ordering::SeqCst) {
                 return Err(Error::Cancelled(format!("waiting for {what}")));
@@ -280,6 +308,12 @@ impl Session {
             if waited >= wait.limit {
                 return Err(no_capacity(body, wait.limit));
             }
+            attempt += 1;
+            on(Event::Waiting {
+                attempt,
+                waited_secs: waited.as_secs(),
+                limit_secs: wait.limit.as_secs(),
+            });
             if Instant::now() >= next_note {
                 on(Event::Step(format!(
                     "no {what} free yet; checking every {}s, {} of {} min waited",
@@ -822,6 +856,40 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Event::Step(s) if s.starts_with("no 4x")))
         );
+        // Every retry is reported, numbered from 1, with the wait so far and its limit.
+        let waits: Vec<(u32, u64)> = steps
+            .iter()
+            .filter_map(|e| match e {
+                Event::Waiting {
+                    attempt,
+                    limit_secs,
+                    ..
+                } => Some((*attempt, *limit_secs)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(waits, [(1, 5), (2, 5)], "two full answers, two retries");
+    }
+
+    #[test]
+    fn the_wait_is_the_plans_own_else_the_profiles_and_stays_inside_the_deadline() {
+        let m = |n: u64| Duration::from_secs(n * 60);
+        // The plan's wait wins over the profile's, including a plan that asks for none.
+        assert_eq!(capacity_wait(Some(30), 20, 3 * 3600), m(30));
+        assert_eq!(capacity_wait(None, 20, 3 * 3600), m(20));
+        assert_eq!(capacity_wait(Some(0), 20, 3 * 3600), Duration::ZERO);
+        assert_eq!(capacity_wait(None, 0, 3 * 3600), Duration::ZERO);
+        // Cut to what the deadline leaves less the reserve (35 min left, 5 kept back).
+        assert_eq!(capacity_wait(Some(120), 20, 35 * 60), m(30));
+        // Too little time left to wait at all, or none left.
+        assert_eq!(capacity_wait(Some(20), 20, 4 * 60), Duration::ZERO);
+        assert_eq!(capacity_wait(Some(20), 20, 0), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_job_profile_waits_for_capacity_by_default() {
+        let cfg = Config::default();
+        assert_eq!(cfg.profile("job").expect("job").wait_for_gpu_minutes, 20);
     }
 
     #[test]

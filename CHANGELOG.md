@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Launch follow-ups from the first real runs of the hardware-limits build (issue #15).
+  - A narrowed plan waits for capacity instead of failing. `offrig_plan` takes
+    `wait_minutes` (stored with the plan, shown in the reply; `0` fails at once), else the
+    profile's `wait_for_gpu_minutes`, and the `job` profile now defaults to 20 minutes.
+    Nothing is rented while waiting; the wait is cut to the plan's remaining time less a
+    five-minute reserve, so it stays inside the plan's deadline and adds nothing to its
+    worst case. Each retry is reported: `offrig_job` shows `progress.capacity_wait` and a
+    step naming the check. The `no capacity` error now says how to set a wait.
+  - `offrig_job` derives the step of a booting pod from the pod's state on each call (what
+    RunPod reports, and whether sshd answers on the published port), instead of reading the
+    launch thread's last event, which could be minutes stale on a slow host. The thread's
+    own last step is kept beside it as `progress.launch_step`.
+  - The host's CUDA version is measured: after ssh is up the launch runs `nvidia-smi` once
+    through the lane, reads `CUDA Version: 12.8` or the newer `CUDA UMD Version: 13.4`, and
+    fills `rented.cuda_version` (`rented.cuda_source` says `nvidia-smi`). A host below the
+    plan's floor keeps the loud `warnings` entry; nothing is terminated. If `nvidia-smi`
+    gives nothing, `rented.notes` says the floor is unchecked.
+
 - Hardware limits on a plan (issues #9 and #10). A plan could land on a fallback card the
   work could not use: a `job` plan rented an A100 host on a CUDA 12.8 driver, and the job's
   CUDA 13 PyTorch failed after setup. Worst-case pricing also always used the profile's top

@@ -48,6 +48,61 @@ pub fn wait_for_ssh(alias: &str, timeout: Duration) -> Result<()> {
     Err(Error::Timeout(format!("ssh to {alias} (last: {last})")))
 }
 
+/// Whether something at `host:port` answers like sshd: a TCP connect, then the
+/// `SSH-` banner sshd sends before anything is asked. No key and no login, so it is
+/// cheap enough to run on every progress poll. Any failure is simply "not yet".
+pub fn ssh_answers(host: &str, port: u16, timeout: Duration) -> bool {
+    use std::io::Read;
+    use std::net::{TcpStream, ToSocketAddrs};
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(timeout));
+    let mut banner = [0u8; 4];
+    s.read_exact(&mut banner).is_ok() && &banner == b"SSH-"
+}
+
+/// The host driver's CUDA version from `nvidia-smi`'s header, which prints it as
+/// `CUDA Version: 12.8` and, on newer drivers, `CUDA UMD Version: 13.4`. `None` when
+/// no such field is in the text.
+pub fn parse_cuda_version(smi: &str) -> Option<String> {
+    for line in smi.lines() {
+        for label in ["CUDA UMD Version", "CUDA Version"] {
+            let Some(at) = line.find(label) else { continue };
+            let rest = line[at + label.len()..].trim_start();
+            let Some(rest) = rest.strip_prefix(':') else {
+                continue;
+            };
+            let v: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            let v = v.trim_end_matches('.');
+            if v.split('.').count() >= 2 && v.split('.').all(|p| !p.is_empty()) {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Run `nvidia-smi` once on the pod and read its CUDA version. `Ok(None)` when it ran
+/// but printed no version; `Err` when it could not be run (no ssh, no driver).
+pub fn host_cuda_version(alias: &str) -> Result<Option<String>> {
+    Ok(parse_cuda_version(&ssh_exec(
+        alias,
+        "nvidia-smi",
+        Duration::from_secs(30),
+    )?))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuStat {
     pub index: u32,
@@ -292,6 +347,60 @@ mod tests {
         let dead = parse_engine_state("\nstopped\n[offrig] engine exited with status 1");
         assert_eq!(dead.hf_bytes, 0);
         assert!(!dead.running && dead.log_tail.contains("status 1"));
+    }
+
+    #[test]
+    fn the_cuda_version_is_read_from_both_nvidia_smi_header_forms() {
+        let old = "| NVIDIA-SMI 570.124.06             Driver Version: 570.124.06     CUDA Version: 12.8     |";
+        assert_eq!(parse_cuda_version(old).as_deref(), Some("12.8"));
+        let newer = "| NVIDIA-SMI 595.45.04              Driver Version: 595.45.04      CUDA UMD Version: 13.4    |";
+        assert_eq!(parse_cuda_version(newer).as_deref(), Some("13.4"));
+        // A whole table: the header line is found among the rest.
+        let table = format!(
+            "Tue Oct  7 12:00:01 2026\n+---+\n{old}\n|---+\n| GPU  Name  Persistence-M |\n"
+        );
+        assert_eq!(parse_cuda_version(&table).as_deref(), Some("12.8"));
+        // A space before the colon and a two-digit minor still read.
+        assert_eq!(
+            parse_cuda_version("CUDA UMD Version : 12.10").as_deref(),
+            Some("12.10")
+        );
+        for none in [
+            "",
+            "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.",
+            "Driver Version: 570.124.06",
+            "CUDA Version: N/A",
+            "CUDA Version: 12",
+        ] {
+            assert_eq!(parse_cuda_version(none), None, "{none:?}");
+        }
+    }
+
+    #[test]
+    fn ssh_answers_only_to_an_ssh_banner() {
+        use std::io::Write;
+        let banner = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = banner.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for mut s in banner.incoming().map_while(std::result::Result::ok) {
+                let _ = s.write_all(b"SSH-2.0-OpenSSH_9.6\r\n");
+            }
+        });
+        let wait = Duration::from_secs(3);
+        assert!(ssh_answers("127.0.0.1", port, wait));
+        // Something listening that is not sshd, and nothing listening at all.
+        let http = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let http_port = http.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for mut s in http.incoming().map_while(std::result::Result::ok) {
+                let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+            }
+        });
+        assert!(!ssh_answers("127.0.0.1", http_port, wait));
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let closed_port = closed.local_addr().expect("addr").port();
+        drop(closed);
+        assert!(!ssh_answers("127.0.0.1", closed_port, wait));
     }
 
     #[test]

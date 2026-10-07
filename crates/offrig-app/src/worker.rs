@@ -212,6 +212,8 @@ impl Worker {
                     .log(format!("pod {} reachable at {:?}", p.id, p.ssh_endpoint()))
             }
             Event::Pull { model, state } => self.out.send(Update::Pull { model, state }),
+            // The wait's step line already says the GPUs are not free yet.
+            Event::Waiting { .. } => {}
         }
     }
 
