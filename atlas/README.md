@@ -1,21 +1,28 @@
 # offrig: how it works
 
-Mapped at 2026-10-07 from commit 0f16bb8 by Atlas 1.24.0.
+Mapped at 2026-10-07 from commit 795d3ef by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-5 parts, mostly Rust (65 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
+5 parts, mostly Rust (67 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-10-07 (d5c3553)
+## What changed since 2026-10-07 (2e8cadb)
 
-Nothing structural changed since 2026-10-07; 7 files added and 6 changed content.
+- Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.
+- site/src/content/docs/ is now read by site/astro.config.mjs.
+- site/src/content/docs/handbook/ is now read by site/astro.config.mjs.
+- site/astro.config.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
+- site/package-lock.json is new and belongs to no part, so atlas check fails on it against the previous map.
+- site/package.json is new and belongs to no part, so atlas check fails on it against the previous map.
+- And 16 more new files that belong to no part.
+- 29 files added and 5 changed content, across 1 part.
 
 ## What comes in
 
 1. **release.** When a tag matching `v*` is pushed; or by hand. Runs crates/offrig-app/build.rs; checks README.md, crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and 1 more.
-2. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 51 more; checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more.
+2. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 53 more; checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more.
 3. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 4. **offrig** (a command people run). Runs crates/offrig-cli/src/main.rs.
 5. **offrig-app** (a command people run). Runs crates/offrig-app/src/main.rs.
@@ -25,7 +32,7 @@ Nothing structural changed since 2026-10-07; 7 files added and 6 changed content
 ## What happens through release
 
 1. The workflow runs crates/offrig-app/build.rs in offrig-app; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-mcp/src/main.rs in offrig-mcp and README.md in root.
-2. That reaches offrig-core (27 files).
+2. That reaches offrig-core (28 files).
 3. It creates a GitHub release.
 
 ## Who reads the results
@@ -34,7 +41,7 @@ release writes nothing this map can see.
 
 ## The other doors
 
-**ci** runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 51 more, checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more, and uploads coverage to Codecov.
+**ci** runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 53 more, checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more, and uploads coverage to Codecov.
 
 **Deploy site to GitHub Pages** runs site/astro.config.mjs and site/src/, and deploys the site.
 
@@ -55,15 +62,15 @@ release writes nothing this map can see.
 
 ## What tends to change together
 
-- **crates/offrig-app/src/worker.rs** and **crates/offrig-cli/src/main.rs** changed together in 6 of 9 commits, though neither part imports the other.
+- **crates/offrig-app/src/worker.rs** and **crates/offrig-cli/src/main.rs** changed together in 6 of 10 commits, though neither part imports the other.
 - **crates/offrig-app/src/worker.rs** and **crates/offrig-core/src/session.rs** changed together in 6 of 10 commits, and the offrig-app part imports the offrig-core part.
-- **crates/offrig-cli/src/main.rs** and **crates/offrig-core/src/session.rs** changed together in 7 of 12 commits, and the offrig-cli part imports the offrig-core part.
-- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 10 of 18 commits, inside the offrig-mcp part.
-- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 6 of 11 commits, inside the offrig-core part.
+- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 7 of 12 commits, inside the offrig-core part.
+- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 11 of 19 commits, inside the offrig-mcp part.
+- **crates/offrig-cli/src/main.rs** and **crates/offrig-core/src/session.rs** changed together in 7 of 13 commits, and the offrig-cli part imports the offrig-core part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
-Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do.
+Window: 180 days; a pair counts from 3 shared commits, since 6 source files reach 10 revisions; the floor rises to 10 when 25 do.
 
 ## What no test touches
 

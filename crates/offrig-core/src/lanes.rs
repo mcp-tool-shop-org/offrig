@@ -465,6 +465,16 @@ impl Registry {
             .map(|r| r.lane()))
     }
 
+    /// As [`Registry::all`], but a registry that does not exist yet means no lanes and is
+    /// left alone: no folder and no lock file are created just to look (status uses this).
+    pub fn all_if_present(&self) -> Result<Vec<(String, Lane)>> {
+        if self.path().exists() {
+            self.all()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     /// Every lane with the project path it belongs to.
     pub fn all(&self) -> Result<Vec<(String, Lane)>> {
         let _lock = self.lock()?;
@@ -580,6 +590,17 @@ mod tests {
         let p = root.join("projects").join(name);
         std::fs::create_dir_all(&p).expect("project dir");
         p
+    }
+
+    #[test]
+    fn looking_at_a_missing_registry_creates_nothing() {
+        let d = dir("absent").join("not-yet");
+        let reg = Registry::at(&d);
+        assert!(reg.all_if_present().expect("none").is_empty());
+        assert!(!d.exists(), "no folder or lock was created to look");
+        let p = project(&dir("absent-p"), "proj");
+        reg.lane_for_project(&p, &Config::default()).expect("lane");
+        assert_eq!(reg.all_if_present().expect("one").len(), 1);
     }
 
     #[test]

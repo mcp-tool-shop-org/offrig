@@ -155,15 +155,27 @@ pub fn engine_env(profile: &Profile, r: &Recipe) -> BTreeMap<String, String> {
     env
 }
 
+/// Env vars that make a pod identifiable in RunPod's console (issue #26). They are
+/// added to the profile's own env; none of the profile's variables uses these names.
+pub const ENV_LANE: &str = "OFFRIG_LANE";
+pub const ENV_PLAN: &str = "OFFRIG_PLAN";
+pub const ENV_DEADLINE: &str = "OFFRIG_DEADLINE";
+
 pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
     let on_volume = profile.network_volume_id.is_some();
-    let (image, start, env) = match (&profile.job, &profile.recipe) {
+    let (image, start, mut env) = match (&profile.job, &profile.recipe) {
         (Some(j), _) => (j.image.clone(), BOOTSTRAP_JOB, job_env()),
         (None, Some(r)) => match r.engine {
             Engine::Sglang => (r.image.clone(), BOOTSTRAP_SGLANG, engine_env(profile, r)),
         },
         (None, None) => (OLLAMA_IMAGE.to_string(), BOOTSTRAP, ollama_env(profile)),
     };
+    // The lane is in the pod's name already; the variable shows it in the console too.
+    // The plain lane (CLI, app, Zed) says so. No free-text note goes on a pod.
+    env.insert(
+        ENV_LANE.into(),
+        cfg.lane_tag.clone().unwrap_or_else(|| "plain".into()),
+    );
     PodCreate {
         name: pod_name(cfg, profile),
         image_name: image,
@@ -214,6 +226,16 @@ pub fn pod_create_for_plan(
     body
 }
 
+/// Mark a plan's pod with its plan id and deadline (UTC, ISO 8601), added to the env it
+/// already carries. A plan whose worst case is not committed has no deadline to show.
+pub fn mark_plan(body: &mut PodCreate, plan: &crate::store::Plan) {
+    body.env.insert(ENV_PLAN.into(), plan.id.to_string());
+    if let Some(d) = plan.deadline() {
+        body.env
+            .insert(ENV_DEADLINE.into(), crate::cost::iso_utc(d));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,7 +275,11 @@ mod tests {
             assert_eq!(b.name, format!("offrig-aspire-si-{name}"));
             // Same pod apart from its name: only ssh exposed, the engine on loopback.
             assert_eq!(b.ports, ["22/tcp"], "{name}");
-            assert_eq!(b.env, a.env, "{name}");
+            // The same env apart from the lane marker.
+            let mut a_env = a.env.clone();
+            a_env.insert(ENV_LANE.into(), "aspire-si".into());
+            assert_eq!(b.env, a_env, "{name}");
+            assert_eq!(a.env[ENV_LANE], "plain", "{name}");
             assert_eq!(b.docker_start_cmd, a.docker_start_cmd, "{name}");
         }
     }
@@ -461,6 +487,55 @@ mod tests {
         // A plan that stored nothing falls back to the profile's.
         let old = pod_create_for_plan(&cfg, job, &[], None, None);
         assert_eq!(old, pod_create(&cfg, job));
+    }
+
+    fn plan(committed_at: Option<i64>) -> crate::store::Plan {
+        crate::store::Plan {
+            id: 17,
+            profile: "job".into(),
+            gpu_count: 1,
+            gpu_types: vec![],
+            max_hours: 2.5,
+            max_price_hr: 2.0,
+            worst_case: 5.0,
+            state: "committed".into(),
+            pod_id: None,
+            created_at: 0,
+            note: Some("free text that must not reach the pod".into()),
+            committed_at,
+            started_at: None,
+        }
+    }
+
+    #[test]
+    fn a_plan_marks_its_pod_with_lane_plan_and_deadline_and_keeps_the_rest_of_the_env() {
+        let cfg = Config::default();
+        for name in ["small", "frontier", "job"] {
+            let p = cfg.profile(name).expect("profile");
+            let plain = pod_create(&cfg, p);
+            let mut body = pod_create_for_plan(&cfg, p, &[], None, None);
+            mark_plan(&mut body, &plan(Some(1_709_208_000)));
+            assert_eq!(body.env[ENV_LANE], "plain", "{name}");
+            assert_eq!(body.env[ENV_PLAN], "17", "{name}");
+            // committed + 2.5 h
+            assert_eq!(body.env[ENV_DEADLINE], "2024-02-29T14:30:00Z", "{name}");
+            for (k, v) in &plain.env {
+                assert_eq!(body.env.get(k), Some(v), "{name}: {k} survives");
+            }
+            assert_eq!(body.env.len(), plain.env.len() + 2, "{name}: two added");
+            let json = serde_json::to_string(&body.env).expect("json");
+            assert!(!json.contains("free text"), "no note on the pod: {json}");
+        }
+    }
+
+    #[test]
+    fn an_uncommitted_plan_has_no_deadline_to_put_on_the_pod() {
+        let cfg = Config::default();
+        let p = cfg.profile("job").expect("job");
+        let mut body = pod_create(&cfg, p);
+        mark_plan(&mut body, &plan(None));
+        assert_eq!(body.env[ENV_PLAN], "17");
+        assert!(!body.env.contains_key(ENV_DEADLINE));
     }
 
     #[test]
