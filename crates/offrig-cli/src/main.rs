@@ -140,6 +140,8 @@ fn print_event(last_pct: &mut HashMap<String, u64>) -> impl FnMut(Event) + '_ {
         Event::Step(s) => println!("  - {s}"),
         Event::Warn(s) => println!("  ! {s}"),
         Event::Pod(p) => println!("  - pod {} at {:?}", p.id, p.ssh_endpoint()),
+        // The step line the wait prints every few minutes already says it.
+        Event::Waiting { .. } => {}
         Event::Pull { model, state } => {
             if let PullState::Running {
                 status,

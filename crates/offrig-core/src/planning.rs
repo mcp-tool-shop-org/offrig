@@ -146,6 +146,9 @@ fn narrow(
 pub struct Rental {
     pub gpu: Option<String>,
     pub cuda_version: Option<String>,
+    /// Where `cuda_version` came from: `"nvidia-smi"` (measured on the pod through the
+    /// lane) or `"pod API"`. `None` when it is unknown.
+    pub cuda_source: Option<&'static str>,
     pub min_cuda: Option<String>,
     pub cost_per_hr: f64,
     pub plan_max_price_hr: f64,
@@ -160,6 +163,7 @@ impl Rental {
         serde_json::json!({
             "gpu": self.gpu,
             "cuda_version": self.cuda_version,
+            "cuda_source": self.cuda_source,
             "min_cuda": self.min_cuda,
             "cost_per_hr": self.cost_per_hr,
             "plan_max_price_hr": self.plan_max_price_hr,
@@ -213,6 +217,7 @@ pub fn audit_rental(
     }
     Rental {
         gpu,
+        cuda_source: cuda.as_ref().map(|_| "pod API"),
         cuda_version: cuda,
         min_cuda: min_cuda.map(str::to_string),
         cost_per_hr: pod.cost_per_hr,
@@ -220,6 +225,63 @@ pub fn audit_rental(
         warnings,
         notes,
     }
+}
+
+/// What asking the pod itself for its CUDA version came to, once ssh is up.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostCuda {
+    /// Not asked (before ssh is up).
+    NotAsked,
+    /// `nvidia-smi` through the lane printed this version.
+    Measured(String),
+    /// `nvidia-smi` could not be run or printed no version; the reason.
+    Unavailable(String),
+}
+
+/// [`audit_rental`], with the host's CUDA taken from `nvidia-smi` on the pod when that
+/// was measured. The pod API does not report the host's CUDA, so the floor check had
+/// nothing to compare (issue #15); a measured version fills it and the loud warning
+/// fires as before. A measured version wins over the API's if they differ, and says so.
+pub fn audit_rental_with_host(
+    pod: &crate::runpod::Pod,
+    host: &HostCuda,
+    plan_gpu_types: &[String],
+    plan_max_price_hr: f64,
+    min_cuda: Option<&str>,
+) -> Rental {
+    let mut seen = pod.clone();
+    let mut extra_note = None;
+    let mut measured = false;
+    if let HostCuda::Measured(v) = host {
+        if let Some(api) = pod.host_cuda()
+            && api != v
+        {
+            extra_note = Some(format!(
+                "the pod API reported host CUDA {api} but nvidia-smi on the pod says {v}; using {v}"
+            ));
+        }
+        seen.machine
+            .get_or_insert_with(Default::default)
+            .cuda_version = Some(v.clone());
+        measured = true;
+    }
+    let mut r = audit_rental(&seen, plan_gpu_types, plan_max_price_hr, min_cuda);
+    if measured {
+        r.cuda_source = Some("nvidia-smi");
+    }
+    if let HostCuda::Unavailable(why) = host
+        && r.cuda_version.is_none()
+    {
+        r.notes
+            .retain(|n| !n.contains("did not report the host's CUDA"));
+        if let Some(need) = min_cuda {
+            r.notes.push(format!(
+                "neither the pod API nor nvidia-smi on the pod gave the host's CUDA version ({why}), so the plan's floor of {need} is unchecked"
+            ));
+        }
+    }
+    r.notes.extend(extra_note);
+    r
 }
 
 #[cfg(test)]
@@ -447,6 +509,64 @@ mod tests {
             Some("13.0"),
         );
         assert!(ok.warnings.is_empty() && ok.notes.is_empty());
+    }
+
+    #[test]
+    fn nvidia_smi_fills_the_host_cuda_and_the_floor_warning_fires() {
+        let types = vec![A100.to_string()];
+        let smi = "| NVIDIA-SMI 570.124.06   Driver Version: 570.124.06   CUDA Version: 12.8   |";
+        let host = HostCuda::Measured(crate::remote::parse_cuda_version(smi).expect("version"));
+        let audit =
+            |p: &Pod, h: &HostCuda| audit_rental_with_host(p, h, &types, 3.49, Some("13.0"));
+        // The pod API said nothing; the measured version is below the floor.
+        let r = audit(&pod(Some(A100), None, 1.89), &host);
+        assert_eq!(r.cuda_version.as_deref(), Some("12.8"));
+        assert_eq!(r.cuda_source, Some("nvidia-smi"));
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+        assert!(r.warnings[0].starts_with("HOST CUDA TOO OLD"));
+        assert!(r.notes.is_empty(), "{:?}", r.notes);
+        assert_eq!(r.to_json()["cuda_version"], "12.8");
+        assert_eq!(r.to_json()["cuda_source"], "nvidia-smi");
+        // The newer header form meets the floor: no warning, still no note.
+        let newer = HostCuda::Measured(
+            crate::remote::parse_cuda_version("CUDA UMD Version: 13.4").expect("version"),
+        );
+        let ok = audit(&pod(Some(A100), None, 1.89), &newer);
+        assert!(ok.warnings.is_empty() && ok.notes.is_empty());
+        assert_eq!(ok.cuda_version.as_deref(), Some("13.4"));
+        // A pod with no machine block at all still takes the measurement.
+        let bare: Pod = serde_json::from_value(serde_json::json!({"id": "p"})).expect("pod");
+        assert_eq!(audit(&bare, &host).cuda_version.as_deref(), Some("12.8"));
+        // When the API and nvidia-smi disagree the measured one wins, and it says so.
+        let r = audit(&pod(Some(A100), Some("13.0"), 1.0), &host);
+        assert_eq!(r.cuda_version.as_deref(), Some("12.8"));
+        assert_eq!(r.warnings.len(), 1);
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.contains("nvidia-smi on the pod says 12.8"))
+        );
+    }
+
+    #[test]
+    fn an_nvidia_smi_that_gave_nothing_stays_a_note_never_a_pass() {
+        let types = vec![A100.to_string()];
+        let host = HostCuda::Unavailable("ssh: connection refused".into());
+        let audit =
+            |p: &Pod, floor: Option<&str>| audit_rental_with_host(p, &host, &types, 3.49, floor);
+        let r = audit(&pod(Some(A100), None, 1.0), Some("13.0"));
+        assert!(r.warnings.is_empty());
+        assert_eq!(r.cuda_version, None);
+        assert_eq!(r.cuda_source, None);
+        assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
+        assert!(r.notes[0].contains("neither the pod API nor nvidia-smi"));
+        assert!(r.notes[0].contains("connection refused"));
+        // With no floor there is nothing to say.
+        assert!(audit(&pod(Some(A100), None, 1.0), None).notes.is_empty());
+        // An API-reported version still counts when nvidia-smi was unavailable.
+        let api = audit(&pod(Some(A100), Some("12.8"), 1.0), Some("13.0"));
+        assert_eq!(api.cuda_source, Some("pod API"));
+        assert_eq!(api.warnings.len(), 1);
     }
 
     #[test]

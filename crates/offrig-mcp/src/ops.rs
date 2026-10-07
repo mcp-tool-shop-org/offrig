@@ -13,9 +13,10 @@ use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
 use offrig_core::lanes::LaneCtx;
 use offrig_core::ollama::Ollama;
+use offrig_core::planning::HostCuda;
 use offrig_core::remote::PullState;
 use offrig_core::runpod::{Pod, RunPod};
-use offrig_core::session::{Event, Session, Wait};
+use offrig_core::session::{Event, Session, Wait, capacity_wait};
 use offrig_core::store::{Plan, State, Store};
 use offrig_core::tunnel::Tunnel;
 use offrig_core::{Error, Result, planning, roles, runner, spec, watchdog};
@@ -60,6 +61,18 @@ impl Progress<'_> {
         .to_json()
     }
 
+    /// As [`Progress::rented`], with the host CUDA measured on the pod over ssh.
+    fn rented_with_host(&self, pod: &Pod, host: &HostCuda) -> Value {
+        planning::audit_rental_with_host(
+            pod,
+            host,
+            &self.gpu_types,
+            self.max_price_hr,
+            self.min_cuda.as_deref(),
+        )
+        .to_json()
+    }
+
     fn push(&self) {
         // Progress is advisory; a failed write must not stop the launch.
         let _ = self.store.update_job(self.job, "running", &self.v, None);
@@ -78,6 +91,25 @@ impl Progress<'_> {
                 self.v["ssh"] = json!(p.ssh_endpoint().map(|(h, port)| format!("{h}:{port}")));
                 self.v["rented"] = self.rented(&p);
                 self.push();
+            }
+            Event::Waiting {
+                attempt,
+                waited_secs,
+                limit_secs,
+            } => {
+                // Each retry is visible to offrig_job: how many checks, how long, how
+                // much is left. Nothing is rented while this repeats.
+                self.v["capacity_wait"] = json!({
+                    "checks": attempt,
+                    "waited_secs": waited_secs,
+                    "limit_secs": limit_secs,
+                });
+                self.step(format!(
+                    "no capacity yet for the plan's GPUs: check {attempt}, waited {} of {} min, \
+                     checking again in a minute; nothing is rented while waiting",
+                    waited_secs / 60,
+                    limit_secs / 60
+                ));
             }
             Event::Pull { model, state } => {
                 let s = match state {
@@ -142,6 +174,84 @@ pub fn run_launch(
         }
     }
     lock(&shared.cancels).remove(&plan_id);
+}
+
+/// How often a capacity wait looks again: a minute. Tests shorten it (debug builds only).
+fn capacity_poll() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("OFFRIG_TEST_CAPACITY_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    Duration::from_secs(60)
+}
+
+/// Run `nvidia-smi` once on the pod through the lane's ssh alias and read the CUDA
+/// version from its header. Never fails the launch: the pod is billing and usable, so a
+/// missing answer is recorded as such.
+fn host_cuda(alias: &str) -> HostCuda {
+    match offrig_core::remote::host_cuda_version(alias) {
+        Ok(Some(v)) => HostCuda::Measured(v),
+        Ok(None) => HostCuda::Unavailable("nvidia-smi printed no CUDA version".into()),
+        Err(e) => HostCuda::Unavailable(chain(&e)),
+    }
+}
+
+/// What the pod itself says about a launch's progress while the pod boots.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SshProbe {
+    /// Not tried: RunPod has not published an address to try.
+    NoEndpoint,
+    Answers,
+    Silent,
+}
+
+/// The step for a launch whose pod is booting, derived from the pod's state right now
+/// rather than read from the launch's last event, which goes stale on a slow host
+/// (issue #15). `created_ago` is seconds since the pod was created, when known.
+pub fn live_step(pod: &Pod, probe: SshProbe, created_ago: Option<i64>) -> String {
+    let age = created_ago.map_or(String::new(), |s| format!(", {s}s after it was created"));
+    if !pod.is_running() && !pod.desired_status.is_empty() {
+        return format!(
+            "the pod is {} (not RUNNING){age}; the launch will fail if it does not start",
+            pod.desired_status
+        );
+    }
+    match (pod.ssh_endpoint(), probe) {
+        (None, _) => format!(
+            "waiting for the pod to pull its image and get a public address from RunPod{age}"
+        ),
+        (Some((host, port)), SshProbe::Answers) => {
+            format!("ssh answers at {host}:{port}{age}; the launch is moving on to the host check")
+        }
+        (Some((host, port)), _) => format!(
+            "RunPod published the address {host}:{port}{age}, but sshd is not answering yet"
+        ),
+    }
+}
+
+/// Look at the launch's pod now: ask RunPod for it, try its ssh port, and say what that
+/// means for the step. `None` when RunPod could not be asked (the launch's own step is
+/// kept then, with the reason beside it).
+pub fn live_progress(pod_id: &str, created_at: Option<i64>) -> Result<String> {
+    let pod = RunPod::from_env()?.get_pod(pod_id)?;
+    let probe = match pod.ssh_endpoint() {
+        None => SshProbe::NoEndpoint,
+        Some((host, port)) => {
+            if offrig_core::remote::ssh_answers(&host, port, Duration::from_secs(3)) {
+                SshProbe::Answers
+            } else {
+                SshProbe::Silent
+            }
+        }
+    };
+    Ok(live_step(
+        &pod,
+        probe,
+        created_at.map(|t| (now_unix() - t).max(0)),
+    ))
 }
 
 /// A pod this lane did not name is not this lane's to touch: another lane's, the plain
@@ -213,10 +323,18 @@ fn launch(
     let body = spec::pod_create_for_plan(cfg, &profile, &plan.gpu_types, min_cuda.as_deref());
     let now = now_unix();
     let left = plan.deadline().map_or(0, |d| (d - now).max(0)) as u64;
+    // The plan's own wait, else the profile's, kept inside the time the plan has left.
+    // Nothing is rented while waiting, so the committed worst case is not touched by it.
     let wait = Wait {
-        limit: Duration::from_secs((u64::from(profile.wait_for_gpu_minutes) * 60).min(left)),
-        poll: Duration::from_secs(60),
+        limit: capacity_wait(
+            store.plan_wait_minutes(plan_id)?,
+            profile.wait_for_gpu_minutes,
+            left,
+        ),
+        poll: capacity_poll(),
     };
+    progress.v["phase"] = json!("capacity");
+    progress.v["wait_minutes"] = json!(wait.limit.as_secs() / 60);
     let j = store.journal(
         "create_pod",
         Some(plan_id),
@@ -235,6 +353,10 @@ fn launch(
     };
     store.attach_pod(plan_id, &pod.id)?;
     progress.v["pod_id"] = json!(pod.id);
+    progress.v["pod_created_at"] = json!(now_unix());
+    // offrig_job derives the step from the pod itself while the pod boots, so a
+    // slow host never leaves a stale "waiting for the address" line behind.
+    progress.v["phase"] = json!("pod_boot");
     progress.v["cost_per_hr"] = json!(pod.cost_per_hr);
     progress.step(format!(
         "pod {} created at ${:.2}/hr",
@@ -245,10 +367,29 @@ fn launch(
     // leave it running unused until the deadline (the launch's compensator).
     let ready = (|| -> Result<Value> {
         let up = session.wait_ready(&pod.id, &mut |e| progress.event(e))?;
+        progress.v["phase"] = json!("after_ssh");
+        progress.step(format!("ssh is up through the alias {}", cfg.ssh_alias));
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled("getting the pod ready".into()));
         }
-        let rented = progress.rented(&up);
+        // The pod API does not report the host's CUDA version, so ask the host: one
+        // nvidia-smi through the lane. A host below the plan's floor is reported loudly
+        // in `rented.warnings`; nothing is terminated for it.
+        let host = host_cuda(&cfg.ssh_alias);
+        let rented = progress.rented_with_host(&up, &host);
+        progress.v["rented"] = rented.clone();
+        match &host {
+            HostCuda::Measured(v) => progress.step(format!("host CUDA {v} (nvidia-smi)")),
+            HostCuda::Unavailable(why) => {
+                progress.step(format!("host CUDA unknown: nvidia-smi gave none ({why})"));
+            }
+            HostCuda::NotAsked => {}
+        }
+        if let Some(w) = rented["warnings"].as_array() {
+            for w in w.iter().filter_map(Value::as_str) {
+                progress.step(format!("WARNING: {w}"));
+            }
+        }
         if profile.is_job() {
             // Nothing is served: ready means sshd answers. Work goes up with offrig_put.
             return Ok(json!({
@@ -1058,5 +1199,39 @@ mod tests {
         assert_eq!(v["lane"], f.tag.as_str());
         assert_eq!(v["name"], "render");
         assert_eq!(v["project"], f.ctx.project.display().to_string());
+    }
+
+    fn booting(status: &str, endpoint: bool) -> Pod {
+        let mut v =
+            json!({"id": "p1", "name": "offrig-x-job", "desiredStatus": status, "costPerHr": 2.09});
+        if endpoint {
+            v["publicIp"] = json!("203.0.113.9");
+            v["portMappings"] = json!({"22": 40022});
+        }
+        serde_json::from_value(v).expect("pod")
+    }
+
+    #[test]
+    fn the_live_step_follows_the_pod_not_the_launchs_last_event() {
+        // No address yet: the wait for the image, with how long it has been.
+        let s = live_step(&booting("RUNNING", false), SshProbe::NoEndpoint, Some(582));
+        assert!(
+            s.starts_with("waiting for the pod to pull its image"),
+            "{s}"
+        );
+        assert!(s.contains("582s after it was created"), "{s}");
+        // The address is out and sshd answers: the step says so, and drops the old wait.
+        let s = live_step(&booting("RUNNING", true), SshProbe::Answers, Some(700));
+        assert!(s.starts_with("ssh answers at 203.0.113.9:40022"), "{s}");
+        assert!(!s.contains("pull its image"), "{s}");
+        // The address is out and sshd is not answering yet.
+        let s = live_step(&booting("RUNNING", true), SshProbe::Silent, None);
+        assert!(
+            s.contains("203.0.113.9:40022") && s.contains("not answering yet"),
+            "{s}"
+        );
+        // A pod that is not running is said to be so.
+        let s = live_step(&booting("EXITED", false), SshProbe::NoEndpoint, Some(30));
+        assert!(s.starts_with("the pod is EXITED"), "{s}");
     }
 }

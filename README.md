@@ -119,12 +119,12 @@ so a session survives compaction or a restart without re-explaining anything.
 |---|---|
 | `offrig_status` | The project, budget, RunPod balance and runway, offrig's pods, each open plan with its `plan_id`, lane and pod name, the handoff queue with stale work flagged |
 | `offrig_offers` | Live GPU offers for a GPU count |
-| `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left. Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan") |
+| `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left. Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan"); optional `wait_minutes` sets how long the launch retries when they have no capacity (see "Waiting for capacity") |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
 | `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check; optional deterministic checks), lists them, previews role blocks, shows a handoff's best output (also written to `.offrig/out/`), records outcomes (complete, invalid, violation, fail, retry with feedback) |
 | `offrig_launch` | **Spends.** Takes only a `plan_id`: commits the worst case, waits for GPUs renting nothing, boots the pod, opens the tunnel, pulls the models, starts the watchdog. Idempotent per plan. Refused while the lane already has a live plan or pod: `lane <tag> has a live pod <name> (plan <id>); shut it down first` |
-| `offrig_job` | Launch progress, the GPU type and host CUDA version actually rented (with a loud `warnings` entry when the host is older than the plan's CUDA floor), watchdog liveness, minutes left, spend so far |
+| `offrig_job` | Launch progress (while the pod boots, the step is derived from the pod's state at the moment of the call; each capacity retry is counted in `progress.capacity_wait`), the GPU type and host CUDA version actually rented (measured with `nvidia-smi` on the pod, with a loud `warnings` entry when the host is older than the plan's CUDA floor), watchdog liveness, minutes left, spend so far |
 | `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
 | `offrig_run` | Starts a detached runner that keeps every model slot busy: drafts each ready handoff, revises at most twice against failed checks, feeds results to dependent handoffs, then shuts the pod down when the queue is dry (unless `keep_pod`). Work that code cannot check waits in review |
 | `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job`. Optional `plan_id` (see below) |
@@ -252,6 +252,19 @@ while it waits, Ctrl+C or the app's Cancel launch stops it, and if RunPod's pric
 simply retries the create each minute. Large multi-GPU setups come and go within minutes.
 Prices are secure-cloud prices, read live; the pricing page is not the available price.
 
+### Waiting for capacity
+
+A plan narrowed with `no_fallback` or `max_price_hr` misses capacity often, so the launch
+retries quietly instead of failing, renting nothing while it does. How long it waits is, in
+order: the plan's `wait_minutes` (an `offrig_plan` argument, stored with the plan; `0` fails
+at once), else the profile's `wait_for_gpu_minutes`. The `job` profile defaults to 20 minutes.
+The wait is cut to the time the plan has left minus a five-minute reserve, so it never runs
+past the plan's deadline, and because nothing is rented while waiting it adds nothing to the
+committed worst case. `offrig_launch` reports `capacity_wait_minutes`; while waiting,
+`offrig_job` shows `progress.capacity_wait` (`checks`, `waited_secs`, `limit_secs`) and a step
+that says which check this is. When the wait runs out the launch fails with `no capacity`
+and nothing was rented.
+
 ### Pinning the hardware of a plan
 
 A profile lists GPU types in priority order and RunPod takes the first with capacity, so
@@ -276,13 +289,15 @@ nothing left is refused with the reason for every dropped GPU, and nothing is wr
 
 The plan stores the GPU list that is left and the CUDA floor, and `offrig_launch` rents only
 from them, never from the profile's full list. `offrig_job` and the side-car's launch result
-report the GPU type and, when RunPod's pod API reports it, the host's CUDA version actually
-rented, in a `rented` object. If the host's CUDA is older than the plan's floor, the GPU is
+report the GPU type and the host's CUDA version actually rented, in a `rented` object. The
+pod API does not report the host's CUDA version, so once ssh is up the launch runs
+`nvidia-smi` once through the lane and reads it from the header (`CUDA Version: 12.8`, or
+`CUDA UMD Version: 13.4` on newer drivers); `rented.cuda_source` says `nvidia-smi` or
+`pod API`. If the host's CUDA is older than the plan's floor, the GPU is
 not one the plan listed, or the price is above the plan's, `offrig_job` returns a `warnings`
 entry and starts `next_action` with `WARNING`. Nothing is terminated automatically: stopping
-the rent is the caller's call (`offrig_shutdown`). If the pod API does not report a CUDA
-version, `rented.notes` says so and the floor is unchecked; run `nvidia-smi` through
-`offrig_exec`.
+the rent is the caller's call (`offrig_shutdown`). If neither the pod API nor `nvidia-smi`
+gives a CUDA version, `rented.notes` says so and the floor is unchecked.
 
 ### Job pods
 

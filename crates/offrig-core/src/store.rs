@@ -974,6 +974,22 @@ impl Store {
         self.set_setting(&format!("plan_min_cuda:{plan_id}"), version)
     }
 
+    /// How long the plan's launch may wait for capacity, in minutes (`offrig_plan`
+    /// `wait_minutes`). `None` means the profile's `wait_for_gpu_minutes`. Kept in
+    /// settings like the lane and the CUDA floor, so the schema stays v3.
+    pub fn plan_wait_minutes(&self, plan_id: i64) -> Result<Option<u32>> {
+        Ok(self
+            .setting(&format!("plan_wait_minutes:{plan_id}"))?
+            .and_then(|v| v.parse().ok()))
+    }
+
+    pub fn set_plan_wait_minutes(&self, plan_id: i64, minutes: u32) -> Result<()> {
+        self.set_setting(
+            &format!("plan_wait_minutes:{plan_id}"),
+            &minutes.to_string(),
+        )
+    }
+
     // ---- jobs (long work run in the background; state survives restarts)
 
     pub fn create_job(&self, plan_id: i64, kind: &str) -> Result<i64> {
@@ -1777,6 +1793,18 @@ mod tests {
             Some("13.0")
         );
         assert_eq!(s.plan_min_cuda(p.id + 1).expect("read"), None, "per plan");
+        assert_eq!(
+            s.plan_wait_minutes(p.id).expect("read"),
+            None,
+            "none until set"
+        );
+        s.set_plan_wait_minutes(p.id, 20).expect("set");
+        assert_eq!(s.plan_wait_minutes(p.id).expect("read"), Some(20));
+        assert_eq!(
+            s.plan_wait_minutes(p.id + 1).expect("read"),
+            None,
+            "per plan"
+        );
         let back = s.plan(p.id).expect("read").expect("plan");
         assert_eq!(back.gpu_types, p.gpu_types);
         assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");

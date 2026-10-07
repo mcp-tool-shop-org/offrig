@@ -133,6 +133,13 @@ pub struct PlanArgs {
     /// Refused if that family has none free.
     #[serde(default)]
     pub no_fallback: Option<bool>,
+    /// How many minutes the launch may keep retrying when the plan's GPUs have no
+    /// capacity, renting nothing while it waits. Stored with the plan. Default: the
+    /// profile's wait (the job profile waits 20 minutes). 0 fails at once. The wait is
+    /// cut to the time the plan has left (less a five-minute reserve), so it never
+    /// outlasts the plan's deadline, and waiting does not add to the worst case.
+    #[serde(default)]
+    pub wait_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -607,7 +614,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_plan",
-        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
+        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Returns plan_id, which launching will require. Writes a plan; spends nothing.",
         annotations(
             title = "Plan a session",
             read_only_hint = false,
@@ -720,6 +727,15 @@ impl Sidecar {
                 "the plan could not record its lane; nothing was spent, plan again",
             );
         }
+        let wait_minutes = a.wait_minutes.unwrap_or(profile.wait_for_gpu_minutes);
+        if let Some(m) = a.wait_minutes
+            && let Err(e) = self.with_store(|s| s.set_plan_wait_minutes(plan.id, m))
+        {
+            return fail(
+                chain(&e),
+                "the plan could not record its wait; nothing was spent, plan again",
+            );
+        }
         let budget = self.with_store(|s| s.budget()).ok();
         let runway = account.as_ref().and_then(|ac| ac.runway_hours(max_price));
         ok(json!({
@@ -733,6 +749,7 @@ impl Sidecar {
             "no_fallback": limits.no_fallback,
             "min_vram_gb": profile.min_vram_gb,
             "min_cuda": min_cuda,
+            "wait_minutes": wait_minutes,
             "left_out": choice.dropped.iter().map(|(t, w)| json!({"gpu": t, "why": w})).collect::<Vec<_>>(),
             "max_hours": plan.max_hours,
             "worst_case": round2(plan.worst_case),
@@ -1157,12 +1174,29 @@ impl Sidecar {
         );
         tokio::task::spawn_blocking(move || ops::run_launch(ctx, db, shared, id, job_id, cancel));
         let budget = self.with_store(|s| s.budget()).ok();
+        // How long this launch will keep retrying if the plan's GPUs are not free.
+        let wait_secs = self
+            .with_store(|s| s.plan_wait_minutes(id))
+            .ok()
+            .flatten()
+            .or_else(|| {
+                cfg.profile(&plan.profile)
+                    .ok()
+                    .map(|p| p.wait_for_gpu_minutes)
+            })
+            .map(|m| {
+                let left = committed
+                    .deadline()
+                    .map_or(0, |d| (d - cost::now_unix()).max(0)) as u64;
+                offrig_core::session::capacity_wait(Some(m), m, left).as_secs()
+            });
         ok(json!({
             "job_id": job_id,
             "plan_id": id,
             "lane": cfg.lane_tag,
             "worst_case": round2(committed.worst_case),
             "deadline": committed.deadline().map(when),
+            "capacity_wait_minutes": wait_secs.map(|s| s / 60),
             "watchdog": match &watchdog { Ok(()) => "started".to_string(), Err(e) => format!("FAILED to start: {e}; shut down by the deadline yourself") },
             "budget": budget.as_ref().map(budget_json),
             "next_action": "follow the launch with offrig_job every minute or two; nothing is ready until it says so",
@@ -1251,11 +1285,11 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait, pod id and rate, the GPU type and host CUDA version actually rented (with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
-            open_world_hint = false
+            open_world_hint = true
         )
     )]
     async fn offrig_job(&self, Parameters(a): Parameters<JobArgs>) -> CallToolResult {
@@ -1275,6 +1309,27 @@ impl Sidecar {
             Err(e) => return fail(chain(&e), "check the project database"),
         };
         let now = cost::now_unix();
+        // While the pod boots, the launch thread's last step can be minutes old (a slow
+        // host), so look at the pod now. After ssh is up the launch's own steps are
+        // current by construction and are shown as they are.
+        let mut progress = job.progress.clone();
+        if job.state == "running"
+            && progress["phase"] == "pod_boot"
+            && let Some(pod_id) = progress["pod_id"].as_str().map(str::to_string)
+        {
+            let created = progress["pod_created_at"].as_i64();
+            match tokio::task::spawn_blocking(move || ops::live_progress(&pod_id, created)).await {
+                Ok(Ok(step)) => {
+                    progress["launch_step"] = progress["step"].take();
+                    progress["launch_step_at"] = progress["at"].take();
+                    progress["step"] = json!(step);
+                    progress["at"] = json!(now);
+                    progress["step_source"] = json!("the pod's state, checked just now");
+                }
+                Ok(Err(e)) => progress["live_check_error"] = json!(chain(&e)),
+                Err(e) => progress["live_check_error"] = json!(e.to_string()),
+            }
+        }
         let plan = self.with_store(|s| s.plan(job.plan_id)).ok().flatten();
         let alive = self
             .with_store(|s| Ok(watchdog::alive(s, job.plan_id, now, WATCHDOG_STALE_SECS)))
@@ -1323,7 +1378,7 @@ impl Sidecar {
             "job_id": job.id,
             "plan_id": job.plan_id,
             "state": job.state,
-            "progress": job.progress,
+            "progress": progress,
             "rented": job.progress["rented"],
             "warnings": warnings,
             "error": job.error,

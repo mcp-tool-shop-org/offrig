@@ -481,7 +481,10 @@ pub fn default_profiles() -> Vec<Profile> {
             container_disk_gb: 60,
             context_length: 0,
             models: vec![],
-            wait_for_gpu_minutes: 0,
+            // `no_fallback` and `max_price_hr` plans miss capacity often; nothing is
+            // rented while waiting, and the plan's own deadline still caps the wait
+            // (issue #15). A plan can set its own with `wait_minutes`.
+            wait_for_gpu_minutes: 20,
             parallel: 1,
             recipe: None,
             job: Some(Job {
