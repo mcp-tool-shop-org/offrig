@@ -28,6 +28,23 @@
     name. offrig reads `machine.cudaVersion` if present and says so in `rented.notes` when it
     is not, rather than treating a missing report as a pass.
 
+- A per-project default side-car port (issue #11). The shell driver's default port, `11439`,
+  was shared by every project on the machine, so another script taking it silently took a
+  running side-car down. A lane now has a side-car port derived from its slot the same way
+  its tunnel port is: `11700` + slot (`11700` to `11763`), a range above every lane tunnel
+  and runner port (`11500` to `11627`), the plain lane and the local Ollama. Nothing is
+  stored in `lanes.toml`; existing registries work unchanged.
+  - `offrig-mcp --sidecar-port --project <dir>` prints the project's port (allocating its
+    lane if it has none), or `OFFRIG_SIDECAR_PORT` when set. That value is refused when it is
+    not a port, is below 1024, or is `11434`, `11435`, `11436` or inside the lane tunnel range.
+  - `--check` also exits 1 when the port is held, naming the port and, if an offrig side-car
+    answers there, the project it reports. The probe is a request the driver refuses before
+    calling any tool, so a running side-car is not touched.
+  - `offrig_status` reports the lane's `sidecar_port`.
+  - Not in this repository: the HTTP driver itself (`serve`) lives outside it, so it still
+    has to read the port from `--sidecar-port` and log why it loses a port. See the pull
+    request.
+
 - One lane, one live plan (issue #7). A lane has one SSH alias, so a second pod in it
   re-pointed the alias and sent the first plan's `offrig_put`, `offrig_exec` and
   `offrig_get` to the wrong pod. `offrig_launch` now refuses while the lane has an open

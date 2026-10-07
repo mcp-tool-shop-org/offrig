@@ -167,6 +167,7 @@ Two projects can run side-cars at once on one RunPod account. Each project gets 
 |---|---|---|
 | SSH alias | `offrig` | `offrig-<tag>` |
 | Tunnel port | `11435` (runner `11436`) | first free of `11500`, `11502`, ... (runner: the port above) |
+| Side-car port (shell driver) | none | `11700` + the lane's slot: `11700`, `11701`, ... |
 | Pod name | `offrig-<profile>` | `offrig-<tag>-<profile>` |
 | SSH block | `# >>> offrig:offrig >>>` | `# >>> offrig:offrig-<tag> >>>` |
 
@@ -186,6 +187,31 @@ its own lane, shutdown refuses a pod whose name is not the plan's lane's, and th
 orphan check kills a stale `ssh` only when its forward and its alias are the lane's own.
 Plans made before lanes existed have no lane recorded and keep running on the plain lane,
 so a pod launched under the old scheme is shut down by the same plan that started it.
+
+**The side-car's own port.** `offrig-mcp` speaks MCP over stdio. A shell driver that holds
+one open for a whole session (when the session's own MCP connection is stale) puts it behind
+a loopback HTTP port, and that port used to be one number for the whole machine (`11439`):
+a second project's driver, or any other program, could take it and the first side-car went
+dark without a word. The default is now per project, from the project's lane, the same way
+the tunnel port is: lane slot `i` (tunnel port `11500 + 2i`) gets side-car port `11700 + i`.
+The range `11700` to `11763` sits above every tunnel and runner port a lane can have
+(`11500` to `11627`), the plain lane's `11435` and `11436`, and the local Ollama's `11434`,
+so a side-car port can never be a tunnel port. Nothing new is stored: `lanes.toml` is
+unchanged and the port follows from the lane. `OFFRIG_SIDECAR_PORT` still overrides it; a
+value that is not a port, is below 1024, or is `11434`, `11435`, `11436` or anything in the
+lane tunnel range is refused.
+
+```
+offrig-mcp --sidecar-port --project <dir>           # print the port; allocates the lane if the project has none
+offrig-mcp --sidecar-port --check --project <dir>   # also exit 1 if something already holds it
+```
+
+With `--check`, a taken port is an error that names the port and, when an offrig side-car
+answers there, the project it serves: `side-car port 11700 is taken: an offrig side-car is
+already serving the project <path> there. Stop that first, or set OFFRIG_SIDECAR_PORT to a
+free port`. The check asks the way the driver already answers (a request as a project
+nobody serves, which the driver refuses before touching any tool), so it changes nothing
+in a running side-car. `offrig_status` reports the lane's `sidecar_port`.
 
 **One lane, one live pod.** A lane has one SSH alias and one tunnel port, so it serves one
 pod at a time: a second pod in the lane (`offrig-<tag>-job` next to `offrig-<tag>-jam`)
