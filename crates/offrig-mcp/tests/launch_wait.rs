@@ -199,8 +199,21 @@ async fn a_narrowed_plan_retries_quietly_and_each_retry_shows_in_offrig_job() {
     // Capacity returns: the launch creates the pod without being asked again.
     full.store(false, Ordering::SeqCst);
     until("the pod create", || count(&hits, "POST /pods") == 1).await;
-    let j = call(&client, "offrig_job", json!({"plan_id": plan_id})).await;
-    assert_eq!(body(&j)["progress"]["pod_id"], "p1", "{:?}", body(&j));
+    // The create is counted when the mock sees it; the launch records the pod's id a
+    // moment later, so read it from a bounded poll, not from one racing read (#19).
+    let started = Instant::now();
+    loop {
+        let j = call(&client, "offrig_job", json!({"plan_id": plan_id})).await;
+        if body(&j)["progress"]["pod_id"] == "p1" {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the pod id was never recorded: {:?}",
+            body(&j)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     let _ = call(&client, "offrig_shutdown", json!({"plan_id": plan_id})).await;
     client.cancel().await.expect("shutdown");
