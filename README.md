@@ -1,4 +1,17 @@
-# offrig
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/brand/main/logos/offrig/readme.png" alt="offrig" width="400">
+</p>
+
+<p align="center">
+  <a href="https://github.com/mcp-tool-shop-org/offrig/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/offrig/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/mcp-tool-shop-org/offrig"><img src="https://codecov.io/gh/mcp-tool-shop-org/offrig/graph/badge.svg" alt="Coverage"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://mcp-tool-shop-org.github.io/offrig/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
+</p>
 
 Run big models on rented RunPod GPUs, with a guarantee: they never run on your own
 GPU. A desktop app, a CLI and an MCP side-car for agents, over one Rust library.
@@ -20,6 +33,9 @@ Proven live on 2026-10-02 and 2026-10-03, about $5 in all:
 - **Runner:** a queue with dependencies and review send-backs, worked with nobody driving,
   the pod shut down on drain.
 - **Guarantee:** the local GPU stayed idle through every run.
+
+In daily use since 2026-10-07 by two projects at once, each in its own lane: training
+runs for aspire-si on `job` pods, and singing renders for ai-jam-sessions on `jam` pods.
 
 Built and tested, waiting on a decision: staging the frontier weights on a network volume,
 about $21/month (see [Staging](#staging-weights-on-a-network-volume)).
@@ -71,18 +87,24 @@ The guard checks verify this each time, from facts offrig can observe:
 
 ## Install
 
-Needs Windows with OpenSSH (built in), Rust 1.98.1 (pinned in `rust-toolchain.toml`),
-Zed, and a RunPod account.
+Needs Windows with OpenSSH (built in), Zed if you want the models in an editor, and a
+RunPod account.
 
-1. Put your RunPod API key in the user environment variable `RUNPOD_API_KEY`.
-2. Add your SSH public key in RunPod's account settings. offrig uses
+1. Download `offrig-<version>-windows-x64.zip` from
+   [Releases](https://github.com/mcp-tool-shop-org/offrig/releases), check it against the
+   release's `SHA256SUMS`, and unzip it onto your `PATH`. It holds `offrig.exe` (the CLI),
+   `offrig-app.exe` (the app) and `offrig-mcp.exe` (the side-car).
+   To build from source instead: `cargo build --release`, with Rust 1.98.1 (pinned in
+   `rust-toolchain.toml`).
+2. Put your RunPod API key in the user environment variable `RUNPOD_API_KEY`.
+3. Add your SSH public key in RunPod's account settings. offrig uses
    `~/.ssh/runpod_rustline` if present, then `~/.ssh/id_ed25519`.
-3. Build: `cargo build --release`. This makes `target/release/offrig-app.exe` (the app),
-   `target/release/offrig.exe` (the CLI) and `target/release/offrig-mcp.exe` (the
-   side-car).
 4. For agents, register the side-car with Claude Code at user scope:
    `claude mcp add --scope user offrig -- <path>\offrig-mcp.exe`. It opens a project's
    store only on first use, so it is harmless in projects that never use it.
+
+The [handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/) walks through a
+first pod, the side-car, configuration, lanes and job pods.
 
 ## Use
 
@@ -108,6 +130,18 @@ offrig zed-remove             take the provider out of Zed
 offrig budget 15              set this project's spending cap for agent sessions (human only)
 offrig stage frontier --dc EUR-IS-1 --yes   stage weights on a network volume (bills monthly)
 ```
+
+### Output, exit codes and errors
+
+- **Log levels:** `-q` prints errors and a command's own results only; `-v` adds each
+  RunPod call and its timing; `--debug` adds failed response bodies and full error chains.
+  The API key is redacted at every level.
+- **Exit codes:** `0` success, `1` something to fix on your side (arguments, config, a
+  guard or budget refusal, a missing key), `2` a runtime failure (RunPod, network, ssh,
+  timeout, no capacity).
+- **Side-car errors** are results, never protocol errors: `ok:false` with a stable `code`,
+  the `error` text, a `next_action` and `retryable`. The codes are listed in the
+  [handbook's reference](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/).
 
 ## The side-car (for agents)
 
@@ -436,17 +470,21 @@ Comments and layout in Zed's settings are preserved: edits go through a JSONC sy
 
 ## Tests
 
-`cargo test --workspace` runs 130 tests:
+`cargo test --workspace` runs more than 250 tests, covering at least 90% of lines (CI fails below that):
 
 - **The core library:** RunPod parsing, pod specs for both engines, SSH config, Zed JSONC
   edits, guard rules, cost and idle logic, the store and its migrations, roles, context
   assembly, deterministic checks, the runner's decisions, the watchdog, and staging,
   including a mock RunPod that proves a failed stage terminates its pod.
 - **The app:** state handling plus click-through UI tests in egui's test harness.
+- **The CLI:** exit codes, log levels, and that the API key never appears in output.
 - **The side-car:** end to end over stdio against a mock RunPod, the real watchdog
-  process, and the real runner process against a mock pod model.
+  process, and the real runner process against a mock pod model; every tool error carries
+  a code.
 
-CI also runs fmt, clippy with warnings as errors, `cargo deny` and `atlas check`.
+`scripts/verify.sh` (or `scripts/verify.ps1`) runs the format check, clippy, the tests and
+a smoke run of each binary in one command. CI also runs `cargo deny`, an OSV scan of
+`Cargo.lock`, coverage to Codecov and `atlas check`.
 
 ### Live test record (2026-10-02, medium tier, A100 80GB, about $0.45)
 
@@ -607,3 +645,7 @@ atlas/               Atlas map of the repo (regenerate with `atlas map`)
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+Built by <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>
