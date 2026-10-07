@@ -186,7 +186,7 @@ impl App {
         let _ = self.cmd.send(c);
     }
 
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         while let Ok(u) = self.upd.try_recv() {
             self.st.apply(u);
         }
@@ -970,7 +970,7 @@ mod ui_tests {
         .expect("pod json")
     }
 
-    fn harness(updates: Vec<Update>) -> (Harness<'static, App>, Receiver<Cmd>) {
+    pub(super) fn harness(updates: Vec<Update>) -> (Harness<'static, App>, Receiver<Cmd>) {
         let (mut app, cmds, _tx) = test_app();
         app.st.apply(Update::Config(Box::default()));
         app.st.apply(Update::Account(Account {
@@ -998,7 +998,7 @@ mod ui_tests {
         (h, cmds)
     }
 
-    fn sent(cmds: &Receiver<Cmd>) -> Vec<Cmd> {
+    pub(super) fn sent(cmds: &Receiver<Cmd>) -> Vec<Cmd> {
         cmds.try_iter().collect()
     }
 
@@ -1136,3 +1136,6 @@ mod ui_tests {
         assert!(h.query_by_label("Shut down").is_none());
     }
 }
+
+#[cfg(test)]
+mod more_ui_tests;
