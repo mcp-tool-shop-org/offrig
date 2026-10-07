@@ -782,21 +782,59 @@ pub fn lane_busy(
     Ok(())
 }
 
-/// offrig_exec: start, follow or stop a command on the job pod.
-pub fn job_exec(
-    ctx: &LaneCtx,
-    db: &Path,
-    action: &str,
-    name: &str,
-    command: Option<&str>,
-    tail_lines: u32,
-    plan_id: Option<i64>,
-) -> Result<Value> {
+/// What one `offrig_exec` call asks for.
+pub struct ExecRequest<'a> {
+    /// start, status, stop or run.
+    pub action: &'a str,
+    /// The job's name (start, status, stop).
+    pub name: Option<&'a str>,
+    pub command: Option<&'a str>,
+    pub tail_lines: u32,
+    pub plan_id: Option<i64>,
+    /// action=run: seconds before the command is ended (default 30, at most 120).
+    pub timeout_secs: Option<u32>,
+    /// action=status: a local file to copy the job's whole log to.
+    pub save_log: Option<&'a Path>,
+}
+
+/// offrig_exec: start, follow or stop a command on the job pod, or run a short one and
+/// wait for it.
+pub fn job_exec(ctx: &LaneCtx, db: &Path, req: &ExecRequest<'_>) -> Result<Value> {
     let store = Store::open(db)?;
-    let (plan_id, alias, lane) = job_pod(ctx, &store, plan_id)?;
+    let (plan_id, alias, lane) = job_pod(ctx, &store, req.plan_id)?;
     let reply = |v: Value| acted_on(ctx, plan_id, lane.clone(), v);
-    match action {
+    let command = req.command;
+    let tail_lines = req.tail_lines;
+    let need_name = || {
+        req.name
+            .ok_or_else(|| Error::Refused(format!("action={} needs a job name", req.action)))
+    };
+    match req.action {
+        "run" => {
+            let command =
+                command.ok_or_else(|| Error::Refused("action=run needs a command".into()))?;
+            let secs = offrig_core::job::run_timeout(req.timeout_secs);
+            let j = store.journal(
+                "job_run",
+                Some(plan_id),
+                &json!({ "command": command, "timeout_secs": secs }),
+            )?;
+            let ran = offrig_core::job::run(&alias, command, Some(secs));
+            store.journal_outcome(
+                j,
+                &match &ran {
+                    Ok(r) if r.timed_out => format!("timed out after {secs}s"),
+                    Ok(r) => format!("exit {}", r.exit_code.map_or("?".into(), |c| c.to_string())),
+                    Err(e) => format!("not run: {}", chain(e)),
+                },
+            )?;
+            let r = ran?;
+            let mut v = serde_json::to_value(&r).unwrap_or_else(|_| json!({}));
+            v["output_is_untrusted_pod_output"] = json!(true);
+            Ok(reply(v))
+        }
         "start" => {
+            let name = need_name()?;
             let command =
                 command.ok_or_else(|| Error::Refused("action=start needs a command".into()))?;
             let j = store.journal(
@@ -816,17 +854,30 @@ pub fn job_exec(
             Ok(reply(json!({ "name": name, "started": started })))
         }
         "status" => {
+            let name = need_name()?;
             let s = offrig_core::job::status(&alias, name, tail_lines)?;
-            Ok(reply(json!({ "name": name, "status": s })))
+            let mut v = json!({ "name": name, "status": s });
+            if let Some(local) = req.save_log {
+                // The whole log, as the job wrote it (progress bars included), so the
+                // tail above can stay short.
+                let bytes = offrig_core::job::fetch_log(&alias, name, local)?;
+                v["saved_log"] = json!({
+                    "path": local.display().to_string(),
+                    "bytes": bytes,
+                    "pod": offrig_core::job::log_path(name)?,
+                });
+            }
+            Ok(reply(v))
         }
         "stop" => {
+            let name = need_name()?;
             let j = store.journal("job_stop", Some(plan_id), &json!({ "name": name }))?;
             offrig_core::job::stop(&alias, name)?;
             store.journal_outcome(j, "stop sent")?;
             Ok(reply(json!({ "name": name, "stopped": true })))
         }
         other => Err(Error::Refused(format!(
-            "action {other:?}: use start, status or stop"
+            "action {other:?}: use start, status, stop or run"
         ))),
     }
 }
