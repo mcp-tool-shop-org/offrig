@@ -37,6 +37,9 @@ pub struct Config {
     /// RunPod key).
     pub zed_provider: String,
     /// Stop the pod after this many minutes with every GPU idle. `None` disables it.
+    /// Saved as `"off"` when disabled: TOML has no null, and a missing key loads the
+    /// default (30 minutes), so "off" must be written down to survive a restart.
+    #[serde(with = "auto_stop_serde")]
     pub auto_stop_idle_minutes: Option<u32>,
     /// Role OS checkout whose dossiers and cards define handoff roles. `None` uses
     /// only offrig's built-in game roles.
@@ -283,6 +286,35 @@ impl Default for Config {
             active_profile: "medium".into(),
             profiles: default_profiles(),
             lane_tag: None,
+        }
+    }
+}
+
+/// `auto_stop_idle_minutes` on disk: a number of minutes, or `"off"`.
+mod auto_stop_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum OnDisk {
+        Minutes(u32),
+        Word(String),
+    }
+
+    pub fn serialize<S: Serializer>(v: &Option<u32>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(m) => OnDisk::Minutes(*m).serialize(s),
+            None => OnDisk::Word("off".into()).serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+        match OnDisk::deserialize(d)? {
+            OnDisk::Minutes(m) => Ok(Some(m)),
+            OnDisk::Word(w) if w.eq_ignore_ascii_case("off") => Ok(None),
+            OnDisk::Word(w) => Err(D::Error::custom(format!(
+                "auto_stop_idle_minutes must be a number of minutes or \"off\", not {w:?}"
+            ))),
         }
     }
 }
@@ -744,6 +776,27 @@ impl Profile {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn auto_stop_off_survives_a_save_and_load() {
+        let mut c = Config {
+            auto_stop_idle_minutes: None,
+            ..Config::default()
+        };
+        let text = toml::to_string(&c).expect("serialize");
+        assert!(text.contains("auto_stop_idle_minutes = \"off\""), "{text}");
+        let back: Config = toml::from_str(&text).expect("parse");
+        assert_eq!(back.auto_stop_idle_minutes, None);
+        // Minutes, including 0, round-trip as numbers; a missing key is the default.
+        for m in [0, 45] {
+            c.auto_stop_idle_minutes = Some(m);
+            let back: Config = toml::from_str(&toml::to_string(&c).expect("ser")).expect("de");
+            assert_eq!(back.auto_stop_idle_minutes, Some(m));
+        }
+        let missing: Config = toml::from_str("active_profile = \"small\"").expect("parse");
+        assert_eq!(missing.auto_stop_idle_minutes, Some(30));
+        assert!(toml::from_str::<Config>("auto_stop_idle_minutes = \"never\"").is_err());
+    }
     use super::*;
 
     #[test]
