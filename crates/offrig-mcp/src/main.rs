@@ -23,6 +23,7 @@ use offrig_core::planning;
 use offrig_core::roles;
 use offrig_core::runpod::RunPod;
 use offrig_core::session::Session;
+use offrig_core::sidecar_port;
 use offrig_core::store::{self, Kind, NewHandoff, NewPlan, NewRecord, Query, State, Store};
 use offrig_core::watchdog::{self, Verdict};
 use rmcp::handler::server::wrapper::Parameters;
@@ -544,6 +545,7 @@ impl Sidecar {
                 "tag": l.tag,
                 "ssh_alias": l.ssh_alias,
                 "tunnel_port": l.tunnel_port,
+                "sidecar_port": l.sidecar_port(),
             })),
             "budget": budget_json(&budget),
             "runpod": {
@@ -1569,6 +1571,26 @@ fn run_watchdog(project: &Path, plan_id: i64) -> anyhow::Result<()> {
     }
 }
 
+/// `offrig-mcp --sidecar-port [--check] --project <dir>`: print the port this project's
+/// shell-driven side-car should listen on (issue #11), then exit. It is the lane's
+/// default (allocating the project's lane if it has none, as a first plan does), or
+/// `OFFRIG_SIDECAR_PORT` when set. With `--check` it also looks at the port, and if
+/// anything holds it exits 1 with an error that names the port and, when an offrig
+/// side-car answers, the project it serves.
+fn sidecar_port(project: &Path, cfg: Config, registry: Registry) -> anyhow::Result<()> {
+    let ctx = LaneCtx::new(cfg, project, registry);
+    let lane = ctx.own()?;
+    let port = sidecar_port::resolve(&lane, std::env::var(sidecar_port::PORT_ENV).ok().as_deref())?;
+    if std::env::args().any(|a| a == "--check")
+        && let Some(msg) = sidecar_port::taken_message(port, &sidecar_port::probe(port))
+    {
+        eprintln!("{msg}");
+        std::process::exit(1);
+    }
+    println!("{port}");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // stdout carries the protocol; anything human goes to stderr.
@@ -1578,6 +1600,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let cfg = Config::load()?;
     let registry = Registry::open_default()?;
+    if std::env::args().any(|a| a == "--sidecar-port") {
+        return sidecar_port(&project, cfg, registry);
+    }
     if let Some(plan_id) = flag_plan("--runner") {
         // The runner takes its lane from the plan; it allocates nothing.
         let ctx = LaneCtx::new(cfg, &project, registry);

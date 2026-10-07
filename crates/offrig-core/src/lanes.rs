@@ -36,6 +36,13 @@ pub const LANE_PORT_BASE: u16 = 11500;
 pub const LANE_PORT_STEP: u16 = 2;
 /// How many lanes the range holds.
 pub const LANE_COUNT: u16 = 64;
+/// First default side-car port: the port a project's shell-driven side-car listens on
+/// (loopback HTTP, in front of `offrig-mcp`). Lane `i` gets `SIDECAR_PORT_BASE + i`.
+/// The range 11700..=11763 sits above every tunnel and runner port a lane can have
+/// (11500..=11627), the plain lane (11435, 11436) and the local Ollama (11434), so a
+/// side-car port can never be a tunnel port. It replaces the one machine-wide default
+/// (11439) that two projects shared (issue #11).
+pub const SIDECAR_PORT_BASE: u16 = 11700;
 pub const MAX_TAG_LEN: usize = 24;
 /// Tags that would collide with names offrig already uses: staging pods are
 /// `offrig-stage-<profile>` and the staging alias is `<alias>-stage`.
@@ -66,6 +73,16 @@ impl Lane {
 
     pub fn label(&self) -> &str {
         self.tag.as_deref().unwrap_or("plain")
+    }
+
+    /// The default port of this project's side-car, derived from the lane's slot the
+    /// same way its tunnel port is: lane `i` (tunnel port `11500 + 2i`) gets
+    /// `11700 + i`. Two projects have two lanes, so two different ports by default.
+    /// `None` for the plain lane, which has no side-car of its own.
+    pub fn sidecar_port(&self) -> Option<u16> {
+        self.tag.as_ref()?;
+        let slot = self.tunnel_port.checked_sub(LANE_PORT_BASE)? / LANE_PORT_STEP;
+        (slot < LANE_COUNT).then(|| SIDECAR_PORT_BASE + slot)
     }
 }
 
@@ -587,6 +604,31 @@ mod tests {
             .expect("again");
         assert_eq!(again, a);
         assert_eq!(reg.all().expect("all").len(), 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_allocated_lane_has_a_stable_side_car_port_of_its_own() {
+        let d = dir("sidecar-port");
+        let reg = Registry::at(d.join("cfg"));
+        let base = Config::default();
+        let a = reg
+            .lane_for_project(&project(&d, "aspire-si"), &base)
+            .expect("a");
+        let b = reg
+            .lane_for_project(&project(&d, "ai-jam-sessions"), &base)
+            .expect("b");
+        assert_eq!(a.sidecar_port(), Some(SIDECAR_PORT_BASE));
+        assert_eq!(b.sidecar_port(), Some(SIDECAR_PORT_BASE + 1));
+        let again = Registry::at(d.join("cfg"))
+            .lane_for_project(&project(&d, "aspire-si"), &base)
+            .expect("again");
+        assert_eq!(again.sidecar_port(), a.sidecar_port(), "stable");
+        assert_eq!(Lane::plain(&base).sidecar_port(), None);
+        // The registry file stores no side-car port: it is derived, so registries
+        // written before this existed work unchanged.
+        let text = std::fs::read_to_string(reg.path()).expect("lanes.toml");
+        assert!(!text.contains("sidecar_port"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
