@@ -55,12 +55,12 @@
           "offrig-mcp"
         ]
       },
-      "cohesion": 0.463917,
+      "cohesion": 0.564853,
       "cohesionDropped": false,
       "confidence": "low",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 23,
+      "qualifyingSourceCommits": 25,
       "rebaseline": null
     },
     {
@@ -76,7 +76,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-mcp",
-      "qualifyingSourceCommits": 16,
+      "qualifyingSourceCommits": 17,
       "rebaseline": null
     },
     {
@@ -120,8 +120,8 @@
         "path": ".gitignore"
       },
       {
-        "commits": 23,
-        "lines": 176,
+        "commits": 24,
+        "lines": 187,
         "path": "CHANGELOG.md"
       },
       {
@@ -140,8 +140,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 26,
-        "lines": 802,
+        "commits": 27,
+        "lines": 815,
         "path": "README.md"
       },
       {
@@ -150,8 +150,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 18,
-        "lines": 475,
+        "commits": 19,
+        "lines": 502,
         "path": "atlas/README.md"
       },
       {
@@ -160,18 +160,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 18,
-        "lines": 2103,
+        "commits": 19,
+        "lines": 2222,
         "path": "atlas/page.json"
       },
       {
-        "commits": 18,
-        "lines": 2180,
+        "commits": 19,
+        "lines": 2400,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 18,
-        "lines": 10478,
+        "commits": 19,
+        "lines": 11079,
         "path": "atlas/structure.json"
       },
       {
@@ -270,8 +270,8 @@
         "path": "crates/offrig-core/src/guard.rs"
       },
       {
-        "commits": 5,
-        "lines": 788,
+        "commits": 6,
+        "lines": 1048,
         "path": "crates/offrig-core/src/job.rs"
       },
       {
@@ -365,13 +365,13 @@
         "path": "crates/offrig-mcp/Cargo.toml"
       },
       {
-        "commits": 18,
-        "lines": 2258,
+        "commits": 19,
+        "lines": 2312,
         "path": "crates/offrig-mcp/src/main.rs"
       },
       {
-        "commits": 12,
-        "lines": 2216,
+        "commits": 13,
+        "lines": 2295,
         "path": "crates/offrig-mcp/src/ops.rs"
       },
       {
@@ -383,6 +383,11 @@
         "commits": 1,
         "lines": 78,
         "path": "crates/offrig-mcp/tests/common/mod.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 57,
+        "path": "crates/offrig-mcp/tests/job_tools.rs"
       },
       {
         "commits": 1,
@@ -690,86 +695,86 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-10-07T18:03:40.484Z",
+  "generatedAt": "2026-10-07T18:25:43.744Z",
   "generatedFrom": {
-    "commit": "ddfb50a1d24002798a26b695740a87abf6704aec"
+    "commit": "a1d6170bf45875acfbc5ccbd76ab329829e8e532"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "README.md",
-      "either": 20,
-      "shared": 18,
-      "strength": 0.9
+      "either": 21,
+      "shared": 19,
+      "strength": 0.904762
     },
     {
       "a": "CHANGELOG.md",
       "b": "crates/offrig-core/src/config.rs",
-      "either": 18,
+      "either": 19,
       "shared": 12,
-      "strength": 0.666667
+      "strength": 0.631579
     },
     {
       "a": "CHANGELOG.md",
-      "b": "crates/offrig-core/src/session.rs",
-      "either": 18,
-      "shared": 9,
-      "strength": 0.5
-    },
-    {
-      "a": "README.md",
-      "b": "crates/offrig-core/src/config.rs",
-      "either": 20,
-      "shared": 12,
-      "strength": 0.6
-    },
-    {
-      "a": "README.md",
       "b": "crates/offrig-mcp/src/main.rs",
       "either": 22,
       "shared": 11,
       "strength": 0.5
     },
     {
+      "a": "README.md",
+      "b": "crates/offrig-core/src/config.rs",
+      "either": 21,
+      "shared": 12,
+      "strength": 0.571429
+    },
+    {
+      "a": "README.md",
+      "b": "crates/offrig-mcp/src/main.rs",
+      "either": 23,
+      "shared": 12,
+      "strength": 0.521739
+    },
+    {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 14,
-      "shared": 14,
+      "either": 16,
+      "shared": 16,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 14,
-      "shared": 14,
+      "either": 16,
+      "shared": 16,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 14,
-      "shared": 14,
+      "either": 16,
+      "shared": 16,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 14,
-      "shared": 14,
+      "either": 16,
+      "shared": 16,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 14,
-      "shared": 14,
+      "either": 16,
+      "shared": 16,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 14,
-      "shared": 14,
+      "either": 16,
+      "shared": 16,
       "strength": 1
     },
     {
@@ -808,22 +813,22 @@
       "strength": 0.5
     },
     {
-      "a": "crates/offrig-mcp/src/main.rs",
-      "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 14,
-      "shared": 7,
+      "a": "crates/offrig-core/src/lib.rs",
+      "b": "crates/offrig-core/src/store.rs",
+      "either": 8,
+      "shared": 4,
       "strength": 0.5
     },
     {
       "a": "crates/offrig-mcp/src/main.rs",
-      "b": "docs/sidecar-design.md",
-      "either": 16,
+      "b": "crates/offrig-mcp/src/ops.rs",
+      "either": 15,
       "shared": 8,
-      "strength": 0.5
+      "strength": 0.533333
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 18,
+    "appliedChangesetLimit": 20.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -832,16 +837,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-10-07T14:03:37-04:00",
-    "inScopeFiles": 72,
+    "headDate": "2026-10-07T14:25:35-04:00",
+    "inScopeFiles": 81,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 32,
+    "qualifyingCommits": 34,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-10T18:03:37.000Z",
+    "since": "2026-04-10T18:25:35.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
