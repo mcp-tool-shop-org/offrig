@@ -478,6 +478,31 @@ fn up_survives_a_dead_price_api_and_reports_no_capacity() {
 }
 
 #[test]
+fn up_reports_a_pod_that_never_got_an_address_as_rented_and_not_ready() {
+    let models = model_names();
+    let names: Vec<&str> = models.iter().map(String::as_str).collect();
+    let bare = r#"{"id":"pod1","name":"offrig-small","desiredStatus":"RUNNING","costPerHr":0.25}"#;
+    let rig = Rig::new(
+        "up-notready",
+        |c| c.active_profile = "small".into(),
+        &names,
+        move |route, body| match route {
+            "POST /graphql" if body.contains("myself") => (200, account(50.0)),
+            "POST /graphql" => (200, offers(Some(1.0))),
+            "GET /pods" => (200, "[]".into()),
+            "POST /pods" | "GET /pods/pod1" => (200, bare.into()),
+            _ => (404, "{}".into()),
+        },
+    );
+    let mut cmd = rig.command(&["up", "--detach", "--no-zed"]);
+    cmd.env("OFFRIG_TEST_POD_READY_MS", "300");
+    let o = cmd.output().expect("run offrig");
+    assert_eq!(o.status.code(), Some(2), "{}", err(&o));
+    let e = err(&o);
+    assert!(e.contains("pod pod1 was rented and billed"), "{e}");
+}
+
+#[test]
 fn up_stops_when_the_gpus_are_not_free() {
     let models = model_names();
     let names: Vec<&str> = models.iter().map(String::as_str).collect();

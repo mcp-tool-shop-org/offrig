@@ -255,12 +255,15 @@ async fn a_model_session_launches_asks_runs_the_queue_and_shuts_down() {
     let job = s.finish(launch["job_id"].as_i64().expect("job")).await;
     assert_eq!(job["state"], "done", "{job:?}");
     assert_eq!(job["progress"]["step"], "ready");
+    // The rental was filled when the pod appeared; once ssh was up, the nvidia-smi CUDA
+    // measurement was added to it (it did not replace the GPU and price).
+    assert_eq!(job["rented"]["cuda_version"], "12.8", "{job:?}");
+    assert_eq!(job["rented"]["cuda_source"], "nvidia-smi", "{job:?}");
+    assert!(job["rented"]["gpu"].is_string(), "{job:?}");
+    assert!(job["rented"]["cost_per_hr"].is_number(), "{job:?}");
     assert!(
-        job["progress"]["rented"]["host_cuda"]
-            .as_str()
-            .is_some_and(|v| v == "12.8")
-            || job["rented"].is_object(),
-        "{job:?}"
+        job["failure"].is_null(),
+        "a launch that worked has no failure"
     );
     assert_eq!(count(&rig.runpod_hits, "POST /pods"), 1);
     let calls = rig.fake_calls();
