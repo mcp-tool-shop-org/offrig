@@ -320,7 +320,13 @@ fn launch(
 
     // Rent only from what the plan priced: its GPU list and its CUDA floor, not the
     // profile's (issues #9 and #10). A plan that stored no list uses the profile's.
-    let body = spec::pod_create_for_plan(cfg, &profile, &plan.gpu_types, min_cuda.as_deref());
+    let body = spec::pod_create_for_plan(
+        cfg,
+        &profile,
+        &plan.gpu_types,
+        min_cuda.as_deref(),
+        store.plan_container_disk_gb(plan_id)?,
+    );
     let now = now_unix();
     let left = plan.deadline().map_or(0, |d| (d - now).max(0)) as u64;
     // The plan's own wait, else the profile's, kept inside the time the plan has left.
@@ -427,7 +433,11 @@ fn launch(
                 &json!({ "pod": pod.id, "reason": "launch failed" }),
             )?;
             let outcome = match session.rp.delete_pod(&pod.id) {
-                Ok(()) => "terminated after a failed launch".to_string(),
+                Ok(()) => {
+                    // The lane's ssh block pointed at this pod; it is gone now.
+                    let _ = offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, &pod.id);
+                    "terminated after a failed launch".to_string()
+                }
                 Err(d) => format!("terminate failed: {}", chain(&d)),
             };
             store.journal_outcome(jt, &outcome)?;
@@ -606,6 +616,14 @@ pub fn shutdown(
         _ => "no pod was rented".to_string(),
     };
     store.journal_outcome(j, &outcome)?;
+    // The pod is gone, so the ssh block that named it is stale. Remove this lane's own
+    // block, and only if it names this plan's pod: never another lane's, never a block
+    // already rewritten for a newer pod. Not worth failing a shutdown over.
+    let ssh_block_removed = plan
+        .pod_id
+        .as_deref()
+        .and_then(|id| offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, id).ok())
+        .unwrap_or(false);
     let spent = if plan.pod_id.is_some() {
         watchdog::spend(&plan, rate, now_unix())
     } else {
@@ -615,6 +633,7 @@ pub fn shutdown(
     Ok(json!({
         "plan_id": plan_id,
         "outcome": outcome,
+        "ssh_block_removed": ssh_block_removed,
         "spent": spent,
         "budget": budget,
         "terminated_with_in_flight": in_flight,

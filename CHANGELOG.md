@@ -31,6 +31,22 @@
   - `offrig_exec action=status` collapses carriage-return progress lines in its log tail to
     their last frame, and takes `save_log` to copy the job's whole log to a local file.
 
+- Lane names in the plan, stale ssh blocks, and a container disk size (issue #6 and a new
+  need from a slow-`/workspace` host).
+  - `offrig_plan` shows the lane's `ssh_alias` and the `pod_name` its launch will create
+    (for example `offrig-ai-jam-sessions` and `offrig-ai-jam-sessions-jam`), so a session
+    can confirm its lane before launching without reading `lanes.toml`. `offrig_status`
+    shows `ssh_alias` on each open plan too.
+  - `offrig_shutdown` removes the lane's own `~/.ssh/config` block once the pod is gone, but
+    only when the block's label names that plan's pod. Another lane's block, and a block
+    already rewritten for a newer pod, are never touched. A launch that fails and terminates
+    its pod does the same. The reply reports `ssh_block_removed`. A pod ended by the
+    watchdog at its deadline still leaves its block, as before; the next launch rewrites it.
+  - `offrig_plan` takes `container_disk_gb` (1 to 2000), overriding the profile's
+    `container_disk_gb` for that plan. The plan stores it and the launch sends it as
+    `containerDiskInGb`; the reply and `offrig_status` show the size in force. The disk is not
+    priced into the worst case (offrig prices GPU time only).
+
 - Hardware limits on a plan (issues #9 and #10). A plan could land on a fallback card the
   work could not use: a `job` plan rented an A100 host on a CUDA 12.8 driver, and the job's
   CUDA 13 PyTorch failed after setup. Worst-case pricing also always used the profile's top

@@ -119,7 +119,7 @@ so a session survives compaction or a restart without re-explaining anything.
 |---|---|
 | `offrig_status` | The project, budget, RunPod balance and runway, offrig's pods, each open plan with its `plan_id`, lane and pod name, the handoff queue with stale work flagged |
 | `offrig_offers` | Live GPU offers for a GPU count |
-| `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left. Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan"); optional `wait_minutes` sets how long the launch retries when they have no capacity (see "Waiting for capacity") |
+| `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left. The reply names the lane's `ssh_alias` and the `pod_name` the launch will create, and the `container_disk_gb` it will ask for (optional `container_disk_gb` overrides the profile's; see "Container disk"). Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan"); optional `wait_minutes` sets how long the launch retries when they have no capacity (see "Waiting for capacity") |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
 | `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check; optional deterministic checks), lists them, previews role blocks, shows a handoff's best output (also written to `.offrig/out/`), records outcomes (complete, invalid, violation, fail, retry with feedback) |
@@ -130,7 +130,7 @@ so a session survives compaction or a restart without re-explaining anything.
 | `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job`. Optional `plan_id` (see below) |
 | `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`; `save_log` also copies the whole log to a local file), kills it (`stop`), or runs a short command now and returns its stdout, stderr and exit code (`run`, `timeout_secs` default 30, at most 120). Optional `plan_id` (see below) |
 | `offrig_get` | Copies a file or directory back from a job pod, creating missing local parent folders; do it before the shutdown, which deletes the pod's disk. Optional `plan_id` (see below) |
-| `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason |
+| `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason. Removes the lane's own `~/.ssh/config` block when it names that pod (`ssh_block_removed`) |
 
 **Which job plan a job tool acts on.** `offrig_put`, `offrig_exec` and `offrig_get` take an
 optional `plan_id`. With exactly one open job plan and no `plan_id` they use it, as before.
@@ -298,6 +298,28 @@ not one the plan listed, or the price is above the plan's, `offrig_job` returns 
 entry and starts `next_action` with `WARNING`. Nothing is terminated automatically: stopping
 the rent is the caller's call (`offrig_shutdown`). If neither the pod API nor `nvidia-smi`
 gives a CUDA version, `rented.notes` says so and the floor is unchecked.
+
+### Container disk
+
+A pod has two disks: the container disk, local to the host, and the volume mounted at
+`/workspace`. On some hosts `/workspace` is a slow network filesystem: one job pod measured
+32 MB/s there against 354 MB/s on its container disk, and could not fetch about 130 GB of
+models in time, while the container disk was only 60 GB. The container disk size is the
+profile's `container_disk_gb` (30 to 60 GB in the built-in profiles; the `job` profile has
+60) and goes into the pod create as `containerDiskInGb`. `offrig_plan` takes
+`container_disk_gb` (1 to 2000) to override it for one plan; the plan stores it, the launch
+sends it, and the plan reply and `offrig_status` show the size in force.
+
+- The container disk is **not priced**: offrig prices GPU time only, so the plan's worst
+  case is the same with any size. RunPod charges for disk; whether the rate it reports for
+  the pod (`offrig_job` shows it) includes the container disk has not been checked here.
+- offrig does not move your downloads for you. Job commands start with `HF_HOME` on the
+  `/workspace` volume (`/workspace/hf`); to use the container disk, set your own
+  (`HF_HOME=/root/hf python ...`) in the command.
+- The container disk is deleted with the pod, like the volume without a network volume:
+  copy results back with `offrig_get` before `offrig_shutdown`.
+- The 1 to 2000 bound is offrig's own sanity check against a typo; RunPod's actual limit is
+  not checked.
 
 ### Job pods
 
@@ -558,7 +580,7 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 | Set `OFFRIG_API_KEY` | `setx OFFRIG_API_KEY ""` or delete it in System Properties | variable gone | the operator |
 | Write the SSH alias | delete the marked block in `~/.ssh/config` | config as before | the operator |
 | Allocate a project lane (the project's first `offrig_plan`) | delete the project's entry from `lanes.toml` once no pod runs in its lane; a new plan allocates again | lane free for reuse; the alias block is separate (row above) | the operator |
-| Write a lane's SSH alias block (a side-car launch) | delete the `# >>> offrig:offrig-<tag> >>>` block in `~/.ssh/config` | config as before; other lanes' blocks untouched | the operator |
+| Write a lane's SSH alias block (a side-car launch) | `offrig_shutdown` removes it when it names the plan's pod (also after a failed launch); otherwise delete the `# >>> offrig:offrig-<tag> >>>` block in `~/.ssh/config` | config as before; other lanes' blocks untouched | the operator |
 | Pull a model on the pod | `ollama rm <model>` on the pod, or terminate the pod | model gone | the operator |
 | Kill an orphaned offrig tunnel | none needed; only an `ssh` with this lane's exact alias and forward is ever killed, never another lane's | port free | offrig |
 | Side-car launch (`offrig_launch`) | `offrig_shutdown`; automatic if setup fails; the watchdog at the deadline; the runner when its queue drains | pod terminated, plan closed with measured spend | the calling agent, with the watchdog as backstop |

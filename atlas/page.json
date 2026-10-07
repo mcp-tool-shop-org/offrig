@@ -43,7 +43,7 @@
   "changes": {
     "fileCounts": {
       "added": 1,
-      "changed": 5,
+      "changed": 9,
       "moved": 0,
       "parts": 3,
       "removed": 0
@@ -51,21 +51,21 @@
     "items": [
       {
         "kind": "door",
-        "sentence": "ci now also runs crates/offrig-mcp/tests/job_tools.rs.",
+        "sentence": "ci now also runs crates/offrig-mcp/tests/lanes_disk.rs.",
         "subjects": [
           ".github/workflows/ci.yml",
-          "crates/offrig-mcp/tests/job_tools.rs"
+          "crates/offrig-mcp/tests/lanes_disk.rs"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "1 file added and 5 changed content, across 3 parts.",
+        "sentence": "1 file added and 9 changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "ddfb50a1d24002798a26b695740a87abf6704aec",
-      "generatedAt": "2026-10-07T18:03:40.484Z"
+      "commit": "a1d6170bf45875acfbc5ccbd76ab329829e8e532",
+      "generatedAt": "2026-10-07T18:25:43.744Z"
     },
     "unchanged": false
   },
@@ -101,6 +101,21 @@
       "shared": 6
     },
     {
+      "a": "crates/offrig-mcp/src/main.rs",
+      "b": "crates/offrig-mcp/src/ops.rs",
+      "either": 16,
+      "partLabels": [
+        "offrig-mcp",
+        "offrig-mcp"
+      ],
+      "parts": [
+        "offrig-mcp",
+        "offrig-mcp"
+      ],
+      "relation": "inside",
+      "shared": 9
+    },
+    {
       "a": "crates/offrig-app/src/worker.rs",
       "b": "crates/offrig-core/src/session.rs",
       "either": 9,
@@ -114,21 +129,6 @@
       ],
       "relation": "a-imports-b",
       "shared": 5
-    },
-    {
-      "a": "crates/offrig-mcp/src/main.rs",
-      "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 15,
-      "partLabels": [
-        "offrig-mcp",
-        "offrig-mcp"
-      ],
-      "parts": [
-        "offrig-mcp",
-        "offrig-mcp"
-      ],
-      "relation": "inside",
-      "shared": 8
     },
     {
       "a": "crates/offrig-core/src/config.rs",
@@ -148,12 +148,12 @@
   ],
   "changesTogetherNote": [
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 2 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 3 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "a1d6170bf45875acfbc5ccbd76ab329829e8e532",
+  "commit": "df690b7d1a3ee8f0c3ba4918ca673f0baf42bec4",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Rust (42 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).",
+  "derived": "5 parts, mostly Rust (43 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).",
   "doors": [
     {
       "checks": [
@@ -188,7 +188,7 @@
         {
           "boundary": "offrig-mcp",
           "depth": 0,
-          "files": 12
+          "files": 13
         }
       ],
       "runs": [
@@ -217,6 +217,7 @@
         "crates/offrig-core/src/zed.rs",
         "crates/offrig-mcp/src/ops.rs",
         "crates/offrig-mcp/tests/job_tools.rs",
+        "crates/offrig-mcp/tests/lanes_disk.rs",
         "crates/offrig-mcp/tests/launch_wait.rs",
         "crates/offrig-mcp/tests/oneplan.rs",
         "crates/offrig-mcp/tests/phase2.rs",
@@ -225,8 +226,8 @@
         "crates/offrig-mcp/tests/sidecar_port.rs",
         "crates/offrig-mcp/tests/stdio.rs"
       ],
-      "runsCount": 32,
-      "runsMore": 29,
+      "runsCount": 33,
+      "runsMore": 30,
       "sends": [],
       "stages": [],
       "triggers": [
@@ -357,7 +358,7 @@
   ],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-07T18:25:43.744Z",
+  "generatedAt": "2026-10-07T19:04:12.522Z",
   "limits": [
     "6 writes and 2 reads use paths built at run time and are not named here.",
     "6 writes and 7 reads go to a path their caller passes, not to this repository.",
@@ -385,12 +386,12 @@
   "startReason": "This path follows offrig (a command built from crates/offrig-cli, which nothing ships) from its entry, since ci runs only tests and checks.",
   "summary": "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top.",
   "summaryFrom": "person",
-  "testFiles": 33,
+  "testFiles": 34,
   "testedBy": {
     "offrig-app": 1,
     "offrig-cli": 0,
-    "offrig-core": 30,
-    "offrig-mcp": 9
+    "offrig-core": 31,
+    "offrig-mcp": 10
   },
   "testedInside": [
     "offrig-app",

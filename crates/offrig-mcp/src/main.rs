@@ -140,6 +140,12 @@ pub struct PlanArgs {
     /// outlasts the plan's deadline, and waiting does not add to the worst case.
     #[serde(default)]
     pub wait_minutes: Option<u32>,
+    /// The pod's container disk in GB, replacing the profile's `container_disk_gb` for
+    /// this plan (1 to 2000). The container disk is local to the host and usually far
+    /// faster than /workspace, which can be a slow network filesystem. It is not part of
+    /// the plan's worst case: offrig prices GPU time only.
+    #[serde(default)]
+    pub container_disk_gb: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -470,6 +476,8 @@ impl Sidecar {
                         "profile": p.profile,
                         "lane": cfg.as_ref().map(|c| c.lane_tag.clone().unwrap_or_else(|| "plain".into())),
                         "pod_name": cfg.as_ref().and_then(|c| c.profile(&p.profile).ok().map(|x| c.pod_name(x))),
+                        "ssh_alias": cfg.as_ref().map(|c| c.ssh_alias.clone()),
+                        "container_disk_gb": s.plan_container_disk_gb(p.id).ok().flatten().or_else(|| cfg.as_ref().and_then(|c| c.profile(&p.profile).ok().map(|x| x.container_disk_gb))),
                         "pod_id": p.pod_id,
                         "gpus": p.gpu_types,
                         "max_price_hr": round2(p.max_price_hr),
@@ -625,7 +633,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_plan",
-        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Returns plan_id, which launching will require. Writes a plan; spends nothing.",
+        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Optional container_disk_gb overrides the profile's container disk size for this plan (not priced into the worst case). The reply names the lane's ssh alias and the pod name the launch will create. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
         annotations(
             title = "Plan a session",
             read_only_hint = false,
@@ -650,6 +658,16 @@ impl Sidecar {
                     format!("use one of: {}", names.join(", ")),
                 );
             }
+        };
+        let container_disk_gb = match a.container_disk_gb.map(planning::validate_container_disk) {
+            Some(Err(e)) => {
+                return fail(
+                    chain(&e),
+                    "pass a container_disk_gb of 1 to 2000, or leave it out",
+                );
+            }
+            Some(Ok(gb)) => Some(gb),
+            None => None,
         };
         let count = profile.gpu_count;
         let dc = profile.data_center_id.clone();
@@ -747,11 +765,27 @@ impl Sidecar {
                 "the plan could not record its wait; nothing was spent, plan again",
             );
         }
+        if let Some(gb) = container_disk_gb
+            && let Err(e) = self.with_store(|s| s.set_plan_container_disk_gb(plan.id, gb))
+        {
+            return fail(
+                chain(&e),
+                "the plan could not record its container disk; nothing was spent, plan again",
+            );
+        }
+        // What this plan will create, so a session can confirm its lane before launching
+        // without reading lanes.toml: the lane's ssh alias and the pod's name.
+        let lane_cfg = self.ctx.base.in_lane(&lane).ok();
+        let pod_name = lane_cfg.as_ref().map(|c| c.pod_name(&profile));
         let budget = self.with_store(|s| s.budget()).ok();
         let runway = account.as_ref().and_then(|ac| ac.runway_hours(max_price));
         ok(json!({
             "plan_id": plan.id,
             "lane": lane.tag,
+            "ssh_alias": lane.ssh_alias,
+            "pod_name": pod_name,
+            "container_disk_gb": container_disk_gb.unwrap_or(profile.container_disk_gb),
+            "container_disk_priced": false,
             "profile": plan.profile,
             "gpus": format!("{}x {}", plan.gpu_count, plan.gpu_types.join(" | ")),
             "max_price_hr": round2(plan.max_price_hr),
