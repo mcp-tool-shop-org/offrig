@@ -94,10 +94,19 @@ pub fn start_script(name: &str, command: &str) -> Result<String> {
     }
     let b64 = base64(command.as_bytes());
     let d = jobs_dir();
+    // An ssh session does not inherit the container's environment, so the job pod's
+    // variables (Hugging Face on the volume, the job directory) are set here. Without
+    // them the first live run downloaded 40 GB onto the 60 GB container disk and filled it.
+    let env = crate::spec::job_env()
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     Ok(format!(
         "set -e; mkdir -p {d} {JOB_DIR}; \
          if [ -f {d}/{name}.pid ] && kill -0 \"$(cat {d}/{name}.pid)\" 2>/dev/null; then echo running; exit 0; fi; \
          echo {b64} | base64 -d > {d}/{name}.sh; rm -f {d}/{name}.exit; \
+         export {env}; \
          cd {JOB_DIR}; \
          setsid nohup bash -c 'bash {d}/{name}.sh; echo $? > {d}/{name}.exit' > {d}/{name}.log 2>&1 < /dev/null & \
          echo $! > {d}/{name}.pid; echo started"
@@ -313,6 +322,14 @@ mod tests {
         let b64 = base64(cmd.as_bytes());
         assert!(s.contains(&b64));
         assert!(s.contains("setsid nohup"), "detached, so it outlives ssh");
+        let export = s
+            .find("export HF_HOME=/workspace/hf")
+            .expect("job env exported");
+        assert!(
+            export < s.find("setsid nohup").expect("start"),
+            "set before the job runs"
+        );
+        assert!(s.contains("OFFRIG_JOB_DIR=/workspace/job"));
         assert!(s.contains("echo $? > /workspace/offrig/jobs/run-a.exit"));
         assert!(s.find("kill -0").expect("guard") < s.find("base64 -d").expect("write"));
         assert!(start_script("run-a", "  ").is_err());

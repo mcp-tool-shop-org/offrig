@@ -1164,6 +1164,9 @@ impl Sidecar {
         };
         let next = match job.state.as_str() {
             "running" => "check again in about a minute",
+            "done" if job.progress["job_dir"].is_string() => {
+                "the job pod is ready: offrig_put your files, offrig_exec the work, offrig_get the results, then offrig_shutdown"
+            }
             "done" => {
                 "the pod is ready: work handoffs with offrig_ask, and shut down with offrig_shutdown when done"
             }
