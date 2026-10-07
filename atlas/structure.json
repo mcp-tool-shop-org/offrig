@@ -640,7 +640,7 @@
                 {
                   "inner": [
                     {
-                      "line": 597,
+                      "line": 629,
                       "name": "Config",
                       "receiver": "Error",
                       "target": {
@@ -1510,47 +1510,32 @@
             {
               "in": "validate",
               "kind": "err",
-              "line": 147
+              "line": 150
+            },
+            {
+              "in": "deserialize",
+              "kind": "err",
+              "line": 315
             },
             {
               "in": "validate",
               "kind": "err",
-              "line": 301
+              "line": 333
             },
             {
               "in": "load_from",
               "kind": "match-err",
-              "line": 620
+              "line": 652
             },
             {
               "in": "load_from",
               "kind": "match-err",
-              "line": 621
+              "line": 653
             },
             {
               "in": "load_from",
               "kind": "err",
-              "line": 621
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 637
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 643
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 648
-            },
-            {
-              "in": "validate",
-              "kind": "err",
-              "line": 655
+              "line": 653
             },
             {
               "in": "validate",
@@ -1560,15 +1545,35 @@
             {
               "in": "validate",
               "kind": "err",
-              "line": 676
+              "line": 675
             },
             {
               "in": "validate",
               "kind": "err",
-              "line": 682
+              "line": 680
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 687
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 701
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 708
+            },
+            {
+              "in": "validate",
+              "kind": "err",
+              "line": 714
             }
           ],
-          "hash": "91e329887158a4e61cdb7218d9c559a62b4b6d100d8894d0043705589b9861ed",
+          "hash": "cd2e66f8ddbbcdaba2d8d750cdf397c9f9884a0cece84d437a359236237ddbb3",
           "importsFiles": [
             "crates/offrig-core/src/error.rs",
             "crates/offrig-core/src/fsutil.rs",
@@ -1579,7 +1584,7 @@
             {
               "calls": [
                 {
-                  "line": 597,
+                  "line": 629,
                   "name": "Config",
                   "receiver": "Error",
                   "target": {
@@ -1595,7 +1600,7 @@
             {
               "calls": [
                 {
-                  "line": 597,
+                  "line": 629,
                   "name": "Config",
                   "receiver": "Error",
                   "target": {
@@ -5096,7 +5101,7 @@
           "testsInside": true
         },
         {
-          "hash": "aad39676d3c5158d1027f62bb16bfe01885f4024b12c1fd8f7ff85c21035f311",
+          "hash": "b6c720e0c1eed58a89945383c48454d1a99660d879d8390ccb36db63fe5c1d2a",
           "importOrder": [
             "crates/offrig-mcp/tests/common/mod.rs",
             "crates/offrig-core/src/store.rs",
@@ -5283,23 +5288,27 @@
           "path": ".github/workflows/ci.yml"
         },
         {
+          "hash": "fe1db5f18ca42c6e2363f0860db9c117b03a6bff39b375189f7c9d2f1882b4a1",
+          "path": ".github/workflows/pages.yml"
+        },
+        {
           "hash": "f8ad9ad5f44fe6a68e56c38af9a2e543d869b3da7b29405d18689b656396551b",
           "path": ".github/workflows/release.yml"
         },
         {
-          "hash": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+          "hash": "cc7d51b8eb60611fce0b42118db0379f630e0b570f050dff900ad7678088a358",
           "path": ".gitignore"
         },
         {
-          "hash": "2f13b6459aa4225bb22389e5f03c312611ec1bcaee3390088dfd11969c7293fa",
+          "hash": "90f8af1efd24e868af9b6f355585c35e626fef3e3b3d65b47656f26bb05f1dc9",
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "b5135e182a61bd76d719d1fb097485cf2bd509109044cd912096283934812403",
+          "hash": "078409c4b2db19ed3e021baf0d9a12e6c32dba47d8e6d24287b79d58de0676a9",
           "path": "Cargo.lock"
         },
         {
-          "hash": "97a296372ebc99f68359d4287c57e1d4f8ab67191adbb4c56fb3218b32685821",
+          "hash": "fc7d950a5e3963143eac3827fe37b86842e411c895020de3d40432ac988fa8e6",
           "path": "Cargo.toml"
         },
         {
@@ -5307,12 +5316,20 @@
           "path": "LICENSE"
         },
         {
-          "hash": "ad5203862b9afd1484aa540741a650ec7835a22515a10a8cee9f004077188aa6",
+          "hash": "7a616f372c7cc2453c098ba1becb6fd3fff2a7345787f9cc47a8e5df0119957d",
           "path": "README.md"
+        },
+        {
+          "hash": "b00fe74cf255d8d6944fb5374a73f2502e777569e36e2d5f52656be9af010c32",
+          "path": "SCORECARD.md"
         },
         {
           "hash": "ad9a12855585b9a547bc41cfcc7053aca68453ae8f3c8f7ca5b590592474c7f1",
           "path": "SECURITY.md"
+        },
+        {
+          "hash": "c889b94510aee48bb4e9f25e17702417910f3543045f7536da282a9efc8132a5",
+          "path": "SHIP_GATE.md"
         },
         {
           "hash": "2583584eab2787df227dead2c7a0c601758bae8e84a73ff1dfe4e86a4782ba19",
@@ -5941,6 +5958,142 @@
       "usesWorkflowToken": false
     },
     {
+      "checksCount": 0,
+      "commands": [
+        {
+          "dir": "site",
+          "job": "build",
+          "programs": [
+            "npm"
+          ],
+          "step": "Install site dependencies"
+        },
+        {
+          "dir": "site",
+          "job": "build",
+          "programs": [
+            "npm"
+          ],
+          "step": "Build site"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/pages.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "github-pages"
+          },
+          "name": "deploy",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [],
+      "name": "Deploy site to GitHub Pages",
+      "permissions": [
+        "contents:read",
+        "id-token:write",
+        "pages:write"
+      ],
+      "pushes": false,
+      "reach": [],
+      "readers": [],
+      "runs": [
+        {
+          "job": "build",
+          "matched": true,
+          "path": "site/astro.config.mjs",
+          "runKind": "executes",
+          "via": "astro build"
+        },
+        {
+          "directory": true,
+          "job": "build",
+          "matched": true,
+          "path": "site/src/",
+          "runKind": "executes",
+          "via": "astro build"
+        }
+      ],
+      "runsCount": 2,
+      "secrets": [],
+      "sends": {
+        "deploysPages": true,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "push",
+          "paths": [
+            ".github/workflows/pages.yml",
+            "site/**"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "actions/checkout",
+        "actions/deploy-pages",
+        "actions/setup-node",
+        "actions/upload-pages-artifact"
+      ],
+      "usesWorkflowToken": false
+    },
+    {
       "checksCount": 4,
       "commands": [
         {
@@ -6379,8 +6532,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "8a2c9b987bab9c541ed9191aa82814940f1386b8",
-    "tracked": 104
+    "commit": "d5c35531210fdd708af5765e9fd004a6cf1ade43",
+    "tracked": 126
   },
   "landings": [
     {
@@ -6599,6 +6752,28 @@
       ],
       "target": "crates/offrig-mcp/src/main.rs",
       "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "site/astro.config.mjs",
+          "call": "content-collection",
+          "confidence": "ast"
+        }
+      ],
+      "target": "site/src/content/docs",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "site/astro.config.mjs",
+          "call": "autogenerate",
+          "confidence": "ast"
+        }
+      ],
+      "target": "site/src/content/docs/handbook",
+      "writers": []
     }
   ],
   "overlaps": [],
@@ -6613,6 +6788,92 @@
     {
       "hash": "1c050209f6081868391e42aa5b8821137540287e68973543aff05daf3c13e224",
       "path": "scripts/verify.sh"
+    },
+    {
+      "hash": "219daa62450d0763b25fc3d5f4aab12376488245015d1e06a9995c0d999631ed",
+      "path": "site/astro.config.mjs"
+    },
+    {
+      "hash": "c983db3c96e08e70c9a5a2125bfcf1c797466fe321714fac12807bff8af512d7",
+      "path": "site/package-lock.json"
+    },
+    {
+      "hash": "9c39e620ebae2c5718ecd8c6188bd3451409a614ec8f5308dc15d5fd886e5b91",
+      "path": "site/package.json"
+    },
+    {
+      "hash": "d23bb959d9ff04ad45184240cdcdd8faa9f3ef7b0c7f4d25b671119c4ea30376",
+      "path": "site/public/favicon.svg"
+    },
+    {
+      "hash": "516647c83637a88c2dbee53fc59e51f5e4b11a94089e5d6cfea1758a01a66e28",
+      "path": "site/src/assets/logo.png"
+    },
+    {
+      "constantOnly": true,
+      "hash": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62",
+      "path": "site/src/content.config.ts"
+    },
+    {
+      "hash": "1d3589f58b3130253b41e9b41389f38422bcd6a9c965fa1a07358e317fea96e2",
+      "path": "site/src/content/docs/handbook/configuration.md"
+    },
+    {
+      "hash": "f75e0192ef82ccc7ed4953a5a27e84ef2dd3452b0260ea1b306eb2f2b256e2b1",
+      "path": "site/src/content/docs/handbook/getting-started.md"
+    },
+    {
+      "hash": "2ff7ea0faeb9a334425df8b6fd4219ca4fa93f005abb2c67b1ba79daa70036d3",
+      "path": "site/src/content/docs/handbook/index.md"
+    },
+    {
+      "hash": "0f7cf8db498fcde1d866b9e79aafa02b01ab0aea601beb56128d8d5865af1a56",
+      "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
+    },
+    {
+      "hash": "98a9cbc194234705863bebcf8a6f3b1f9ca3cdc0d7f2903ae0118269fd4289d6",
+      "path": "site/src/content/docs/handbook/reference.md"
+    },
+    {
+      "hash": "08fa95babe2d4f4161423b15e1a1c04ca894f905fc735a9c65af5ed4a23418d8",
+      "path": "site/src/content/docs/handbook/security.md"
+    },
+    {
+      "hash": "8873f130fad1bd62eb2041adebb7157c8b3b2b4dfbb2d89b2430a8eb74393c7b",
+      "path": "site/src/content/docs/handbook/side-car.md"
+    },
+    {
+      "hash": "49c96e239007eabf8c81667891ace02cdafb4b9ebe936dc3e17f51ac20be20e0",
+      "path": "site/src/content/docs/handbook/usage.md"
+    },
+    {
+      "hash": "4fb84a646c4d833c33f4058e1ed1775849e855c65e5adb7e45d2a633674bd603",
+      "importOrder": [
+        "site/src/styles/global.css",
+        "site/src/site-config.ts"
+      ],
+      "importsFiles": [
+        "site/src/site-config.ts",
+        "site/src/styles/global.css"
+      ],
+      "path": "site/src/pages/index.astro"
+    },
+    {
+      "constantOnly": true,
+      "hash": "555dbbceaf85616091a791d7215e8684b7ffb6a80098cd9616acf38b8718f7d2",
+      "path": "site/src/site-config.ts"
+    },
+    {
+      "hash": "29ee8df91833e694bdba973126b34a6177de4cf01dab6d9ef7d3126e8e2b67fb",
+      "path": "site/src/styles/global.css"
+    },
+    {
+      "hash": "b17173f07c0db8b532533b5de48035355a12d9582f0918d75b12214b07d53a17",
+      "path": "site/src/styles/starlight-custom.css"
+    },
+    {
+      "hash": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9",
+      "path": "site/tsconfig.json"
     }
   ]
 }

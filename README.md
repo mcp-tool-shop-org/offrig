@@ -127,6 +127,18 @@ offrig budget 15              set this project's spending cap for agent sessions
 offrig stage frontier --dc EUR-IS-1 --yes   stage weights on a network volume (bills monthly)
 ```
 
+### Output, exit codes and errors
+
+- **Log levels:** `-q` prints errors and a command's own results only; `-v` adds each
+  RunPod call and its timing; `--debug` adds failed response bodies and full error chains.
+  The API key is redacted at every level.
+- **Exit codes:** `0` success, `1` something to fix on your side (arguments, config, a
+  guard or budget refusal, a missing key), `2` a runtime failure (RunPod, network, ssh,
+  timeout, no capacity).
+- **Side-car errors** are results, never protocol errors: `ok:false` with a stable `code`,
+  the `error` text, a `next_action` and `retryable`. The codes are listed in the
+  [handbook's reference](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/).
+
 ## The side-car (for agents)
 
 `offrig-mcp` is an MCP server an agent such as Claude Code calls as an instrument. It
@@ -454,17 +466,21 @@ Comments and layout in Zed's settings are preserved: edits go through a JSONC sy
 
 ## Tests
 
-`cargo test --workspace` runs 130 tests:
+`cargo test --workspace` runs 252 tests, about 77% of lines covered:
 
 - **The core library:** RunPod parsing, pod specs for both engines, SSH config, Zed JSONC
   edits, guard rules, cost and idle logic, the store and its migrations, roles, context
   assembly, deterministic checks, the runner's decisions, the watchdog, and staging,
   including a mock RunPod that proves a failed stage terminates its pod.
 - **The app:** state handling plus click-through UI tests in egui's test harness.
+- **The CLI:** exit codes, log levels, and that the API key never appears in output.
 - **The side-car:** end to end over stdio against a mock RunPod, the real watchdog
-  process, and the real runner process against a mock pod model.
+  process, and the real runner process against a mock pod model; every tool error carries
+  a code.
 
-CI also runs fmt, clippy with warnings as errors, `cargo deny` and `atlas check`.
+`scripts/verify.sh` (or `scripts/verify.ps1`) runs the format check, clippy, the tests and
+a smoke run of each binary in one command. CI also runs `cargo deny`, an OSV scan of
+`Cargo.lock`, coverage to Codecov and `atlas check`.
 
 ### Live test record (2026-10-02, medium tier, A100 80GB, about $0.45)
 

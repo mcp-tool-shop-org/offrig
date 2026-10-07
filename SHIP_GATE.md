@@ -9,58 +9,58 @@
 
 ## A. Security Baseline
 
-- [ ] `[all]` SECURITY.md exists (report email, supported versions, response timeline) — executed by `npx @mcptoolshop/shipcheck security-docs` (A1: present + reporting contact, not an empty stub)
-- [ ] `[all]` README includes threat model paragraph (data touched, data NOT touched, permissions required) — executed by `npx @mcptoolshop/shipcheck security-docs` (A2: trust/threat-model section present + non-empty; *quality* is not machine-checkable)
-- [ ] `[all]` No secrets, tokens, or credentials in source or diagnostics output — executed by `npx @mcptoolshop/shipcheck secrets` (scans every publishable tarball; matches redacted; not a manual attestation)
-- [ ] `[all]` No telemetry by default — state it explicitly even if obvious
+- [x] `[all]` SECURITY.md exists (report email, supported versions, response timeline) — executed by `npx @mcptoolshop/shipcheck security-docs` (A1: present + reporting contact, not an empty stub) (2026-10-07; security-docs gate passes)
+- [x] `[all]` README includes threat model paragraph (data touched, data NOT touched, permissions required) — executed by `npx @mcptoolshop/shipcheck security-docs` (A2: trust/threat-model section present + non-empty; *quality* is not machine-checkable) (2026-10-07; README "Threat model" + handbook Security page)
+- [x] `[all]` No secrets, tokens, or credentials in source or diagnostics output — executed by `npx @mcptoolshop/shipcheck secrets` (scans every publishable tarball; matches redacted; not a manual attestation) (2026-10-07; RUNPOD_API_KEY read from env only; redacted at every log level and in MCP errors, with tests)
+- [x] `[all]` No telemetry by default — state it explicitly even if obvious (2026-10-07; stated in README threat model; talks only to RunPod, the pod and local Ollama)
 
 ### Default safety posture
 
-- [ ] `[cli|mcp|desktop]` Dangerous actions (kill, delete, restart) require explicit `--allow-*` flag
-- [ ] `[cli|mcp|desktop]` File operations constrained to known directories
-- [ ] `[mcp]` Network egress off by default
-- [ ] `[mcp]` Stack traces never exposed — structured error results only
+- [x] `[cli|mcp|desktop]` Dangerous actions (kill, delete, restart) require explicit `--allow-*` flag (2026-10-07; `down --yes`, `stage --yes`/`--remove --yes`; budget is human-only; agents can only shut down their own plan's pod)
+- [ ] `[cli|mcp|desktop]` SKIP: offrig_get and save_log write where the calling agent names (a file-copy tool must); offrig's own state is confined to %APPDATA%\offrig, <project>/.offrig, marked blocks in ~/.ssh/config and Zed's settings
+- [ ] `[mcp]` SKIP: offrig is a RunPod client; its egress is RunPod's API and the user's own pods
+- [x] `[mcp]` Stack traces never exposed — structured error results only (2026-10-07; every tool error is a structured result; panics are one line)
 
 ## B. Error Handling
 
-- [ ] `[all]` Errors follow the Structured Error Shape: `code`, `message`, `hint`, `cause?`, `retryable?`
-- [ ] `[cli]` Exit codes: 0 ok · 1 user error · 2 runtime error · 3 partial success
-- [ ] `[cli]` No raw stack traces without `--debug`
-- [ ] `[mcp]` Tool errors return structured results — server never crashes on bad input
-- [ ] `[mcp]` State/config corruption degrades gracefully (stale data over crash)
-- [ ] `[desktop]` Errors shown as user-friendly messages — no raw exceptions in UI
-- [ ] `[vscode]` Errors surface via VS Code notification API — no silent failures
+- [x] `[all]` Errors follow the Structured Error Shape: `code`, `message`, `hint`, `cause?`, `retryable?` (2026-10-07; MCP: ok/code/error/next_action/retryable)
+- [x] `[cli]` Exit codes: 0 ok · 1 user error · 2 runtime error · 3 partial success (2026-10-07; 0 ok, 1 user error, 2 runtime error; 3 unused)
+- [x] `[cli]` No raw stack traces without `--debug` (2026-10-07; full chains only with --debug)
+- [x] `[mcp]` Tool errors return structured results — server never crashes on bad input (2026-10-07; bad arguments and unknown tools included; tested)
+- [x] `[mcp]` State/config corruption degrades gracefully (stale data over crash) (2026-10-07; a broken Zed settings file is reported, never rewritten; an invalid lanes.toml is refused)
+- [x] `[desktop]` Errors shown as user-friendly messages — no raw exceptions in UI (2026-10-07; the app shows errors in a dismissible banner)
+- [ ] `[vscode]` SKIP: not a VS Code extension
 
 ## C. Operator Docs
 
-- [ ] `[all]` README is current: what it does, install, usage, supported platforms + runtime versions
-- [ ] `[all]` CHANGELOG.md (Keep a Changelog format)
-- [ ] `[all]` LICENSE file present and repo states support status
-- [ ] `[cli]` `--help` output accurate for all commands and flags
-- [ ] `[cli|mcp|desktop]` Logging levels defined: silent / normal / verbose / debug — secrets redacted at all levels
-- [ ] `[mcp]` All tools documented with description + parameters
-- [ ] `[complex]` HANDBOOK.md: daily ops, warn/critical response, recovery procedures
+- [x] `[all]` README is current: what it does, install, usage, supported platforms + runtime versions (2026-10-07; Windows, Rust 1.98.1 pinned, RunPod)
+- [x] `[all]` CHANGELOG.md (Keep a Changelog format) (2026-10-07; Keep a Changelog, 1.0.0)
+- [x] `[all]` LICENSE file present and repo states support status (2026-10-07; MIT; status in README)
+- [x] `[cli]` `--help` output accurate for all commands and flags (2026-10-07; generated by clap; smoke-run in verify and the release workflow)
+- [x] `[cli|mcp|desktop]` Logging levels defined: silent / normal / verbose / debug — secrets redacted at all levels (2026-10-07; -q / normal / -v / --debug, secrets redacted at all levels)
+- [x] `[mcp]` All tools documented with description + parameters (2026-10-07; README tool table + handbook side-car page)
+- [x] `[complex]` HANDBOOK.md: daily ops, warn/critical response, recovery procedures (2026-10-07; the Starlight handbook at mcp-tool-shop-org.github.io/offrig/handbook/ covers daily use, the watchdog, shutdown and recovery)
 
 ## D. Shipping Hygiene
 
-- [ ] `[all]` `verify` script exists (test + build + smoke in one command)
-- [ ] `[all]` Version in manifest matches git tag — executed by `npx @mcptoolshop/shipcheck manifest` (D2: manifest version not behind the newest released tag; `--expect <ver>` for a strict release-time match)
-- [ ] `[all]` Dependency scanning runs in CI (ecosystem-appropriate) — executed by `npx @mcptoolshop/shipcheck ci` (D3: a recognized scanner is *configured* in CI, or dependabot is present)
-- [ ] `[all]` No known high/critical vulnerabilities in any dependency tree, and Dependabot alerts are enabled — executed by `npx @mcptoolshop/shipcheck deps` (the OUTCOME: audits **every** tree incl. subtrees, not just the root; `ci` only proves a scanner is configured)
-- [ ] `[all]` Automated dependency **update** mechanism exists <!-- soft/optional: the org rule restricts the auto-PR bot (CI minutes), NOT alerts. The security outcome is enforced by `shipcheck deps`; the update bot is optional. -->
-- [ ] `[npm]` Published via OIDC trusted publishing with `--provenance` — executed by `npx @mcptoolshop/shipcheck ci` (config/intent; `--registry <pkg>` also confirms the attestation on npm)
-- [ ] `[npm]` **Every publishable package** passes `npx @mcptoolshop/shipcheck pack` — `npm pack --dry-run` on each workspace package includes README.md + LICENSE and all `files[]` entries resolve (executed check, not a manual attestation; in a monorepo it verifies all packages, not just the root)
-- [ ] `[npm]` `engines.node` set · `[pypi]` `python_requires` set — executed by `npx @mcptoolshop/shipcheck manifest` (D6, checked per publishable package)
-- [ ] `[npm]` Lockfile committed · `[pypi]` Clean wheel + sdist build — lockfile executed by `npx @mcptoolshop/shipcheck manifest` (D7); the pypi wheel/sdist build is not yet executed
-- [ ] `[vsix]` `vsce package` produces clean .vsix with correct metadata
-- [ ] `[desktop]` Installer/package builds and runs on stated platforms
+- [x] `[all]` `verify` script exists (test + build + smoke in one command) (2026-10-07; scripts/verify.sh and scripts/verify.ps1)
+- [x] `[all]` Version in manifest matches git tag — executed by `npx @mcptoolshop/shipcheck manifest` (D2: manifest version not behind the newest released tag; `--expect <ver>` for a strict release-time match) (2026-10-07; workspace 1.0.0; release.yml refuses a tag that is not v + the workspace version)
+- [x] `[all]` Dependency scanning runs in CI (ecosystem-appropriate) — executed by `npx @mcptoolshop/shipcheck ci` (D3: a recognized scanner is *configured* in CI, or dependabot is present) (2026-10-07; OSV scan of Cargo.lock plus cargo deny advisories)
+- [x] `[all]` No known high/critical vulnerabilities in any dependency tree, and Dependabot alerts are enabled — executed by `npx @mcptoolshop/shipcheck deps` (the OUTCOME: audits **every** tree incl. subtrees, not just the root; `ci` only proves a scanner is configured) (2026-10-07; cargo deny advisories and OSV clean; Dependabot alerts enabled, 0 open)
+- [ ] `[all]` SKIP: org rule restricts update bots; advisories are scanned in CI and Dependabot alerts are on
+- [ ] `[npm]` SKIP: not an npm package
+- [ ] `[npm]` SKIP: not an npm package
+- [ ] `[npm]` SKIP: not an npm or PyPI package
+- [ ] `[npm]` SKIP: Rust: Cargo.lock is committed and CI builds --locked
+- [ ] `[vsix]` SKIP: not a VS Code extension
+- [x] `[desktop]` Installer/package builds and runs on stated platforms (2026-10-07; CI builds the Windows zip from the tag and smoke-runs the binaries)
 
 ## E. Identity (soft gate — does not block ship)
 
-- [ ] `[all]` Logo in README header
+- [x] `[all]` Logo in README header (2026-10-07; brand logos/offrig)
 - [ ] `[all]` Translations (polyglot-mcp, 8 languages)
-- [ ] `[org]` Landing page (@mcptoolshop/site-theme)
-- [ ] `[all]` GitHub repo metadata: description, homepage, topics
+- [x] `[org]` Landing page (@mcptoolshop/site-theme) (2026-10-07; site-theme + Starlight handbook)
+- [x] `[all]` GitHub repo metadata: description, homepage, topics (2026-10-07)
 
 ---
 

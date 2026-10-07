@@ -42,99 +42,122 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 19,
-      "changed": 12,
+      "added": 22,
+      "changed": 7,
       "moved": 0,
-      "parts": 5,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
         "kind": "door",
-        "sentence": "ci now also runs crates/offrig-app/src/app/, crates/offrig-app/src/worker/, crates/offrig-cli/tests/commands.rs and 13 more.",
+        "sentence": "Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.",
         "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-app/src/app/",
-          "crates/offrig-app/src/worker/",
-          "crates/offrig-cli/tests/commands.rs",
-          "crates/offrig-cli/tests/contract.rs",
-          "crates/offrig-core/src/fsutil.rs",
-          "crates/offrig-core/tests/config_files.rs",
-          "crates/offrig-core/tests/lane_registry.rs",
-          "crates/offrig-core/tests/ollama_http.rs",
-          "crates/offrig-core/tests/proc_run.rs",
-          "crates/offrig-core/tests/runpod_http.rs",
-          "crates/offrig-core/tests/ssh_files.rs",
-          "crates/offrig-core/tests/stage_volume.rs",
-          "crates/offrig-core/tests/store_rules.rs",
-          "crates/offrig-core/tests/watchdog_step.rs",
-          "crates/offrig-core/tests/zed_files.rs",
-          "crates/offrig-mcp/tests/fake_ssh_session.rs"
+          ".github/workflows/pages.yml",
+          "site/astro.config.mjs",
+          "site/src/"
         ]
-      },
-      {
-        "kind": "door",
-        "sentence": "ci now also checks crates/offrig-core/examples/fake_ssh.rs.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-core/examples/fake_ssh.rs"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "ci no longer runs crates/offrig-cli/tests/.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-cli/tests/"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "And 1 more change to a door.",
-        "subjects": []
       },
       {
         "kind": "landing",
-        "sentence": "crates/offrig-app/tests/support/fake_tools.rs is now read by crates/offrig-app/src/worker/tests.rs.",
+        "sentence": "site/src/content/docs/ is now read by site/astro.config.mjs.",
         "subjects": [
-          "crates/offrig-app/tests/support/fake_tools.rs",
-          "crates/offrig-app/src/worker/tests.rs"
+          "site/src/content/docs/",
+          "site/astro.config.mjs"
         ]
       },
       {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-app/src/main.rs, `main` gained a step, `load`, before `new`.",
+        "kind": "landing",
+        "sentence": "site/src/content/docs/handbook/ is now read by site/astro.config.mjs.",
         "subjects": [
-          "crates/offrig-app/src/main.rs"
+          "site/src/content/docs/handbook/",
+          "site/astro.config.mjs"
         ]
       },
       {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-app/src/main.rs, `main` lost a step, `load`.",
+        "kind": "unassigned",
+        "sentence": "site/astro.config.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
         "subjects": [
-          "crates/offrig-app/src/main.rs"
+          "site/astro.config.mjs"
         ]
       },
       {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-core/src/zed.rs, `settings_path` gained a step, `test_home`, before `Config`.",
+        "kind": "unassigned",
+        "sentence": "site/package-lock.json is new and belongs to no part, so atlas check fails on it against the previous map.",
         "subjects": [
-          "crates/offrig-core/src/zed.rs"
+          "site/package-lock.json"
         ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "site/package.json is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "site/package.json"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "And 16 more new files that belong to no part.",
+        "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "19 files added and 12 changed content, across 5 parts.",
+        "sentence": "22 files added and 7 changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "0f6fd059bc14542c3b64b65064d1bebe67881314",
-      "generatedAt": "2026-10-07T19:36:02.038Z"
+      "commit": "8a2c9b987bab9c541ed9191aa82814940f1386b8",
+      "generatedAt": "2026-10-07T20:54:51.960Z"
     },
     "unchanged": false
   },
   "changesTogether": [
+    {
+      "a": "crates/offrig-app/src/worker.rs",
+      "b": "crates/offrig-cli/src/main.rs",
+      "either": 9,
+      "partLabels": [
+        "offrig-app",
+        "offrig-cli"
+      ],
+      "parts": [
+        "offrig-app",
+        "offrig-cli"
+      ],
+      "relation": "none",
+      "shared": 6
+    },
+    {
+      "a": "crates/offrig-app/src/worker.rs",
+      "b": "crates/offrig-core/src/session.rs",
+      "either": 10,
+      "partLabels": [
+        "offrig-app",
+        "offrig-core"
+      ],
+      "parts": [
+        "offrig-app",
+        "offrig-core"
+      ],
+      "relation": "a-imports-b",
+      "shared": 6
+    },
+    {
+      "a": "crates/offrig-cli/src/main.rs",
+      "b": "crates/offrig-core/src/session.rs",
+      "either": 12,
+      "partLabels": [
+        "offrig-cli",
+        "offrig-core"
+      ],
+      "parts": [
+        "offrig-cli",
+        "offrig-core"
+      ],
+      "relation": "a-imports-b",
+      "shared": 7
+    },
     {
       "a": "crates/offrig-mcp/src/main.rs",
       "b": "crates/offrig-mcp/src/ops.rs",
@@ -151,21 +174,6 @@
       "shared": 10
     },
     {
-      "a": "crates/offrig-app/src/worker.rs",
-      "b": "crates/offrig-cli/src/main.rs",
-      "either": 11,
-      "partLabels": [
-        "offrig-app",
-        "offrig-cli"
-      ],
-      "parts": [
-        "offrig-app",
-        "offrig-cli"
-      ],
-      "relation": "none",
-      "shared": 6
-    },
-    {
       "a": "crates/offrig-core/src/lib.rs",
       "b": "crates/offrig-core/src/store.rs",
       "either": 11,
@@ -179,36 +187,6 @@
       ],
       "relation": "inside",
       "shared": 6
-    },
-    {
-      "a": "crates/offrig-cli/src/main.rs",
-      "b": "crates/offrig-core/src/session.rs",
-      "either": 13,
-      "partLabels": [
-        "offrig-cli",
-        "offrig-core"
-      ],
-      "parts": [
-        "offrig-cli",
-        "offrig-core"
-      ],
-      "relation": "a-imports-b",
-      "shared": 7
-    },
-    {
-      "a": "crates/offrig-core/src/config.rs",
-      "b": "crates/offrig-core/src/session.rs",
-      "either": 16,
-      "partLabels": [
-        "offrig-core",
-        "offrig-core"
-      ],
-      "parts": [
-        "offrig-core",
-        "offrig-core"
-      ],
-      "relation": "inside",
-      "shared": 8
     }
   ],
   "changesTogetherNote": [
@@ -216,9 +194,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "8a2c9b987bab9c541ed9191aa82814940f1386b8",
+  "commit": "d5c35531210fdd708af5765e9fd004a6cf1ade43",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Rust (65 files), PowerShell (1), Python (1) and shell (1). Work enters through 6 doors; the busiest is release, which reaches 5 parts. People run offrig, offrig-app and offrig-mcp.",
+  "derived": "5 parts, mostly Rust (65 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
     {
       "checks": [
@@ -383,6 +361,31 @@
       "checks": [],
       "checksCount": 0,
       "checksMore": 0,
+      "file": ".github/workflows/pages.yml",
+      "id": ".github/workflows/pages.yml",
+      "landings": [],
+      "name": "Deploy site to GitHub Pages",
+      "pushes": false,
+      "reach": [],
+      "runs": [
+        "site/astro.config.mjs",
+        "site/src/"
+      ],
+      "runsCount": 2,
+      "runsMore": 0,
+      "sends": [
+        "deploys the site"
+      ],
+      "stages": [],
+      "triggers": [
+        "on a push to main touching 2 paths",
+        "or by hand"
+      ]
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
       "file": "crates/offrig-cli/Cargo.toml",
       "id": "crates/offrig-cli/Cargo.toml#offrig",
       "kind": "command",
@@ -530,12 +533,12 @@
       ]
     }
   ],
-  "generatedAt": "2026-10-07T20:54:51.960Z",
+  "generatedAt": "2026-10-07T21:20:43.576Z",
   "limits": [
     "7 writes and 4 reads use paths built at run time and are not named here.",
     "9 writes and 9 reads go to a path their caller passes, not to this repository.",
     "4 writes go to a temporary directory, not to this repository.",
-    "2 files belong to no part: scripts/verify.ps1 and scripts/verify.sh.",
+    "21 files belong to no part: scripts/verify.ps1, scripts/verify.sh, site/astro.config.mjs and 18 more.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/release.yml",
