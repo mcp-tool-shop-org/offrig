@@ -30,6 +30,21 @@ pub struct Choice {
     pub dropped: Vec<(String, String)>,
 }
 
+/// The most container disk offrig will ask a pod for, in GB. This is offrig's own sanity
+/// bound against a typo; RunPod's own limit is not checked here.
+pub const MAX_CONTAINER_DISK_GB: u32 = 2000;
+
+/// A plan's `container_disk_gb` override: a whole number of GB, at least 1.
+pub fn validate_container_disk(gb: u32) -> Result<u32> {
+    if (1..=MAX_CONTAINER_DISK_GB).contains(&gb) {
+        Ok(gb)
+    } else {
+        Err(Error::Refused(format!(
+            "container_disk_gb {gb} must be between 1 and {MAX_CONTAINER_DISK_GB}"
+        )))
+    }
+}
+
 /// The GPU family of a type id: the id without `NVIDIA ` and without an edition suffix,
 /// so the two RTX PRO 6000 Blackwell editions (listed as a pair) are one family. The
 /// A100 SXM and PCIe cards are different families on purpose: they are different
@@ -567,6 +582,16 @@ mod tests {
         let api = audit(&pod(Some(A100), Some("12.8"), 1.0), Some("13.0"));
         assert_eq!(api.cuda_source, Some("pod API"));
         assert_eq!(api.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_container_disk_override_must_be_a_sane_size() {
+        assert_eq!(validate_container_disk(400).expect("ok"), 400);
+        assert_eq!(validate_container_disk(1).expect("ok"), 1);
+        assert_eq!(validate_container_disk(2000).expect("ok"), 2000);
+        for bad in [0, 2001, u32::MAX] {
+            assert!(validate_container_disk(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

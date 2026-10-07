@@ -87,6 +87,29 @@ pub fn remove(text: &str, alias: &str) -> String {
     }
 }
 
+/// Whether the alias's block was written for `pod_id` (its label line names the pod).
+fn block_names_pod(text: &str, alias: &str, pod_id: &str) -> bool {
+    find_block(text, alias).is_some_and(|(s, t)| text[s..t].contains(&format!("({pod_id})")))
+}
+
+/// Remove the alias's block from the file, but only if it names `pod_id`. A block that
+/// was rewritten for a newer pod, or belongs to another alias (another lane), stays.
+/// Returns whether a block was removed.
+pub fn remove_for_pod_at(path: &Path, alias: &str, pod_id: &str) -> Result<bool> {
+    let old = read_or_empty(path)?;
+    if !block_names_pod(&old, alias, pod_id) {
+        return Ok(false);
+    }
+    fsutil::write_atomic(path, remove(&old, alias).as_bytes())?;
+    Ok(true)
+}
+
+/// [`remove_for_pod_at`] on `~/.ssh/config`: a pod that is gone leaves no block behind
+/// pointing at it.
+pub fn remove_for_pod(alias: &str, pod_id: &str) -> Result<bool> {
+    remove_for_pod_at(&config_path()?, alias, pod_id)
+}
+
 pub fn config_path() -> Result<PathBuf> {
     Ok(fsutil::home_ssh_dir()?.join("config"))
 }
@@ -220,6 +243,46 @@ mod tests {
         let gone = remove(&moved, "offrig-aspire-si");
         assert!(!gone.contains("offrig-aspire-si") && gone.contains("Host offrig-ai-jam-sessions"));
         assert!(gone.contains(&render_block(&plain)));
+    }
+
+    #[test]
+    fn a_pods_block_is_removed_only_for_that_pod_and_only_under_its_own_alias() {
+        let dir = std::env::temp_dir().join(format!("offrig-ssh-pod-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("config");
+        let plain = HostEntry {
+            label: "offrig-job (pod-a)".into(),
+            ..entry("offrig", "1.1.1.1", 1)
+        };
+        let lane = HostEntry {
+            label: "offrig-ai-jam-sessions-jam (pod-b)".into(),
+            ..entry("offrig-ai-jam-sessions", "2.2.2.2", 2)
+        };
+        std::fs::write(&path, "Host a\n").expect("write");
+        apply_at(&path, &plain).expect("plain");
+        apply_at(&path, &lane).expect("lane");
+        let both = std::fs::read_to_string(&path).expect("read");
+
+        // A pod that is not the one the block names changes nothing.
+        assert!(!remove_for_pod_at(&path, "offrig", "pod-x").expect("other pod"));
+        // The lane's pod id under the plain lane's alias changes nothing either.
+        assert!(!remove_for_pod_at(&path, "offrig", "pod-b").expect("other lane"));
+        // A missing alias or missing file is not an error.
+        assert!(!remove_for_pod_at(&path, "offrig-nope", "pod-a").expect("no block"));
+        assert!(!remove_for_pod_at(&dir.join("absent"), "offrig", "pod-a").expect("no file"));
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), both);
+
+        // The plain lane's own pod removes the plain block and leaves the lane's.
+        assert!(remove_for_pod_at(&path, "offrig", "pod-a").expect("removed"));
+        let after = std::fs::read_to_string(&path).expect("read");
+        assert!(!after.contains("Host offrig\n") && !after.contains("pod-a"));
+        assert!(after.contains(&render_block(&lane)));
+        assert!(after.starts_with("Host a\n"));
+        // A pod id is matched whole: a prefix of it does not name the block.
+        assert!(!remove_for_pod_at(&path, "offrig-ai-jam-sessions", "pod").expect("prefix"));
+        assert!(remove_for_pod_at(&path, "offrig-ai-jam-sessions", "pod-b").expect("removed"));
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "Host a\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

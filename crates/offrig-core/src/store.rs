@@ -990,6 +990,22 @@ impl Store {
         )
     }
 
+    /// The container disk size (GB) a plan asked for, overriding the profile's
+    /// `container_disk_gb` (`offrig_plan` `container_disk_gb`). `None` means the profile's.
+    /// Kept in settings like the lane and the CUDA floor, so the schema stays v3.
+    pub fn plan_container_disk_gb(&self, plan_id: i64) -> Result<Option<u32>> {
+        Ok(self
+            .setting(&format!("plan_container_disk_gb:{plan_id}"))?
+            .and_then(|v| v.parse().ok()))
+    }
+
+    pub fn set_plan_container_disk_gb(&self, plan_id: i64, gb: u32) -> Result<()> {
+        self.set_setting(
+            &format!("plan_container_disk_gb:{plan_id}"),
+            &gb.to_string(),
+        )
+    }
+
     // ---- jobs (long work run in the background; state survives restarts)
 
     pub fn create_job(&self, plan_id: i64, kind: &str) -> Result<i64> {
@@ -1805,6 +1821,10 @@ mod tests {
             None,
             "per plan"
         );
+        assert_eq!(s.plan_container_disk_gb(p.id).expect("read"), None);
+        s.set_plan_container_disk_gb(p.id, 200).expect("set");
+        assert_eq!(s.plan_container_disk_gb(p.id).expect("read"), Some(200));
+        assert_eq!(s.plan_container_disk_gb(p.id + 1).expect("read"), None);
         let back = s.plan(p.id).expect("read").expect("plan");
         assert_eq!(back.gpu_types, p.gpu_types);
         assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");

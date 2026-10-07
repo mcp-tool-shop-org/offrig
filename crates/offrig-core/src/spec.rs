@@ -192,14 +192,19 @@ pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
 /// The pod create for a plan: the profile's pod, but renting only from what the plan
 /// recorded. The plan's GPU list is the one `offrig_plan` priced (filtered by price,
 /// memory and fallback), and its CUDA floor is the one it was made with; a plan that
-/// recorded neither (made before they existed) falls back to the profile's.
+/// recorded neither (made before they existed) falls back to the profile's. A plan's
+/// `container_disk_gb` replaces the profile's container disk size.
 pub fn pod_create_for_plan(
     cfg: &Config,
     profile: &Profile,
     gpu_types: &[String],
     min_cuda: Option<&str>,
+    container_disk_gb: Option<u32>,
 ) -> PodCreate {
     let mut body = pod_create(cfg, profile);
+    if let Some(gb) = container_disk_gb {
+        body.container_disk_in_gb = gb;
+    }
     if !gpu_types.is_empty() {
         body.gpu_type_ids = gpu_types.to_vec();
     }
@@ -448,14 +453,35 @@ mod tests {
         let cfg = Config::default();
         let job = cfg.profile("job").expect("job profile");
         let only = vec!["NVIDIA RTX PRO 6000 Blackwell Server Edition".to_string()];
-        let body = pod_create_for_plan(&cfg, job, &only, Some("13.0"));
+        let body = pod_create_for_plan(&cfg, job, &only, Some("13.0"), None);
         assert_eq!(body.gpu_type_ids, only, "not the profile's six cards");
         assert_eq!(body.allowed_cuda_versions, ["13.0"]);
         let v = serde_json::to_value(&body).expect("json");
         assert_eq!(v["gpuTypeIds"].as_array().map(Vec::len), Some(1));
         // A plan that stored nothing falls back to the profile's.
-        let old = pod_create_for_plan(&cfg, job, &[], None);
+        let old = pod_create_for_plan(&cfg, job, &[], None, None);
         assert_eq!(old, pod_create(&cfg, job));
+    }
+
+    #[test]
+    fn the_container_disk_is_the_profiles_unless_the_plan_overrides_it() {
+        let cfg = Config::default();
+        let job = cfg.profile("job").expect("job profile");
+        assert_eq!(job.container_disk_gb, 60);
+        let v = serde_json::to_value(pod_create(&cfg, job)).expect("json");
+        assert_eq!(
+            v["containerDiskInGb"], 60,
+            "the profile's, as RunPod names it"
+        );
+        // A plan's size replaces it in the create body, and nothing else changes.
+        let big = pod_create_for_plan(&cfg, job, &[], None, Some(400));
+        let v = serde_json::to_value(&big).expect("json");
+        assert_eq!(v["containerDiskInGb"], 400);
+        let mut same = big.clone();
+        same.container_disk_in_gb = job.container_disk_gb;
+        assert_eq!(same, pod_create(&cfg, job));
+        // The volume the work dir lives on is separate and untouched.
+        assert_eq!(v["volumeInGb"], 200);
     }
 
     #[test]
