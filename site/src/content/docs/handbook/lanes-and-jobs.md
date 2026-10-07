@@ -40,6 +40,24 @@ is left alone:
 The tunnel's orphan cleanup kills a stale `ssh` only when its forward and alias are the
 lane's own.
 
+### Seeing other lanes' pods
+
+Every project can see what the others are running, without asking. `offrig_status` lists
+each other offrig pod with:
+
+- its lane and project;
+- the pod's name, GPU, price per hour and status;
+- the open plan behind it: plan id, profile, note, deadline (UTC) and committed worst case.
+
+offrig reads the other project's store strictly read-only: it never writes to it, never
+migrates it, and leaves no files behind. If the store can't be read, the pod still shows,
+with a note saying why. Pods offrig did not create are only counted and named. `offrig
+status` on the command line prints the same plan line under each lane pod.
+
+Pods also carry their identity as environment variables, visible in RunPod's console:
+`OFFRIG_LANE` (the lane tag, or `plain`), and on side-car launches `OFFRIG_PLAN` and
+`OFFRIG_DEADLINE`. Plan notes are never put on the pod.
+
 ### One lane, one live pod
 
 A lane has one SSH alias, so it serves one pod at a time. `offrig_launch` refuses while
