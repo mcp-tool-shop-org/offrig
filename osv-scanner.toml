@@ -1,0 +1,5 @@
+# osv-scanner policy for Cargo.lock. Mirrors the advisory exceptions in deny.toml.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+reason = "Unmaintained, not vulnerable. Reached only through egui/epaint, which parse the fonts bundled in the binary, never fonts from outside."

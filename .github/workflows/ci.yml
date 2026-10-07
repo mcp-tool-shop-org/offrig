@@ -10,6 +10,7 @@ on:
       - "deny.toml"
       - "rust-toolchain.toml"
       - "rustfmt.toml"
+      - "osv-scanner.toml"
       - "atlas/**"
       - ".github/workflows/**"
   # A required check runs on every pull request, with no paths filter.
@@ -20,10 +21,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    # id-token is for the Codecov upload (OIDC, no stored token). This is the only job.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
 
@@ -41,11 +49,38 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace --locked
+      - name: Coverage component
+        run: rustup component add llvm-tools
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # Runs the whole test suite under instrumentation: this is the test step.
+      - name: Test with coverage
+        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+
+      - name: Coverage summary
+        run: cargo llvm-cov report --summary-only
+
+      # Fork pull requests get no OIDC token; the upload is skipped for them.
+      - name: Upload coverage to Codecov
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          use_oidc: true
+          fail_ci_if_error: false
 
       - name: Dependency policy (licences, advisories, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
+
+      - name: Dependency scan (OSV, Cargo.lock)
+        uses: google/osv-scanner-action/osv-scanner-action@v2.6.0
+        with:
+          scan-args: |-
+            --config=osv-scanner.toml
+            --lockfile=Cargo.lock
 
       - name: Atlas check
         run: npx --yes @dogfood-lab/atlas@1.24.0 check

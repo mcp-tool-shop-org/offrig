@@ -15,6 +15,7 @@ use offrig_core::error::chain;
 use offrig_core::remote::{self, PullState};
 use offrig_core::runpod::Pod;
 use offrig_core::session::{Event, Session, Wait};
+use offrig_core::trace::{self, Level};
 use offrig_core::tunnel::{self, Tunnel};
 use offrig_core::{guard, ollama::Ollama, spec, zed};
 
@@ -25,8 +26,106 @@ use offrig_core::{guard, ollama::Ollama, spec, zed};
     about = "Run models on RunPod and wire them into Zed, never on the local GPU"
 )]
 struct Cli {
+    /// Errors only: no progress or confirmations (a command's own results still print)
+    #[arg(short, long, global = true, conflicts_with_all = ["verbose", "debug"])]
+    quiet: bool,
+    /// Also say which RunPod calls are made and how long they take (to stderr)
+    #[arg(short, long, global = true, conflicts_with = "debug")]
+    verbose: bool,
+    /// Everything --verbose says, plus full error chains and failed response bodies.
+    /// Secrets are redacted at every level.
+    #[arg(long, global = true)]
+    debug: bool,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+impl Cli {
+    fn level(&self) -> Level {
+        if self.debug {
+            Level::Debug
+        } else if self.verbose {
+            Level::Verbose
+        } else if self.quiet {
+            Level::Quiet
+        } else {
+            Level::Normal
+        }
+    }
+}
+
+/// Progress and confirmations: printed at the normal level and above, not by `--quiet`.
+macro_rules! info {
+    ($($arg:tt)*) => {
+        if trace::enabled(Level::Normal) {
+            println!("{}", trace::redact(&format!($($arg)*)));
+        }
+    };
+}
+
+/// A failure that happened while running (as opposed to a mistake in what the user
+/// asked for), for the exit status: the failure has no `offrig_core::Error` behind it.
+#[derive(Debug)]
+struct RuntimeFailure(String);
+
+impl std::fmt::Display for RuntimeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RuntimeFailure {}
+
+fn runtime(msg: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(RuntimeFailure(msg.into()))
+}
+
+/// Exit status: 0 ok, 1 the user's to fix (arguments, config, guard or budget
+/// refusals, missing key, not found), 2 something failed while running (RunPod API,
+/// network, ssh, timeout, io, database). Nothing here is partially successful, so 3
+/// is unused.
+const EXIT_USER: i32 = 1;
+const EXIT_RUNTIME: i32 = 2;
+
+fn code_exit(code: &str) -> i32 {
+    match code {
+        "runpod_api" | "network" | "ssh" | "timeout" | "io" | "database" | "internal"
+        | "model_server" | "no_capacity" => EXIT_RUNTIME,
+        _ => EXIT_USER,
+    }
+}
+
+/// The error's stable code and exit status: the first `offrig_core::Error` in its
+/// chain decides; otherwise a marked runtime failure or a raw io/json error is a
+/// runtime error, and anything else is a mistake in the request.
+fn classify(err: &anyhow::Error) -> (&'static str, i32) {
+    for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<offrig_core::Error>() {
+            return (e.code(), code_exit(e.code()));
+        }
+        if cause.is::<RuntimeFailure>() {
+            return ("runtime", EXIT_RUNTIME);
+        }
+        if cause.is::<std::io::Error>() {
+            return ("io", EXIT_RUNTIME);
+        }
+        if cause.is::<serde_json::Error>() {
+            return ("internal", EXIT_RUNTIME);
+        }
+    }
+    ("usage", EXIT_USER)
+}
+
+/// What is printed for a failure: the chain on one line, or at `--debug` the code, the
+/// exit status and the full chain. Always redacted.
+fn render_error(err: &anyhow::Error) -> String {
+    let (code, exit) = classify(err);
+    let text = if trace::enabled(Level::Debug) {
+        format!("error [{code}, exit {exit}]: {err:?}")
+    } else {
+        format!("error: {err:#}")
+    };
+    trace::redact(&text)
 }
 
 #[derive(Subcommand)]
@@ -129,17 +228,47 @@ enum Cmd {
 }
 
 fn main() {
-    if let Err(e) = run(Cli::parse()) {
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
+    // A bad command line is the user's to fix: exit 1, not clap's default 2.
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            let help_or_version = !e.use_stderr();
+            let _ = e.print();
+            std::process::exit(if help_or_version { 0 } else { EXIT_USER });
+        }
+    };
+    trace::set_level(cli.level());
+    // A panic is a bug, not a stack trace for the user: one line, exit 2.
+    // `--debug` keeps the default report.
+    if !trace::enabled(Level::Debug) {
+        std::panic::set_hook(Box::new(|info| {
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown".into());
+            eprintln!(
+                "error: internal error: {} (re-run with --debug for details)",
+                trace::redact(&msg)
+            );
+            std::process::exit(EXIT_RUNTIME);
+        }));
+    }
+    let started = Instant::now();
+    let result = run(cli);
+    trace::verbose(&format!("finished in {} ms", started.elapsed().as_millis()));
+    if let Err(e) = result {
+        eprintln!("{}", render_error(&e));
+        std::process::exit(classify(&e).1);
     }
 }
 
 fn print_event(last_pct: &mut HashMap<String, u64>) -> impl FnMut(Event) + '_ {
     move |e| match e {
-        Event::Step(s) => println!("  - {s}"),
-        Event::Warn(s) => println!("  ! {s}"),
-        Event::Pod(p) => println!("  - pod {} at {:?}", p.id, p.ssh_endpoint()),
+        Event::Step(s) => info!("  - {s}"),
+        Event::Warn(s) => info!("  ! {s}"),
+        Event::Pod(p) => info!("  - pod {} at {:?}", p.id, p.ssh_endpoint()),
         // The step line the wait prints every few minutes already says it.
         Event::Waiting { .. } => {}
         Event::Pull { model, state } => {
@@ -153,7 +282,7 @@ fn print_event(last_pct: &mut HashMap<String, u64>) -> impl FnMut(Event) + '_ {
                 let pct = completed * 100 / total;
                 if last_pct.get(&model) != Some(&pct) {
                     last_pct.insert(model.clone(), pct);
-                    println!(
+                    info!(
                         "  - {model}: {pct:>3}% of {:.1} GB ({status})",
                         total as f64 / 1e9
                     );
@@ -164,6 +293,7 @@ fn print_event(last_pct: &mut HashMap<String, u64>) -> impl FnMut(Event) + '_ {
 }
 
 fn load() -> Result<Config> {
+    trace::verbose("loading the offrig config");
     Config::load().context("loading offrig config")
 }
 
@@ -214,7 +344,7 @@ fn run(cli: Cli) -> Result<()> {
             let store = offrig_core::store::Store::open(&dir.join(".offrig").join("offrig.db"))?;
             if let Some(cap) = usd {
                 store.set_budget_cap(cap)?;
-                println!("budget cap set to ${cap:.2} for {}", dir.display());
+                info!("budget cap set to ${cap:.2} for {}", dir.display());
             }
             let b = store.budget()?;
             println!(
@@ -351,13 +481,13 @@ fn run(cli: Cli) -> Result<()> {
                 let checks = guard::evaluate(&guard::gather(&s.cfg, &pod, &zed::settings_path()?)?);
                 print_checks(&checks);
             }
-            println!(
+            info!(
                 "ready: {} ({}) at ${:.2}/hr",
                 pod.name, pod.id, pod.cost_per_hr
             );
             if detach {
                 drop(tunnel);
-                println!(
+                info!(
                     "tunnel closed (--detach). Reopen with `offrig tunnel {}`.",
                     p.name
                 );
@@ -375,7 +505,7 @@ fn run(cli: Cli) -> Result<()> {
             let (s, p) = session_for(&profile)?;
             require_pod(&s, &p)?;
             remote::pull_start(&s.cfg.ssh_alias, &model)?;
-            println!("pull of {model} started on the pod");
+            info!("pull of {model} started on the pod");
             let mut last = HashMap::new();
             let mut print = print_event(&mut last);
             loop {
@@ -387,11 +517,15 @@ fn run(cli: Cli) -> Result<()> {
                 });
                 match state {
                     PullState::Done => {
-                        println!("{model} pulled");
+                        info!("{model} pulled");
                         return Ok(());
                     }
-                    PullState::Failed(e) => bail!("pull of {model} failed: {e}"),
-                    PullState::NotStarted => bail!("pull of {model} vanished"),
+                    PullState::Failed(e) => {
+                        return Err(runtime(format!("pull of {model} failed: {e}")));
+                    }
+                    PullState::NotStarted => {
+                        return Err(runtime(format!("pull of {model} vanished")));
+                    }
                     PullState::Running { .. } => {}
                 }
             }
@@ -419,7 +553,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::ZedRemove => {
             let s = Session::new(load()?)?;
             s.unconfigure_zed(None)?;
-            println!(
+            info!(
                 "removed provider {} from Zed's settings",
                 s.cfg.zed_provider
             );
@@ -476,7 +610,7 @@ fn run(cli: Cli) -> Result<()> {
                 .arg(&target)
                 .spawn()
                 .context("launching zed")?;
-            println!("opened {target} in Zed");
+            info!("opened {target} in Zed");
             Ok(())
         }
         Cmd::Stage {
@@ -488,7 +622,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Down { profile, yes } => {
             let (s, p) = session_for(&profile)?;
             let Some(pod) = s.current_pod(&p)? else {
-                println!("no pod for profile {}", p.name);
+                info!("no pod for profile {}", p.name);
                 return Ok(());
             };
             if !yes {
@@ -543,7 +677,7 @@ fn stage_cmd(name: &str, dc: Option<String>, remove: bool, yes: bool) -> Result<
         }
         rp.delete_volume(&vol)?;
         set_staging(&mut cfg, &p.name, None, None)?;
-        println!(
+        info!(
             "deleted volume {vol}; {} downloads its weights at launch again",
             p.name
         );
@@ -566,7 +700,7 @@ fn stage_cmd(name: &str, dc: Option<String>, remove: bool, yes: bool) -> Result<
         );
     }
     let (vol, created) = offrig_core::stage::ensure_volume(&rp, &p, &dc)?;
-    println!(
+    info!(
         "{} volume {} ({} GB) in {}",
         if created { "created" } else { "reusing" },
         vol.id,
@@ -583,16 +717,13 @@ fn stage_cmd(name: &str, dc: Option<String>, remove: bool, yes: bool) -> Result<
     )?;
     let mut last = HashMap::new();
     if let Err(e) = offrig_core::stage::fill(&cfg, rp, &p, &vol, &mut print_event(&mut last)) {
-        bail!(
-            "staging failed: {}. The staging pod was terminated. Volume {} is kept and still \
-             bills: run `offrig stage {} --yes` to resume, or `offrig stage {} --remove --yes`.",
-            chain(&e),
-            vol.id,
-            p.name,
-            p.name
-        );
+        // The core error stays in the chain, so the exit status and code follow it.
+        return Err(anyhow::Error::new(e).context(format!(
+            "staging failed. The staging pod was terminated. Volume {} is kept and still              bills: run `offrig stage {} --yes` to resume, or `offrig stage {} --remove --yes`",
+            vol.id, p.name, p.name
+        )));
     }
-    println!(
+    info!(
         "{} is staged on {} in {}: its launches skip the download and run Hugging Face offline",
         p.name, vol.id, vol.data_center_id
     );
@@ -606,7 +737,7 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
     let offers = match s.rp.gpu_offers_in(p.gpu_count, p.data_center_id.as_deref()) {
         Ok(o) => o,
         Err(e) => {
-            println!(
+            info!(
                 "  ! could not read GPU prices ({}); launching without an estimate",
                 chain(&e)
             );
@@ -619,14 +750,14 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
         .filter_map(|o| o.price_per_hr.map(|price| (o, price)))
         .min_by(|a, b| a.1.total_cmp(&b.1));
     match best {
-        Some((o, price)) => println!(
+        Some((o, price)) => info!(
             "{}: cheapest free match {}x {} ({} GB VRAM) at ${price:.2}/hr",
             p.name,
             p.gpu_count,
             o.id,
             o.total_vram_gb()
         ),
-        None => println!(
+        None => info!(
             "{}: none of [{}] has {} GPU(s) free on secure cloud right now; RunPod may refuse the pod",
             p.name,
             p.gpu_type_ids.join(" | "),
@@ -643,7 +774,7 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
     let account = match s.rp.account() {
         Ok(a) => a,
         Err(e) => {
-            println!(
+            info!(
                 "  ! could not read the balance ({}); check runway in the RunPod console",
                 chain(&e)
             );
@@ -651,7 +782,7 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
         }
     };
     let runway = account.runway_hours(price);
-    println!(
+    info!(
         "balance ${:.2}; with this pod the account spends ${:.2}/hr; runway {}",
         account.client_balance,
         account.current_spend_per_hr + price,
@@ -671,22 +802,22 @@ fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
 fn configure_zed(s: &Session, p: &Profile, default_model: Option<&str>) -> Result<()> {
     let models = s.zed_models(p)?;
     let out = s.configure_zed(&models, default_model)?;
-    println!(
+    info!(
         "Zed provider {} written to {}",
         s.cfg.zed_provider,
         out.settings.display()
     );
     for m in &out.models {
-        println!(
+        info!(
             "  {} (ctx {}, tools {}, images {})",
             m.display_name, m.max_tokens, m.tools, m.images
         );
     }
     if let Some(d) = default_model {
-        println!("  Zed's default agent model is now {d}");
+        info!("  Zed's default agent model is now {d}");
     }
     if out.api_key_env_ready {
-        println!(
+        info!(
             "  {} is set; restart Zed once if it was just created",
             zed::api_key_env_name(&s.cfg.zed_provider)
         );
@@ -734,7 +865,7 @@ fn hold(
         .cfg
         .auto_stop_idle_minutes
         .map(|m| IdleTracker::new(Duration::from_secs(u64::from(m) * 60)));
-    println!(
+    info!(
         "holding the tunnel on 127.0.0.1:{} (Ctrl+C closes it; the pod keeps running){}",
         s.cfg.tunnel_port,
         s.cfg
@@ -746,11 +877,11 @@ fn hold(
     let mut next_sample = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         if !tunnel.is_alive() {
-            println!("  ! tunnel dropped ({}); reopening", tunnel.last_error());
+            info!("  ! tunnel dropped ({}); reopening", tunnel.last_error());
             std::thread::sleep(Duration::from_secs(3));
             match s.current_pod(p)? {
                 Some(fresh) => s.write_ssh(&fresh)?,
-                None => bail!("the pod is gone"),
+                None => return Err(runtime("the pod is gone")),
             }
             tunnel = s.open_tunnel(p, &mut print_event(&mut last))?;
         }
@@ -760,7 +891,7 @@ fn hold(
                 let stats = remote::gpu_stats(&s.cfg.ssh_alias).unwrap_or_default();
                 match tracker.observe(&stats, Instant::now()) {
                     Idle::Stop => {
-                        println!(
+                        info!(
                             "  ! every GPU idle for {} min; terminating {}",
                             tracker.limit.as_secs() / 60,
                             pod.name
@@ -770,7 +901,7 @@ fn hold(
                         return Ok(());
                     }
                     Idle::Idle(d) if d.as_secs() >= 300 && d.as_secs() % 300 < 60 => {
-                        println!("  - GPUs idle for {} min", d.as_secs() / 60);
+                        info!("  - GPUs idle for {} min", d.as_secs() / 60);
                     }
                     _ => {}
                 }
@@ -778,7 +909,7 @@ fn hold(
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    println!(
+    info!(
         "tunnel closed; {} is still running (stop it with `offrig down {} --yes`)",
         spec::pod_name(&s.cfg, p),
         p.name

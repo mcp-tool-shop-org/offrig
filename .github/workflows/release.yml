@@ -1,0 +1,123 @@
+name: release
+
+# Builds the Windows binaries for a version tag and stages a DRAFT GitHub release.
+# It never publishes: a human scans the draft and publishes it.
+#
+# Tag workflows cannot fire on a plain push, so this file is outside the two
+# push-triggered workflow cap. workflow_dispatch exercises it for an existing tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and draft a release for (v + the workspace version)"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.guard.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Tag must be v + the workspace version
+        id: guard
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "offrig-cli") | .version')
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "could not read the workspace version" >&2
+            exit 1
+          fi
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match the workspace version v$version; refusing to build" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install --no-self-update
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release --locked -p offrig-cli -p offrig-mcp -p offrig-app
+
+      - name: Smoke-run the command line binaries
+        run: |
+          target/release/offrig.exe --version
+          target/release/offrig-mcp.exe --version
+
+      - name: Package the zip
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          $name = "offrig-$($env:VERSION)-windows-x64"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/offrig.exe, target/release/offrig-mcp.exe, target/release/offrig-app.exe, LICENSE, README.md "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          Get-Item "dist/$name.zip" | Format-List Name, Length
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-zip
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  draft-release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only job that writes to the repository.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-x64-zip
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum "offrig-${VERSION}-windows-x64.zip" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create the draft release (never published here)
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "a release for $TAG already exists; refusing to touch it" >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "offrig ${VERSION}" \
+            --notes "Draft. Windows x64 only. Verify the zip against SHA256SUMS before use; see CHANGELOG.md for what changed." \
+            "dist/offrig-${VERSION}-windows-x64.zip" \
+            dist/SHA256SUMS
