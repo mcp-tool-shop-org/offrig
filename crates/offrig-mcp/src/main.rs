@@ -259,6 +259,10 @@ pub struct ExecArgs {
     /// action=status: how many log lines to return (default 40, max 400).
     #[serde(default)]
     pub tail: Option<u32>,
+    /// The job plan whose pod to act on. Optional with exactly one open job plan;
+    /// required with several (the refusal lists them).
+    #[serde(default)]
+    pub plan_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -267,6 +271,10 @@ pub struct CopyArgs {
     pub local: String,
     /// A pod path; relative paths are under /workspace/job.
     pub pod: String,
+    /// The job plan whose pod to act on. Optional with exactly one open job plan;
+    /// required with several (the refusal lists them).
+    #[serde(default)]
+    pub plan_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -359,9 +367,10 @@ impl Sidecar {
         } else {
             self.project.join(local)
         };
-        let res =
-            tokio::task::spawn_blocking(move || ops::job_copy(&ctx, &db, upload, &local, &a.pod))
-                .await;
+        let res = tokio::task::spawn_blocking(move || {
+            ops::job_copy(&ctx, &db, upload, &local, &a.pod, a.plan_id)
+        })
+        .await;
         match res {
             Ok(Ok(v)) => ok(v),
             Ok(Err(e)) => fail(chain(&e), "check the paths; the pod bills until shutdown"),
@@ -424,9 +433,12 @@ impl Sidecar {
                 .open_plans()?
                 .iter()
                 .map(|p| {
+                    let cfg = self.ctx.cfg_for_plan(s, p).ok();
                     json!({
                         "plan_id": p.id,
                         "profile": p.profile,
+                        "lane": cfg.as_ref().map(|c| c.lane_tag.clone().unwrap_or_else(|| "plain".into())),
+                        "pod_name": cfg.as_ref().and_then(|c| c.profile(&p.profile).ok().map(|x| c.pod_name(x))),
                         "pod_id": p.pod_id,
                         "deadline": p.deadline().map(when),
                         "watchdog_alive": watchdog::alive(s, p.id, now, WATCHDOG_STALE_SECS),
@@ -1022,9 +1034,9 @@ impl Sidecar {
                 "run offrig_status, shut the plan down with offrig_shutdown, and plan again",
             );
         }
-        // Preflight before any commitment: the key works, no pod for this profile is
-        // already up in this project's lane, and the profile's models are not on this
-        // machine. Another project's pod for the same profile is not this one's.
+        // Preflight before any commitment: the key works, the lane holds no live pod,
+        // and the profile's models are not on this machine. Another project's pod is
+        // not this lane's.
         let cfg = match self.with_store(|s| {
             let cfg = self.ctx.cfg_for_plan(s, &plan)?;
             self.ctx.adopt(s, &plan)?;
@@ -1038,26 +1050,25 @@ impl Sidecar {
                 );
             }
         };
+        // One lane, one ssh alias, one pod at a time: a lane that already has a live
+        // plan refuses a second launch before anything remote is asked.
+        if let Err(e) = self.with_store(|s| ops::lane_busy(&self.ctx, s, &cfg, id, &[])) {
+            return fail(
+                chain(&e),
+                "offrig_shutdown that plan (or wait for it to finish); nothing was spent",
+            );
+        }
         let pre_cfg = cfg.clone();
         let prof = plan.profile.clone();
         let pre = tokio::task::spawn_blocking(move || {
             let session = Session::new(pre_cfg)?;
             let profile = session.cfg.profile(&prof)?.clone();
             session.plan_check(&profile)?;
-            session.current_pod(&profile)
+            session.lane_pods()
         })
         .await;
-        match pre {
-            Ok(Ok(None)) => {}
-            Ok(Ok(Some(pod))) => {
-                return fail(
-                    format!(
-                        "a pod for this profile is already running in this project's lane ({}, {})",
-                        pod.name, pod.id
-                    ),
-                    "shut it down first (offrig_shutdown, offrig down from the CLI, or the app); offrig never runs two pods for one profile in one lane",
-                );
-            }
+        let lane_pods = match pre {
+            Ok(Ok(pods)) => pods,
             Ok(Err(e)) => {
                 return fail(
                     chain(&e),
@@ -1065,9 +1076,22 @@ impl Sidecar {
                 );
             }
             Err(e) => return fail(e.to_string(), "retry; nothing was spent"),
-        }
-        let committed = match self.with_store(|s| s.commit_plan(id)) {
-            Ok(p) => p,
+        };
+        // The check and the commitment happen under one hold of the store, so two
+        // launches racing in this side-car cannot both pass.
+        let committed = match self.with_store(|s| {
+            if let Err(e) = ops::lane_busy(&self.ctx, s, &cfg, id, &lane_pods) {
+                return Ok(Err(e));
+            }
+            s.commit_plan(id).map(Ok)
+        }) {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => {
+                return fail(
+                    chain(&e),
+                    "shut that pod down first (offrig_shutdown, offrig down from the CLI, or the app); nothing was spent",
+                );
+            }
             Err(e) => {
                 return fail(
                     chain(&e),
@@ -1239,6 +1263,7 @@ impl Sidecar {
             _ => "read the error; a pod rented by this launch was terminated; plan again",
         };
         ok(json!({
+            "project": self.project.display().to_string(),
             "job_id": job.id,
             "plan_id": job.plan_id,
             "state": job.state,
@@ -1293,7 +1318,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_exec",
-        description = "Run work on a launched job pod (profile job: a PyTorch image with sshd and no model server). action=start runs a bash command detached in /workspace/job, so it outlives this side-car; action=status returns running/exited with its exit code and the log tail; action=stop kills it. Starting a name that is still running does nothing. Spends nothing beyond the pod already billing.",
+        description = "Run work on a launched job pod (profile job: a PyTorch image with sshd and no model server). action=start runs a bash command detached in /workspace/job, so it outlives this side-car; action=status returns running/exited with its exit code and the log tail; action=stop kills it. Starting a name that is still running does nothing. Takes an optional plan_id: with more than one open job plan it is required, and without it the call is refused and the open plans are listed; with it, only that plan's own pod is used. The reply states the project, lane and plan_id acted on. Spends nothing beyond the pod already billing.",
         annotations(
             title = "Run a command on the job pod",
             read_only_hint = false,
@@ -1312,6 +1337,7 @@ impl Sidecar {
                 &a.name,
                 a.command.as_deref(),
                 a.tail.unwrap_or(40).min(400),
+                a.plan_id,
             )
         })
         .await;
@@ -1329,7 +1355,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_put",
-        description = "Copy a local file or directory to the launched job pod (scp). Relative pod paths are under /workspace/job; parent directories are created.",
+        description = "Copy a local file or directory to the launched job pod (scp). Relative pod paths are under /workspace/job; parent directories are created. Takes an optional plan_id: required with more than one open job plan (otherwise refused, listing them); only that plan's own pod is used. The reply states the project, lane and plan_id acted on.",
         annotations(
             title = "Copy files to the job pod",
             read_only_hint = false,
@@ -1344,7 +1370,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_get",
-        description = "Copy a file or directory from the launched job pod here (scp). Do this before offrig_shutdown: the pod's disk is deleted with it.",
+        description = "Copy a file or directory from the launched job pod here (scp). Do this before offrig_shutdown: the pod's disk is deleted with it. Takes an optional plan_id: required with more than one open job plan (otherwise refused, listing them); only that plan's own pod is used. The reply states the project, lane and plan_id acted on.",
         annotations(
             title = "Copy files from the job pod",
             read_only_hint = false,

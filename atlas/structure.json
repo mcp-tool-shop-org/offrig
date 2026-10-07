@@ -2226,97 +2226,102 @@
               "line": 63
             },
             {
+              "in": "lane_guard",
+              "kind": "err",
+              "line": 167
+            },
+            {
               "in": "plan_check",
               "kind": "err",
-              "line": 156
+              "line": 188
             },
             {
               "in": "create_when_free",
               "kind": "err",
-              "line": 235
+              "line": 267
             },
             {
               "in": "create_when_free",
               "kind": "match-err",
-              "line": 243
+              "line": 275
             },
             {
               "in": "create_when_free",
               "kind": "match-err",
-              "line": 244
+              "line": 276
             },
             {
               "in": "create_when_free",
               "kind": "err",
-              "line": 244
+              "line": 276
             },
             {
               "in": "create_when_free",
-              "kind": "err",
-              "line": 249
-            },
-            {
-              "in": "create_when_free",
-              "kind": "err",
-              "line": 263
-            },
-            {
-              "in": "wait_ready",
               "kind": "err",
               "line": 281
             },
             {
+              "in": "create_when_free",
+              "kind": "err",
+              "line": 295
+            },
+            {
+              "in": "wait_ready",
+              "kind": "err",
+              "line": 313
+            },
+            {
               "in": "open_tunnel",
               "kind": "err",
-              "line": 322
+              "line": 354
             },
             {
               "in": "open_tunnel",
               "kind": "match-err",
-              "line": 346
+              "line": 378
             },
             {
               "in": "open_tunnel",
               "kind": "err",
-              "line": 347
+              "line": 379
             },
             {
               "in": "open_tunnel",
               "kind": "match-err",
-              "line": 351
+              "line": 383
             },
             {
               "in": "open_tunnel",
               "kind": "err",
-              "line": 353
+              "line": 385
             },
             {
               "in": "ensure_models",
               "kind": "err",
-              "line": 404
+              "line": 436
             },
             {
               "in": "ensure_models",
               "kind": "err",
-              "line": 407
+              "line": 439
             },
             {
               "in": "wait_engine",
               "kind": "err",
-              "line": 449
+              "line": 481
             },
             {
               "in": "wait_engine",
               "kind": "err",
-              "line": 467
+              "line": 499
             },
             {
               "in": "configure_zed",
               "kind": "err",
-              "line": 519
+              "line": 551
             }
           ],
-          "hash": "a45a4cf4ab024938430047e3f84768cd4e98a560ed00aa1f262196364dbffa5e",
+          "hash": "0fada01b73c273aa74807b230de257522cf6cc37a7ed239a0197c82697f99d5c",
           "importsFiles": [
             "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/error.rs",
@@ -3027,7 +3032,7 @@
       "testRunners": [
         "cargo test"
       ],
-      "testedBy": 23,
+      "testedBy": 24,
       "unresolvedSites": 0
     },
     {
@@ -3051,220 +3056,240 @@
             {
               "in": "copy",
               "kind": "match-err",
-              "line": 367
+              "line": 376
             },
             {
               "in": "copy",
               "kind": "match-err",
-              "line": 368
+              "line": 377
             },
             {
               "in": "with_store",
               "kind": "err",
-              "line": 390
+              "line": 399
             },
             {
               "in": "offrig_status",
               "kind": "match-err",
-              "line": 448
+              "line": 460
             },
             {
               "in": "offrig_status",
               "kind": "match-err",
-              "line": 457
+              "line": 469
             },
             {
               "in": "offrig_status",
               "kind": "match-err",
-              "line": 458
+              "line": 470
             },
             {
               "in": "offrig_offers",
               "kind": "match-err",
-              "line": 561
+              "line": 573
             },
             {
               "in": "offrig_offers",
               "kind": "match-err",
-              "line": 562
+              "line": 574
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 593
+              "line": 605
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 619
+              "line": 631
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 625
+              "line": 637
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 654
+              "line": 666
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 664
+              "line": 676
             },
             {
               "in": "offrig_plan",
               "kind": "match-err",
-              "line": 673
+              "line": 685
             },
             {
               "in": "offrig_memory_search",
               "kind": "match-err",
-              "line": 709
+              "line": 721
             },
             {
               "in": "offrig_memory_search",
               "kind": "match-err",
-              "line": 730
+              "line": 742
             },
             {
               "in": "offrig_memory_record",
               "kind": "match-err",
-              "line": 748
+              "line": 760
             },
             {
               "in": "offrig_memory_record",
               "kind": "match-err",
-              "line": 770
+              "line": 782
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 793
+              "line": 805
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 801
+              "line": 813
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 817
+              "line": 829
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 825
+              "line": 837
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 863
+              "line": 875
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 882
+              "line": 894
             },
             {
               "in": "offrig_handoffs",
               "kind": "match-err",
-              "line": 966
+              "line": 978
             },
             {
               "in": "offrig_launch",
               "kind": "match-err",
-              "line": 995
+              "line": 1007
             },
             {
               "in": "offrig_launch",
               "kind": "match-err",
-              "line": 1034
+              "line": 1046
             },
             {
               "in": "offrig_launch",
               "kind": "match-err",
-              "line": 1061
+              "line": 1055
             },
             {
               "in": "offrig_launch",
               "kind": "match-err",
-              "line": 1067
+              "line": 1072
             },
             {
               "in": "offrig_launch",
               "kind": "match-err",
-              "line": 1071
+              "line": 1078
             },
             {
               "in": "offrig_launch",
               "kind": "match-err",
-              "line": 1080
+              "line": 1083
+            },
+            {
+              "in": "offrig_launch",
+              "kind": "err",
+              "line": 1084
+            },
+            {
+              "in": "offrig_launch",
+              "kind": "match-err",
+              "line": 1089
+            },
+            {
+              "in": "offrig_launch",
+              "kind": "match-err",
+              "line": 1095
+            },
+            {
+              "in": "offrig_launch",
+              "kind": "match-err",
+              "line": 1104
             },
             {
               "in": "offrig_run",
               "kind": "match-err",
-              "line": 1140
+              "line": 1164
             },
             {
               "in": "offrig_run",
               "kind": "match-err",
-              "line": 1173
+              "line": 1197
             },
             {
               "in": "offrig_run",
               "kind": "match-err",
-              "line": 1175
+              "line": 1199
             },
             {
               "in": "offrig_job",
               "kind": "match-err",
-              "line": 1214
+              "line": 1238
             },
             {
               "in": "offrig_ask",
               "kind": "match-err",
-              "line": 1286
+              "line": 1311
             },
             {
               "in": "offrig_ask",
               "kind": "match-err",
-              "line": 1290
+              "line": 1315
             },
             {
               "in": "offrig_exec",
               "kind": "match-err",
-              "line": 1325
+              "line": 1351
             },
             {
               "in": "offrig_exec",
               "kind": "match-err",
-              "line": 1326
+              "line": 1352
             },
             {
               "in": "offrig_shutdown",
               "kind": "match-err",
-              "line": 1388
+              "line": 1414
             },
             {
               "in": "offrig_shutdown",
               "kind": "match-err",
-              "line": 1392
+              "line": 1418
             },
             {
               "in": "run_watchdog",
               "kind": "match-err",
-              "line": 1464
+              "line": 1490
             },
             {
               "in": "run_watchdog",
               "kind": "match-err",
-              "line": 1480
+              "line": 1506
             }
           ],
-          "hash": "847532efecae26e950fd010bfa74f42037c79ff98488a5202b7a945758c7bf6c",
+          "hash": "69f6d29eb854e97eb1c8feaa6726fb7c48e935f85783b42f233dd820f83a6f83",
           "importsFiles": [
             "crates/offrig-core/src/checks.rs",
             "crates/offrig-core/src/config.rs",
@@ -3316,7 +3341,7 @@
             {
               "calls": [
                 {
-                  "line": 335,
+                  "line": 343,
                   "name": "date_utc",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -3331,14 +3356,14 @@
             {
               "calls": [
                 {
-                  "line": 1445,
+                  "line": 1471,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
                   }
                 },
                 {
-                  "line": 335,
+                  "line": 343,
                   "name": "date_utc",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -3354,7 +3379,7 @@
             {
               "calls": [
                 {
-                  "line": 1451,
+                  "line": 1477,
                   "name": "open",
                   "receiver": "Store",
                   "target": {
@@ -3362,7 +3387,7 @@
                   }
                 },
                 {
-                  "line": 1445,
+                  "line": 1471,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -3370,7 +3395,7 @@
                   "via": "wlog"
                 },
                 {
-                  "line": 335,
+                  "line": 343,
                   "name": "date_utc",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -3378,7 +3403,7 @@
                   "via": "when"
                 },
                 {
-                  "line": 1462,
+                  "line": 1488,
                   "name": "from_env",
                   "receiver": "RunPod",
                   "target": {
@@ -3386,21 +3411,21 @@
                   }
                 },
                 {
-                  "line": 1468,
+                  "line": 1494,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
                   }
                 },
                 {
-                  "line": 1473,
+                  "line": 1499,
                   "name": "step",
                   "target": {
                     "file": "crates/offrig-core/src/watchdog.rs"
                   }
                 },
                 {
-                  "line": 1483,
+                  "line": 1509,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -3416,7 +3441,7 @@
               "calls": [
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 1451,
+                  "line": 1477,
                   "name": "open",
                   "receiver": "Store",
                   "target": {
@@ -3426,7 +3451,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 1445,
+                  "line": 1471,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -3435,7 +3460,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 335,
+                  "line": 343,
                   "name": "date_utc",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -3444,7 +3469,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 1462,
+                  "line": 1488,
                   "name": "from_env",
                   "receiver": "RunPod",
                   "target": {
@@ -3454,7 +3479,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 1468,
+                  "line": 1494,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -3472,7 +3497,7 @@
                       }
                     }
                   ],
-                  "line": 1473,
+                  "line": 1499,
                   "name": "step",
                   "target": {
                     "file": "crates/offrig-core/src/watchdog.rs"
@@ -3481,7 +3506,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 1483,
+                  "line": 1509,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -3489,7 +3514,7 @@
                   "via": "run_watchdog"
                 },
                 {
-                  "line": 1497,
+                  "line": 1523,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -3497,7 +3522,7 @@
                   }
                 },
                 {
-                  "line": 1498,
+                  "line": 1524,
                   "name": "open_default",
                   "receiver": "Registry",
                   "target": {
@@ -3506,7 +3531,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = flag_plan(\"--runner\")",
-                  "line": 1501,
+                  "line": 1527,
                   "name": "new",
                   "receiver": "LaneCtx",
                   "target": {
@@ -3614,14 +3639,14 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 1503,
+                  "line": 1529,
                   "name": "run",
                   "target": {
                     "file": "crates/offrig-mcp/src/runner.rs"
                   }
                 },
                 {
-                  "line": 1506,
+                  "line": 1532,
                   "name": "new",
                   "receiver": "LaneCtx",
                   "target": {
@@ -3640,8 +3665,11 @@
           "exports": [
             "ask",
             "ensure_owned",
+            "ensure_plan_pod",
             "job_copy",
             "job_exec",
+            "lane_busy",
+            "resolve_job_target",
             "run_launch",
             "shutdown"
           ],
@@ -3689,22 +3717,17 @@
             {
               "in": "ask",
               "kind": "err",
-              "line": 311
+              "line": 312
             },
             {
               "in": "ask",
               "kind": "err",
-              "line": 319
+              "line": 320
             },
             {
               "in": "shutdown",
               "kind": "err",
-              "line": 401
-            },
-            {
-              "in": "shutdown",
-              "kind": "match-err",
-              "line": 433
+              "line": 402
             },
             {
               "in": "shutdown",
@@ -3713,16 +3736,61 @@
             },
             {
               "in": "shutdown",
+              "kind": "match-err",
+              "line": 435
+            },
+            {
+              "in": "shutdown",
               "kind": "err",
-              "line": 434
+              "line": 435
+            },
+            {
+              "in": "ensure_plan_pod",
+              "kind": "err",
+              "line": 481
+            },
+            {
+              "in": "resolve_job_target",
+              "kind": "err",
+              "line": 503
+            },
+            {
+              "in": "resolve_job_target",
+              "kind": "err",
+              "line": 509
+            },
+            {
+              "in": "resolve_job_target",
+              "kind": "err",
+              "line": 515
+            },
+            {
+              "in": "resolve_job_target",
+              "kind": "err",
+              "line": 529
+            },
+            {
+              "in": "resolve_job_target",
+              "kind": "err",
+              "line": 538
+            },
+            {
+              "in": "lane_busy",
+              "kind": "err",
+              "line": 601
+            },
+            {
+              "in": "lane_busy",
+              "kind": "err",
+              "line": 610
             },
             {
               "in": "job_exec",
               "kind": "err",
-              "line": 517
+              "line": 659
             }
           ],
-          "hash": "b451f1096559bc097b1f346f4c3f4dd64e4947e7f9da8b8c7ba88480afcde18c",
+          "hash": "0d254f854512fb757f967a8cbef4acc453ebb966aac1d74550dcb36f297754d5",
           "importOrder": [
             "crates/offrig-core/src/config.rs",
             "crates/offrig-core/src/cost.rs",
@@ -4029,6 +4097,29 @@
           "path": "crates/offrig-mcp/tests/common/mod.rs"
         },
         {
+          "hash": "5b75f6c05788ffa09448bd70552f9299f4ea464433b82ad97fcd28293d3bf37d",
+          "importOrder": [
+            "crates/offrig-mcp/tests/common/mod.rs",
+            "crates/offrig-core/src/config.rs",
+            "crates/offrig-core/src/lanes.rs",
+            "crates/offrig-core/src/store.rs"
+          ],
+          "importsFiles": [
+            "crates/offrig-core/src/config.rs",
+            "crates/offrig-core/src/lanes.rs",
+            "crates/offrig-core/src/store.rs",
+            "crates/offrig-mcp/tests/common/mod.rs"
+          ],
+          "path": "crates/offrig-mcp/tests/oneplan.rs",
+          "spawns": [
+            "crates/offrig-mcp/src/main.rs"
+          ],
+          "spawnsInstalled": [
+            "crates/offrig-mcp/src/main.rs"
+          ],
+          "testsInside": true
+        },
+        {
           "hash": "ccd4c94e72ab9bd2ddd2e39451a64f4c506b73d52c9e8825e96995f9922224d5",
           "importOrder": [
             "crates/offrig-mcp/tests/common/mod.rs",
@@ -4110,7 +4201,7 @@
       "testRunners": [
         "cargo test"
       ],
-      "testedBy": 4,
+      "testedBy": 5,
       "testedInside": true,
       "unresolvedSites": 0
     },
@@ -4123,7 +4214,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "15449aed1c8bb95214f63d5918d8fecdef689d874b307ddf5ac74692abe1aca8",
+          "hash": "745d872895845f4299f7e89a72cff5600eee1ad669a6e828a6e0e34a287ffb61",
           "path": ".claude/CLAUDE.md"
         },
         {
@@ -4139,7 +4230,7 @@
           "path": ".gitignore"
         },
         {
-          "hash": "975e051da34f8b0285204e84f4dd2c6ddc638c23165d7b0e38d242b710de81f3",
+          "hash": "63009e692a40840430d45c615f0c41fdfdeefd6a835b24a6b315f42a040ad55b",
           "path": "CHANGELOG.md"
         },
         {
@@ -4155,7 +4246,7 @@
           "path": "LICENSE"
         },
         {
-          "hash": "4bef8e0bf126dd6020817add1c3d0f7ee3c279675aa48ceede84b6da06f1c7e1",
+          "hash": "b6e9691d67b1c815fc71fc65d831ff80f22de0071fbfa8e3876cb9511bc45a6f",
           "path": "README.md"
         },
         {
@@ -4290,7 +4381,7 @@
         {
           "boundary": "offrig-mcp",
           "depth": 0,
-          "files": 7
+          "files": 8
         }
       ],
       "readers": [],
@@ -4480,6 +4571,13 @@
         {
           "job": "rust",
           "matched": true,
+          "path": "crates/offrig-mcp/tests/oneplan.rs",
+          "runKind": "executes",
+          "via": "cargo clippy"
+        },
+        {
+          "job": "rust",
+          "matched": true,
           "path": "crates/offrig-mcp/tests/phase2.rs",
           "runKind": "executes",
           "via": "cargo clippy"
@@ -4499,7 +4597,7 @@
           "via": "cargo clippy"
         }
       ],
-      "runsCount": 29,
+      "runsCount": 30,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -4514,7 +4612,7 @@
       "stages": [],
       "tests": [
         {
-          "files": 25,
+          "files": 26,
           "job": "rust",
           "runner": "cargo test",
           "step": "Test"
@@ -4727,8 +4825,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "207a1048acf5394cd50b1535bb5a00c72d9f8f17",
-    "tracked": 61
+    "commit": "23ee566ea4510fdf4ce1c359f294e0a2cb142f78",
+    "tracked": 62
   },
   "landings": [
     {
@@ -4900,6 +4998,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 26,
+  "testFiles": 27,
   "unassigned": []
 }

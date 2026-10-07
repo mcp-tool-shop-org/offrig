@@ -117,20 +117,29 @@ so a session survives compaction or a restart without re-explaining anything.
 
 | Tool | What it does |
 |---|---|
-| `offrig_status` | Budget, RunPod balance and runway, offrig's pods, the handoff queue with stale work flagged |
+| `offrig_status` | The project, budget, RunPod balance and runway, offrig's pods, each open plan with its `plan_id`, lane and pod name, the handoff queue with stale work flagged |
 | `offrig_offers` | Live GPU offers for a GPU count |
 | `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
 | `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check; optional deterministic checks), lists them, previews role blocks, shows a handoff's best output (also written to `.offrig/out/`), records outcomes (complete, invalid, violation, fail, retry with feedback) |
-| `offrig_launch` | **Spends.** Takes only a `plan_id`: commits the worst case, waits for GPUs renting nothing, boots the pod, opens the tunnel, pulls the models, starts the watchdog. Idempotent per plan |
+| `offrig_launch` | **Spends.** Takes only a `plan_id`: commits the worst case, waits for GPUs renting nothing, boots the pod, opens the tunnel, pulls the models, starts the watchdog. Idempotent per plan. Refused while the lane already has a live plan or pod: `lane <tag> has a live pod <name> (plan <id>); shut it down first` |
 | `offrig_job` | Launch progress, watchdog liveness, minutes left, spend so far |
 | `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
 | `offrig_run` | Starts a detached runner that keeps every model slot busy: drafts each ready handoff, revises at most twice against failed checks, feeds results to dependent handoffs, then shuts the pod down when the queue is dry (unless `keep_pod`). Work that code cannot check waits in review |
-| `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job` |
-| `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`), or kills it (`stop`) |
-| `offrig_get` | Copies a file or directory back from a job pod; do it before the shutdown, which deletes the pod's disk |
+| `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job`. Optional `plan_id` (see below) |
+| `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`), or kills it (`stop`). Optional `plan_id` (see below) |
+| `offrig_get` | Copies a file or directory back from a job pod; do it before the shutdown, which deletes the pod's disk. Optional `plan_id` (see below) |
 | `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason |
+
+**Which job plan a job tool acts on.** `offrig_put`, `offrig_exec` and `offrig_get` take an
+optional `plan_id`. With exactly one open job plan and no `plan_id` they use it, as before.
+With more than one open job plan and no `plan_id` they refuse and list the open plans (id,
+profile, pod name): they never guess. With a `plan_id` they act only on that plan's pod,
+and only after checking the pod's name is the one that plan owns (a lane's other pod is
+refused, not just another lane's). Every job-tool reply, and `offrig_job`, states the
+`project` and `plan_id` it acted on (job-tool replies also the `lane`); `offrig_status`
+states the `project` and lists every open plan with its `plan_id`, lane and pod name.
 
 Roles come from Role OS (dossiers and starter-pack cards) plus four game roles shipped
 here in Role OS's formats: game-designer, systems-designer, narrative-designer,
@@ -172,11 +181,20 @@ its launch, runner, watchdog and shutdown all use that lane, not the global conf
 
 A side-car only ever matches, lists or stops pods named for its own lane. Another
 project's lane, the plain lane's `offrig-<profile>` pods and any other pod on the account
-are left alone: the launch check for "a pod for this profile is already running" asks only
+are left alone: the launch check for a live pod asks only
 its own lane, shutdown refuses a pod whose name is not the plan's lane's, and the tunnel's
 orphan check kills a stale `ssh` only when its forward and its alias are the lane's own.
 Plans made before lanes existed have no lane recorded and keep running on the plain lane,
 so a pod launched under the old scheme is shut down by the same plan that started it.
+
+**One lane, one live pod.** A lane has one SSH alias and one tunnel port, so it serves one
+pod at a time: a second pod in the lane (`offrig-<tag>-job` next to `offrig-<tag>-jam`)
+would re-point the alias at itself and send the first plan's `offrig_put`, `offrig_exec`
+and `offrig_get` to the wrong machine. `offrig_launch` therefore refuses while the lane has
+an open plan or any live pod it owns, with `lane <tag> has a live pod <name> (plan <id>);
+shut it down first`, before anything is committed or rented. The plain lane's `offrig up`
+and the app refuse the same way for a pod of another profile (the same profile's pod is
+still reused). Shut the first plan down, then launch the next.
 
 ## Tiers
 
