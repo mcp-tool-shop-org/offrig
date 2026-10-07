@@ -48,6 +48,18 @@ pub struct ZedOutcome {
 
 /// Launch-time limits. Pulling the image and installing sshd dominates.
 pub const POD_READY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// How long to wait for the pod's address. Tests shorten it (debug builds only).
+fn pod_ready_timeout() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("OFFRIG_TEST_POD_READY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    POD_READY_TIMEOUT
+}
 pub const SSH_READY_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 pub const OLLAMA_READY_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// A recipe engine downloads its weights from Hugging Face, then loads them: about
@@ -258,7 +270,9 @@ impl Session {
             pod.cost_per_hr,
             pod.gpu_type().unwrap_or("a matching GPU")
         )));
+        // The pod bills from here: a timeout waiting for it is "rented, not ready".
         self.wait_ready(&pod.id, on)
+            .map_err(|e| e.after_rental(&pod.id))
     }
 
     /// Whether any of the body's GPU types is free at its count. `None` when the
@@ -336,7 +350,8 @@ impl Session {
     /// Wait for the SSH endpoint, write the alias, and wait for sshd to answer.
     pub fn wait_ready(&self, pod_id: &str, on: &mut dyn FnMut(Event)) -> Result<Pod> {
         let started = Instant::now();
-        let deadline = started + POD_READY_TIMEOUT;
+        let limit = pod_ready_timeout();
+        let deadline = started + limit;
         let mut next_note = started;
         let pod = loop {
             let pod = self.rp.get_pod(pod_id)?;
@@ -355,7 +370,7 @@ impl Session {
                 )));
                 next_note = Instant::now() + Duration::from_secs(30);
             }
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(Duration::from_secs(5).min(limit));
         };
         on(Event::Pod(Box::new(pod.clone())));
         self.write_ssh(&pod)?;

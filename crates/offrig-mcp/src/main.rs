@@ -60,7 +60,7 @@ fn ok(mut v: Value) -> CallToolResult {
 fn retryable_code(code: &str) -> bool {
     matches!(
         code,
-        "no_capacity" | "timeout" | "network" | "ssh" | "model_server"
+        "no_capacity" | "pod_not_ready" | "timeout" | "network" | "ssh" | "model_server"
     )
 }
 
@@ -410,6 +410,53 @@ fn when(unix: i64) -> String {
 }
 
 impl Sidecar {
+    /// The answer to an `offrig_job` call that named no job. A `job_id` is not a
+    /// `plan_id` (the two only match by luck), so say which plan and job the number
+    /// could have been, and what to call instead (issue #25).
+    fn no_such_job(&self, a: &JobArgs) -> CallToolResult {
+        let (msg, next) = match (a.job_id, a.plan_id) {
+            (Some(j), _) => {
+                let plan = self
+                    .with_store(|s| Ok((s.plan(j)?, s.job_for_plan(j, "launch")?)))
+                    .ok();
+                match plan {
+                    Some((Some(p), Some(job))) => (
+                        format!(
+                            "no such job {j}: job_id is not plan_id. {j} is a plan; its launch is job {}",
+                            job.id
+                        ),
+                        format!(
+                            "call offrig_job {{\"plan_id\": {}}} (or {{\"job_id\": {}}})",
+                            p.id, job.id
+                        ),
+                    ),
+                    Some((Some(p), None)) => (
+                        format!(
+                            "no such job {j}: job_id is not plan_id. {j} is a plan, and it has not been launched"
+                        ),
+                        format!(
+                            "offrig_launch {{\"plan_id\": {}}}, then follow it with offrig_job",
+                            p.id
+                        ),
+                    ),
+                    _ => (
+                        format!("no such job {j}"),
+                        "pass the job_id offrig_launch returned, or call offrig_job {\"plan_id\": <the plan's id>}".into(),
+                    ),
+                }
+            }
+            (None, Some(p)) => (
+                format!("no launch job for plan {p}"),
+                "offrig_launch it first; a launch's job_id is not the plan_id".into(),
+            ),
+            (None, None) => (
+                "no such job: pass a job_id or a plan_id".into(),
+                "pass the job_id offrig_launch returned, or call offrig_job {\"plan_id\": <the plan's id>}".into(),
+            ),
+        };
+        fail("not_found", msg, next)
+    }
+
     /// Opening touches nothing on disk. The database is created on first use, so a
     /// side-car registered for every project leaves no `.offrig/` behind in folders
     /// where it was only started (a health check, a session that never called it).
@@ -1115,7 +1162,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_launch",
-        description = "SPENDS MONEY. Rent the GPUs for a plan from offrig_plan: commits the plan's worst case against the budget, starts a background job that waits for the GPUs (renting nothing while it waits), boots the pod, opens the tunnel and pulls the models, and starts a watchdog process that terminates the pod at the plan's deadline even if this session ends. Takes only plan_id. Returns job_id for offrig_job. Calling it again for the same plan returns the same job, never a second pod.",
+        description = "SPENDS MONEY. Rent the GPUs for a plan from offrig_plan: commits the plan's worst case against the budget, starts a background job that waits for the GPUs (renting nothing while it waits), boots the pod, opens the tunnel and pulls the models, and starts a watchdog process that terminates the pod at the plan's deadline even if this session ends. Takes only plan_id. Returns job_id for offrig_job (the launch's own id: not the plan_id). Calling it again for the same plan returns the same job, never a second pod.",
         annotations(
             title = "Launch a plan (spends money)",
             read_only_hint = false,
@@ -1154,7 +1201,10 @@ impl Sidecar {
                 "plan_id": id,
                 "state": job.state,
                 "already_launched": true,
-                "next_action": "follow it with offrig_job",
+                "next_action": format!(
+                    "follow it with offrig_job {{\"job_id\": {}}} or {{\"plan_id\": {id}}}; job_id is not plan_id",
+                    job.id
+                ),
             }));
         }
         if plan.state == "committed" {
@@ -1272,7 +1322,9 @@ impl Sidecar {
             "capacity_wait_minutes": wait_secs.map(|s| s / 60),
             "watchdog": match &watchdog { Ok(()) => "started".to_string(), Err(e) => format!("FAILED to start: {e}; shut down by the deadline yourself") },
             "budget": budget.as_ref().map(budget_json),
-            "next_action": "follow the launch with offrig_job every minute or two; nothing is ready until it says so",
+            "next_action": format!(
+                "follow the launch with offrig_job {{\"job_id\": {job_id}}} or {{\"plan_id\": {id}}} every minute or two (job_id {job_id} is the launch's, not the plan's {id}); nothing is ready until it says so"
+            ),
         }))
     }
 
@@ -1366,7 +1418,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1381,13 +1433,7 @@ impl Sidecar {
         });
         let job = match found {
             Ok(Some(j)) => j,
-            Ok(None) => {
-                return fail(
-                    "not_found",
-                    "no such job",
-                    "pass the job_id from offrig_launch, or a plan_id",
-                );
-            }
+            Ok(None) => return self.no_such_job(&a),
             Err(e) => return fail_err(&e, "check the project database"),
         };
         let now = cost::now_unix();
@@ -1417,7 +1463,11 @@ impl Sidecar {
             .with_store(|s| Ok(watchdog::alive(s, job.plan_id, now, WATCHDOG_STALE_SECS)))
             .unwrap_or(false);
         let rate = job.progress["cost_per_hr"].as_f64();
+        // A stopped launch recorded its own cost when it closed the plan; the
+        // time-based figure below would keep growing after the pod was terminated.
+        let failure = job.progress["failure"].clone();
         let (spent, left) = match &plan {
+            _ if failure["spent"].is_number() => (failure["spent"].as_f64(), None),
             Some(p) if p.pod_id.is_some() => (
                 Some(watchdog::spend(p, rate.unwrap_or(p.max_price_hr), now)),
                 p.deadline().map(|d| (d - now).max(0) / 60),
@@ -1434,6 +1484,12 @@ impl Sidecar {
                 "the pod is ready: work handoffs with offrig_ask, and shut down with offrig_shutdown when done"
             }
             "cancelled" => "the launch was stopped; nothing more is billing for it",
+            _ if failure["pod_rented"] == true => {
+                "the pod was rented and billed before the launch stopped; offrig terminated it and closed the plan at the spend shown (failure.spent). Read failure.code, then plan again"
+            }
+            _ if failure["pod_rented"] == false => {
+                "nothing was rented and nothing was spent. Read failure.code, then plan again"
+            }
             _ => "read the error; a pod rented by this launch was terminated; plan again",
         };
         // What was rented, set against the plan. A mismatch (an old host driver, a GPU
@@ -1464,6 +1520,10 @@ impl Sidecar {
             "rented": job.progress["rented"],
             "warnings": warnings,
             "error": job.error,
+            "code": failure["code"],
+            "retryable": failure["retryable"],
+            "pod_rented": failure["pod_rented"],
+            "failure": failure,
             "plan_state": plan.as_ref().map(|p| p.state.clone()),
             "watchdog_alive": alive,
             "minutes_left": left,

@@ -71,6 +71,11 @@ pub enum Error {
     #[error("no capacity: {0}")]
     NoCapacity(String),
 
+    /// A pod was rented, and bills, but never became ready (issue #25). Unlike
+    /// `NoCapacity`, money was at stake: the pod existed from the moment it was created.
+    #[error("pod {pod_id} was rented and billed but was not ready: {what}")]
+    PodNotReady { pod_id: String, what: String },
+
     #[error("database error while {what}")]
     Db {
         what: String,
@@ -119,6 +124,22 @@ impl Error {
 }
 
 impl Error {
+    /// This error as seen from a launch whose pod `pod_id` already exists: a timeout
+    /// waiting for the pod's address, ssh or readiness becomes `PodNotReady`, so it
+    /// cannot be mistaken for the `no_capacity` of a launch that rented nothing. Any
+    /// other error is returned as it was.
+    pub fn after_rental(self, pod_id: &str) -> Error {
+        match self {
+            Error::Timeout(what) => Error::PodNotReady {
+                pod_id: pod_id.to_string(),
+                what: format!("timed out waiting for {what}"),
+            },
+            other => other,
+        }
+    }
+}
+
+impl Error {
     /// A stable snake_case code for this error, for machine callers (the side-car's
     /// `code` field and the CLI's exit status). Codes never change once released.
     pub fn code(&self) -> &'static str {
@@ -136,6 +157,7 @@ impl Error {
             Error::Ollama(_) | Error::Engine(_) => "model_server",
             Error::Cancelled(_) => "cancelled",
             Error::NoCapacity(_) => "no_capacity",
+            Error::PodNotReady { .. } => "pod_not_ready",
             Error::Db { .. } => "database",
             Error::Refused(_) => "refused",
             Error::Budget(_) => "budget_exceeded",
@@ -153,7 +175,8 @@ impl Error {
             | Error::Timeout(_)
             | Error::Ollama(_)
             | Error::Engine(_)
-            | Error::NoCapacity(_) => true,
+            | Error::NoCapacity(_)
+            | Error::PodNotReady { .. } => true,
             _ => false,
         }
     }
@@ -251,6 +274,14 @@ mod tests {
             ),
             (Error::NoSshEndpoint { name: "n".into() }, "ssh", true),
             (Error::Ssh("x".into()), "ssh", true),
+            (
+                Error::PodNotReady {
+                    pod_id: "p1".into(),
+                    what: "ssh".into(),
+                },
+                "pod_not_ready",
+                true,
+            ),
             (Error::Ollama("x".into()), "model_server", true),
             (Error::Engine("x".into()), "model_server", true),
             (
@@ -282,6 +313,30 @@ mod tests {
             assert_eq!(e.retryable(), retry, "{e}");
             assert!(!e.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn a_timeout_after_the_pod_exists_is_pod_not_ready_and_says_it_was_billed() {
+        let e = Error::Timeout("pod p1 to get an ssh endpoint".into()).after_rental("p1");
+        assert_eq!(e.code(), "pod_not_ready");
+        assert!(e.retryable());
+        let text = e.to_string();
+        assert!(
+            text.contains("pod p1 was rented and billed")
+                && text.contains("timed out waiting for pod p1 to get an ssh endpoint"),
+            "{text}"
+        );
+        // Nothing else changes: only a timeout means "rented but not ready".
+        assert_eq!(
+            Error::Ssh("refused".into()).after_rental("p1").code(),
+            "ssh"
+        );
+        assert_eq!(
+            Error::Cancelled("x".into()).after_rental("p1").code(),
+            "cancelled"
+        );
+        // A launch that rented nothing keeps its own code.
+        assert_eq!(Error::NoCapacity("x".into()).code(), "no_capacity");
     }
 
     #[test]

@@ -90,7 +90,7 @@ const EXIT_RUNTIME: i32 = 2;
 fn code_exit(code: &str) -> i32 {
     match code {
         "runpod_api" | "network" | "ssh" | "timeout" | "io" | "database" | "internal"
-        | "model_server" | "no_capacity" => EXIT_RUNTIME,
+        | "model_server" | "no_capacity" | "pod_not_ready" => EXIT_RUNTIME,
         _ => EXIT_USER,
     }
 }

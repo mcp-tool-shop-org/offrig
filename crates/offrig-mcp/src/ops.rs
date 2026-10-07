@@ -165,15 +165,41 @@ pub fn run_launch(
             } else {
                 "failed"
             };
-            let _ = store.update_job(
-                job_id,
-                state,
-                &json!({ "step": "stopped" }),
-                Some(&chain(&e)),
-            );
+            // Keep what the launch learned (the pod, what was rented, what it cost) and
+            // add why it stopped, so the job says more than a message (issue #25).
+            let mut progress = store
+                .job(job_id)
+                .ok()
+                .flatten()
+                .map(|j| j.progress)
+                .filter(Value::is_object)
+                .unwrap_or_else(|| json!({}));
+            progress["failure"] = failure_json(&e, &progress);
+            progress["step"] = json!("stopped");
+            let _ = store.update_job(job_id, state, &progress, Some(&chain(&e)));
         }
     }
     lock(&shared.cancels).remove(&plan_id);
+}
+
+/// Why a launch stopped, as `offrig_job` shows it: the error's own `code` and
+/// `retryable`, and whether a pod was rented (and so billed) before it stopped, with
+/// what that cost. `progress` is the launch's last progress; a launch that failed
+/// before a pod existed (`no_capacity`) rented and spent nothing.
+pub fn failure_json(e: &Error, progress: &Value) -> Value {
+    let pod_id = progress["pod_id"].as_str();
+    let rented = pod_id.is_some();
+    json!({
+        "code": e.code(),
+        "retryable": e.retryable(),
+        "message": chain(e),
+        "pod_rented": rented,
+        "billed": rented,
+        "pod_id": pod_id,
+        "cost_per_hr": progress["cost_per_hr"],
+        "spent": (progress["spent"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0,
+        "pod_terminated": progress["pod_terminated"],
+    })
 }
 
 /// How often a capacity wait looks again: a minute. Tests shorten it (debug builds only).
@@ -360,6 +386,21 @@ fn launch(
     store.attach_pod(plan_id, &pod.id)?;
     progress.v["pod_id"] = json!(pod.id);
     progress.v["pod_created_at"] = json!(now_unix());
+    // What RunPod assigned is known now, before ssh is up: show it, so a launch that
+    // never gets ready still says what it rented and at what price. The create reply
+    // carries the GPU type; if it did not, ask once. The nvidia-smi CUDA measurement
+    // replaces this when it arrives.
+    let seen = if pod.gpu_type().is_some() {
+        pod.clone()
+    } else {
+        session
+            .rp
+            .get_pod(&pod.id)
+            .ok()
+            .filter(|p| p.gpu_type().is_some())
+            .unwrap_or_else(|| pod.clone())
+    };
+    progress.v["rented"] = progress.rented(&seen);
     // offrig_job derives the step from the pod itself while the pod boots, so a
     // slow host never leaves a stale "waiting for the address" line behind.
     progress.v["phase"] = json!("pod_boot");
@@ -425,6 +466,9 @@ fn launch(
     match ready {
         Ok(v) => Ok(v),
         Err(e) => {
+            // The pod existed and billed: a timeout from here on is `pod_not_ready`,
+            // never the `no_capacity` of a launch that rented nothing.
+            let e = e.after_rental(&pod.id);
             lock(&shared.tunnel).take();
             let rate = pod.cost_per_hr;
             let jt = store.journal(
@@ -441,8 +485,15 @@ fn launch(
                 Err(d) => format!("terminate failed: {}", chain(&d)),
             };
             store.journal_outcome(jt, &outcome)?;
-            if let Ok(Some(p)) = store.plan(plan_id) {
-                store.close_plan(plan_id, watchdog::spend(&p, rate, now_unix()))?;
+            progress.v["pod_terminated"] = json!(outcome);
+            let plan = store.plan(plan_id).ok().flatten();
+            let spent = plan
+                .as_ref()
+                .map_or(0.0, |p| watchdog::spend(p, rate, now_unix()));
+            progress.v["spent"] = json!(spent);
+            progress.push();
+            if plan.is_some() {
+                store.close_plan(plan_id, spent)?;
             }
             Err(e)
         }
@@ -950,6 +1001,34 @@ mod tests {
                 tunnel_port: 11500,
             })
             .expect("lane config")
+    }
+
+    #[test]
+    fn a_failure_says_whether_a_pod_was_rented_and_what_it_cost() {
+        // A pod existed: rented and billed, with what the launch recorded as spent.
+        let progress = json!({"pod_id": "p1", "cost_per_hr": 2.09, "spent": 0.456,
+                              "pod_terminated": "terminated after a failed launch"});
+        let e = Error::Timeout("ssh to offrig-x".into()).after_rental("p1");
+        let f = failure_json(&e, &progress);
+        assert_eq!(f["code"], "pod_not_ready");
+        assert_eq!(f["retryable"], true);
+        assert_eq!(f["pod_rented"], true);
+        assert_eq!(f["billed"], true);
+        assert_eq!(f["pod_id"], "p1");
+        assert_eq!(f["spent"], 0.46);
+        assert!(f["message"].as_str().is_some_and(|m| m.contains("billed")));
+        // No pod: nothing rented, nothing spent, and the error keeps its own code.
+        let none = failure_json(&Error::NoCapacity("full".into()), &json!({"step": "x"}));
+        assert_eq!(none["code"], "no_capacity");
+        assert_eq!(none["pod_rented"], false);
+        assert_eq!(none["billed"], false);
+        assert_eq!(none["spent"], 0.0);
+        assert!(none["pod_id"].is_null());
+        let c = failure_json(&Error::Cancelled("waiting".into()), &json!({}));
+        assert_eq!(
+            (c["code"].as_str(), c["retryable"].as_bool()),
+            (Some("cancelled"), Some(false))
+        );
     }
 
     #[test]
