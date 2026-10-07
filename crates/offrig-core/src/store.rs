@@ -962,6 +962,18 @@ impl Store {
         self.set_setting(&format!("plan_lane:{plan_id}"), tag)
     }
 
+    /// The host CUDA floor a plan was made with (`offrig_plan` writes it from the
+    /// profile). `None` for a plan made without one, and for plans from before this
+    /// existed: the launch then uses the profile's own. Kept in settings for the same
+    /// reason as the lane: the schema stays v3.
+    pub fn plan_min_cuda(&self, plan_id: i64) -> Result<Option<String>> {
+        self.setting(&format!("plan_min_cuda:{plan_id}"))
+    }
+
+    pub fn set_plan_min_cuda(&self, plan_id: i64, version: &str) -> Result<()> {
+        self.set_setting(&format!("plan_min_cuda:{plan_id}"), version)
+    }
+
     // ---- jobs (long work run in the background; state survives restarts)
 
     pub fn create_job(&self, plan_id: i64, kind: &str) -> Result<i64> {
@@ -1742,6 +1754,32 @@ mod tests {
             !is_stale(&p, later + 99_999, 1800),
             "pending work is not in flight"
         );
+    }
+
+    #[test]
+    fn a_plan_remembers_its_cuda_floor_and_its_gpu_list() {
+        let s = store();
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA RTX PRO 6000 Blackwell Server Edition".into()],
+                max_hours: 3.5,
+                max_price_hr: 2.09,
+                note: None,
+            })
+            .expect("plan");
+        assert_eq!(s.plan_min_cuda(p.id).expect("read"), None, "none until set");
+        s.set_plan_min_cuda(p.id, "13.0").expect("set");
+        assert_eq!(
+            s.plan_min_cuda(p.id).expect("read").as_deref(),
+            Some("13.0")
+        );
+        assert_eq!(s.plan_min_cuda(p.id + 1).expect("read"), None, "per plan");
+        let back = s.plan(p.id).expect("read").expect("plan");
+        assert_eq!(back.gpu_types, p.gpu_types);
+        assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");
     }
 
     #[test]

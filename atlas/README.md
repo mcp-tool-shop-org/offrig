@@ -1,28 +1,28 @@
 # offrig: how it works
 
-Mapped at 2026-10-07 from commit 23ee566 by Atlas 1.24.0.
+Mapped at 2026-10-07 from commit 1c76e70 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-5 parts, mostly Rust (36 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
+5 parts, mostly Rust (38 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
 
-## What changed since 2026-10-07 (207a104)
+## What changed since 2026-10-07 (23ee566)
 
-- ci now also runs crates/offrig-mcp/tests/oneplan.rs.
-- 1 file added and 6 changed content, across 3 parts.
+- ci now also runs crates/offrig-core/src/planning.rs and crates/offrig-mcp/tests/plan_limits.rs.
+- 2 files added and 10 changed content, across 3 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/checks.rs, crates/offrig-core/src/config.rs and 23 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
+1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/checks.rs, crates/offrig-core/src/config.rs and 25 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
 2. **offrig** (a command built from crates/offrig-cli, which nothing ships). Runs crates/offrig-cli/src/main.rs.
 3. **offrig-app** (a command built from crates/offrig-app, which nothing ships). Runs crates/offrig-app/src/main.rs.
 4. **offrig-mcp** (a command built from crates/offrig-mcp, which nothing ships). Runs crates/offrig-mcp/src/main.rs.
 
 ## What happens through ci
 
-1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 20 files in offrig-core, and 5 files in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
+1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 21 files in offrig-core, and 6 files in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
 
 ## Who reads the results
 
@@ -45,8 +45,8 @@ ci writes nothing this map can see.
 
 ## What tends to change together
 
-- **crates/offrig-cli/src/main.rs** and **crates/offrig-core/src/session.rs** changed together in 5 of 8 commits, and the offrig-cli part imports the offrig-core part.
-- **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/session.rs** changed together in 6 of 11 commits, inside the offrig-core part.
+- **crates/offrig-cli/src/main.rs** and **crates/offrig-core/src/session.rs** changed together in 5 of 9 commits, and the offrig-cli part imports the offrig-core part.
+- **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/session.rs** changed together in 6 of 12 commits, inside the offrig-core part.
 - **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/spec.rs** changed together in 5 of 10 commits, inside the offrig-core part.
 
 Confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
