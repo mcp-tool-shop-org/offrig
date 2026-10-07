@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Per-project lanes (issue #2): concurrent side-cars from two projects no longer collide.
+  Each project gets its own SSH alias (`offrig-<tag>`), tunnel port (from `11500`, never
+  `11434`, `11435` or `11436`) and pod names (`offrig-<tag>-<profile>`), recorded in
+  `lanes.toml` in the config directory and allocated under a lock on the project's first
+  plan. A plan records its lane; the launch check, status, shutdown, runner and ssh/tunnel
+  paths use that lane and match only its pods. The tunnel's orphan reclaim kills an `ssh`
+  only when its forward and alias are the lane's own, and is now testable without touching
+  real processes. Shutdown refuses a pod whose name is not the plan's lane's.
+- The plain lane is unchanged: the CLI, the app and Zed keep alias `offrig`, port `11435`
+  and pods `offrig-<profile>`. Plans made before lanes keep running on it.
+- `OFFRIG_CONFIG_DIR` points offrig at another config directory (tests and sandboxes).
+
 ## 0.1.0 (unreleased)
 
 First version, built and tested live on 2026-10-02.

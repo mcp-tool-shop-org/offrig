@@ -63,6 +63,7 @@ fn run(dir: &std::path::Path, plan: i64, model_url: &str, runpod_url: &str, keep
     cmd.args(["--runner", &plan.to_string(), "--project"])
         .arg(dir)
         .env("RUNPOD_API_KEY", "test-key")
+        .env("OFFRIG_CONFIG_DIR", dir.join("cfg"))
         .env("OFFRIG_TEST_RUNPOD_BASE", runpod_url)
         .env("OFFRIG_TEST_OLLAMA_BASE", model_url)
         .env("OFFRIG_TEST_RUNNER_POLL_MS", "100");

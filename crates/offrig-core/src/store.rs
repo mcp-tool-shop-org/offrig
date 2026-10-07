@@ -948,6 +948,20 @@ impl Store {
             .map_err(db("reading a setting"))
     }
 
+    // ---- lanes (which project lane a plan's pod lives in)
+
+    /// The lane a plan recorded (`offrig_plan` or the launch writes it). `None` is the
+    /// plain lane: every plan made before lanes existed. Kept in settings, not a plans
+    /// column, so the schema stays v3 and an older offrig or a watchdog still running
+    /// from one keeps reading this database.
+    pub fn plan_lane(&self, plan_id: i64) -> Result<Option<String>> {
+        self.setting(&format!("plan_lane:{plan_id}"))
+    }
+
+    pub fn set_plan_lane(&self, plan_id: i64, tag: &str) -> Result<()> {
+        self.set_setting(&format!("plan_lane:{plan_id}"), tag)
+    }
+
     // ---- jobs (long work run in the background; state survives restarts)
 
     pub fn create_job(&self, plan_id: i64, kind: &str) -> Result<i64> {

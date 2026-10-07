@@ -11,9 +11,10 @@ use std::time::Duration;
 use offrig_core::config::Config;
 use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
+use offrig_core::lanes::LaneCtx;
 use offrig_core::ollama::Ollama;
 use offrig_core::remote::PullState;
-use offrig_core::runpod::RunPod;
+use offrig_core::runpod::{Pod, RunPod};
 use offrig_core::session::{Event, Session, Wait};
 use offrig_core::store::{State, Store};
 use offrig_core::tunnel::Tunnel;
@@ -95,7 +96,7 @@ impl Drop for StopOnDrop {
 
 /// The launch job. Writes its outcome into the job row; never panics the side-car.
 pub fn run_launch(
-    cfg: Config,
+    ctx: LaneCtx,
     db: PathBuf,
     shared: Arc<Shared>,
     plan_id: i64,
@@ -105,7 +106,7 @@ pub fn run_launch(
     let Ok(store) = Store::open(&db) else {
         return;
     };
-    let result = launch(&cfg, &db, &store, &shared, plan_id, job_id, &cancel);
+    let result = launch(&ctx, &db, &store, &shared, plan_id, job_id, &cancel);
     match result {
         Ok(v) => {
             let _ = store.update_job(job_id, "done", &v, None);
@@ -127,8 +128,23 @@ pub fn run_launch(
     lock(&shared.cancels).remove(&plan_id);
 }
 
+/// A pod this lane did not name is not this lane's to touch: another lane's, the plain
+/// lane's, or another studio job's. Every path that reaches a pod by id checks this
+/// first, so a wrong id can never make a side-car stop or point at someone else's pod.
+pub fn ensure_owned(cfg: &Config, pod: &Pod) -> Result<()> {
+    if cfg.owns_pod(&pod.name) {
+        return Ok(());
+    }
+    Err(Error::Refused(format!(
+        "pod {} ({}) is not in this project's lane ({}); offrig leaves it alone",
+        pod.name,
+        pod.id,
+        cfg.lane_tag.as_deref().unwrap_or("plain")
+    )))
+}
+
 fn launch(
-    cfg: &Config,
+    ctx: &LaneCtx,
     db: &Path,
     store: &Store,
     shared: &Shared,
@@ -139,6 +155,7 @@ fn launch(
     let plan = store
         .plan(plan_id)?
         .ok_or_else(|| Error::Refused(format!("no plan {plan_id}")))?;
+    let cfg = &ctx.cfg_for_plan(store, &plan)?;
     let profile = cfg.profile(&plan.profile)?.clone();
     let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
     let mut progress = Progress {
@@ -213,6 +230,7 @@ fn launch(
                 "pod_id": pod.id,
                 "cost_per_hr": pod.cost_per_hr,
                 "ssh_alias": cfg.ssh_alias,
+                "lane": cfg.lane_tag,
                 "job_dir": spec::JOB_DIR,
                 "next": "offrig_put your files, then offrig_exec a command; offrig_get the results",
             }));
@@ -225,6 +243,7 @@ fn launch(
             "pod_id": pod.id,
             "cost_per_hr": pod.cost_per_hr,
             "tunnel": cfg.tunnel_base_url(),
+            "lane": cfg.lane_tag,
             "models": profile.models.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
         }))
     })();
@@ -251,29 +270,32 @@ fn launch(
     }
 }
 
-/// Reopen the tunnel to the plan's pod when it is missing or dead.
-fn ensure_tunnel(cfg: &Config, store: &Store, shared: &Shared) -> Result<String> {
+/// Reopen the tunnel to the plan's pod when it is missing or dead. Returns the plan's
+/// profile and the config of the lane the plan runs in.
+fn ensure_tunnel(ctx: &LaneCtx, store: &Store, shared: &Shared) -> Result<(String, Config)> {
     let alive = lock(&shared.tunnel).as_mut().is_some_and(Tunnel::is_alive);
     let plan = store
         .open_plans()?
         .into_iter()
         .find(|p| p.pod_id.is_some())
         .ok_or_else(|| Error::Refused("no launched session; launch a plan first".into()))?;
+    let cfg = ctx.cfg_for_plan(store, &plan)?;
     if alive {
-        return Ok(plan.profile);
+        return Ok((plan.profile, cfg));
     }
     let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
     let pod_id = plan.pod_id.clone().unwrap_or_default();
     let pod = session.rp.get_pod(&pod_id)?;
+    ensure_owned(&cfg, &pod)?;
     session.write_ssh(&pod)?;
     let t = session.open_tunnel(cfg.profile(&plan.profile)?, &mut |_| {})?;
     *lock(&shared.tunnel) = Some(t);
-    Ok(plan.profile)
+    Ok((plan.profile, cfg))
 }
 
 /// One role-headed turn for a handoff, context built from the project store.
 pub fn ask(
-    cfg: &Config,
+    ctx: &LaneCtx,
     db: &Path,
     shared: &Shared,
     handoff_id: i64,
@@ -299,7 +321,7 @@ pub fn ask(
                 .into(),
         ));
     }
-    let profile_name = ensure_tunnel(cfg, &store, shared)?;
+    let (profile_name, cfg) = ensure_tunnel(ctx, &store, shared)?;
     let model = match model {
         Some(m) => m,
         None => cfg
@@ -353,7 +375,13 @@ pub fn ask(
 }
 
 /// Terminate the plan's pod and close its books with the spend measured.
-pub fn shutdown(db: &Path, shared: &Shared, plan_id: i64, reason: Option<&str>) -> Result<Value> {
+pub fn shutdown(
+    db: &Path,
+    shared: &Shared,
+    ctx: &LaneCtx,
+    plan_id: i64,
+    reason: Option<&str>,
+) -> Result<Value> {
     let store = Store::open(db)?;
     let plan = store
         .plan(plan_id)?
@@ -361,6 +389,7 @@ pub fn shutdown(db: &Path, shared: &Shared, plan_id: i64, reason: Option<&str>) 
     if plan.state != "committed" {
         return Ok(json!({ "plan_id": plan_id, "already": plan.state, "budget": store.budget()? }));
     }
+    let cfg = ctx.cfg_for_plan(&store, &plan)?;
     let in_flight: Vec<i64> = store
         .handoffs()?
         .into_iter()
@@ -374,6 +403,20 @@ pub fn shutdown(db: &Path, shared: &Shared, plan_id: i64, reason: Option<&str>) 
              (offrig_memory_record kind=checkpoint task_id=<id>) or pass a reason to terminate anyway"
         )));
     }
+    // Look the pod up and check its lane before anything is cancelled, closed or
+    // journaled: a refusal leaves the session exactly as it was.
+    let mut rate = plan.max_price_hr;
+    let rp = match plan.pod_id.as_deref() {
+        Some(_) => Some(RunPod::from_env()?),
+        None => None,
+    };
+    if let (Some(rp), Some(id)) = (&rp, plan.pod_id.as_deref())
+        && let Ok(p) = rp.get_pod(id)
+    {
+        // Never terminate a pod this plan's lane did not name, whatever id the plan holds.
+        ensure_owned(&cfg, &p)?;
+        rate = p.cost_per_hr;
+    }
     if let Some(c) = lock(&shared.cancels).get(&plan_id) {
         c.store(true, Ordering::SeqCst);
     }
@@ -383,21 +426,14 @@ pub fn shutdown(db: &Path, shared: &Shared, plan_id: i64, reason: Option<&str>) 
         Some(plan_id),
         &json!({ "pod": plan.pod_id, "reason": reason.unwrap_or("shutdown"), "in_flight": in_flight }),
     )?;
-    let mut rate = plan.max_price_hr;
-    let outcome = match plan.pod_id.as_deref() {
-        Some(id) => {
-            let rp = RunPod::from_env()?;
-            if let Ok(p) = rp.get_pod(id) {
-                rate = p.cost_per_hr;
-            }
-            match rp.delete_pod(id) {
-                Ok(()) => format!("terminated {id}"),
-                // Already gone is the state we want.
-                Err(Error::Api { status: 404, .. }) => format!("{id} was already gone"),
-                Err(e) => return Err(e),
-            }
-        }
-        None => "no pod was rented".to_string(),
+    let outcome = match (&rp, plan.pod_id.as_deref()) {
+        (Some(rp), Some(id)) => match rp.delete_pod(id) {
+            Ok(()) => format!("terminated {id}"),
+            // Already gone is the state we want.
+            Err(Error::Api { status: 404, .. }) => format!("{id} was already gone"),
+            Err(e) => return Err(e),
+        },
+        _ => "no pod was rented".to_string(),
     };
     store.journal_outcome(j, &outcome)?;
     let spent = if plan.pod_id.is_some() {
@@ -416,28 +452,30 @@ pub fn shutdown(db: &Path, shared: &Shared, plan_id: i64, reason: Option<&str>) 
 }
 
 /// The open plan whose pod is a launched job pod, with the ssh alias pointed at it.
-fn job_pod(cfg: &Config, store: &Store) -> Result<(i64, String)> {
+fn job_pod(ctx: &LaneCtx, store: &Store) -> Result<(i64, String)> {
     let plan = store
         .open_plans()?
         .into_iter()
-        .find(|p| p.pod_id.is_some() && cfg.profile(&p.profile).is_ok_and(|x| x.is_job()))
+        .find(|p| p.pod_id.is_some() && ctx.base.profile(&p.profile).is_ok_and(|x| x.is_job()))
         .ok_or_else(|| {
             Error::Refused(
                 "no launched job pod; plan the job profile (offrig_plan profile=job) and launch it"
                     .into(),
             )
         })?;
+    let cfg = ctx.cfg_for_plan(store, &plan)?;
     let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
     let pod = session
         .rp
         .get_pod(plan.pod_id.as_deref().unwrap_or_default())?;
+    ensure_owned(&cfg, &pod)?;
     session.write_ssh(&pod)?;
     Ok((plan.id, cfg.ssh_alias.clone()))
 }
 
 /// offrig_exec: start, follow or stop a command on the job pod.
 pub fn job_exec(
-    cfg: &Config,
+    ctx: &LaneCtx,
     db: &Path,
     action: &str,
     name: &str,
@@ -445,7 +483,7 @@ pub fn job_exec(
     tail_lines: u32,
 ) -> Result<Value> {
     let store = Store::open(db)?;
-    let (plan_id, alias) = job_pod(cfg, &store)?;
+    let (plan_id, alias) = job_pod(ctx, &store)?;
     match action {
         "start" => {
             let command =
@@ -484,14 +522,14 @@ pub fn job_exec(
 
 /// offrig_put / offrig_get: copy a file or directory to or from the job pod.
 pub fn job_copy(
-    cfg: &Config,
+    ctx: &LaneCtx,
     db: &Path,
     upload: bool,
     local: &Path,
     remote: &str,
 ) -> Result<Value> {
     let store = Store::open(db)?;
-    let (plan_id, alias) = job_pod(cfg, &store)?;
+    let (plan_id, alias) = job_pod(ctx, &store)?;
     let pod_path = if upload {
         offrig_core::job::put(&alias, local, remote)?
     } else {
@@ -503,4 +541,53 @@ pub fn job_copy(
         "local": local.display().to_string(),
         "pod": pod_path,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use offrig_core::lanes::Lane;
+
+    fn pod(name: &str) -> Pod {
+        serde_json::from_str(&format!(
+            r#"{{"id":"p1","name":"{name}","desiredStatus":"RUNNING","costPerHr":0.25}}"#
+        ))
+        .expect("pod")
+    }
+
+    fn lane_cfg(tag: &str) -> Config {
+        Config::default()
+            .in_lane(&Lane {
+                tag: Some(tag.into()),
+                ssh_alias: format!("offrig-{tag}"),
+                tunnel_port: 11500,
+            })
+            .expect("lane config")
+    }
+
+    #[test]
+    fn a_lane_owns_only_its_own_pods() {
+        let mine = lane_cfg("aspire-si");
+        assert!(ensure_owned(&mine, &pod("offrig-aspire-si-small")).is_ok());
+        assert!(ensure_owned(&mine, &pod("offrig-aspire-si-job")).is_ok());
+        for name in [
+            "offrig-job",
+            "offrig-small",
+            "offrig-ai-jam-sessions-small",
+            "offrig-stage-small",
+            "ai-playtest-personas",
+        ] {
+            let err = ensure_owned(&mine, &pod(name)).expect_err(name);
+            assert!(matches!(err, Error::Refused(_)), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_plain_lane_keeps_its_pods_and_owns_no_lanes() {
+        let plain = Config::default();
+        assert!(ensure_owned(&plain, &pod("offrig-job")).is_ok());
+        assert!(ensure_owned(&plain, &pod("offrig-small")).is_ok());
+        assert!(ensure_owned(&plain, &pod("offrig-aspire-si-small")).is_err());
+        assert!(ensure_owned(&plain, &pod("training-run")).is_err());
+    }
 }

@@ -149,6 +149,35 @@ the launch terminates it instead of leaving it billing.
 
 The design and its evidence are in [docs/sidecar-design.md](docs/sidecar-design.md).
 
+### Lanes: one side-car per project, no collisions
+
+Two projects can run side-cars at once on one RunPod account. Each project gets its own
+**lane**: an SSH alias, a tunnel port and a pod-name tag that no other project shares.
+
+| | Plain lane (the CLI, the app, Zed) | A project's lane |
+|---|---|---|
+| SSH alias | `offrig` | `offrig-<tag>` |
+| Tunnel port | `11435` (runner `11436`) | first free of `11500`, `11502`, ... (runner: the port above) |
+| Pod name | `offrig-<profile>` | `offrig-<tag>-<profile>` |
+| SSH block | `# >>> offrig:offrig >>>` | `# >>> offrig:offrig-<tag> >>>` |
+
+`<tag>` comes from the project folder's name (`aspire-si`, `ai-jam-sessions`), with a short
+hash added when two projects share a folder name. A project's lane is allocated the first
+time it plans a session, written to `lanes.toml` in offrig's config directory, and kept:
+the same project gets the same lane after every restart. Allocation takes a lock file and
+writes the registry atomically, so two side-cars starting together never share a tag,
+alias or port. No lane can be `11434` (the local Ollama's port): the range starts at
+`11500`, and a registry edited to say otherwise is refused. A plan records its lane, and
+its launch, runner, watchdog and shutdown all use that lane, not the global config.
+
+A side-car only ever matches, lists or stops pods named for its own lane. Another
+project's lane, the plain lane's `offrig-<profile>` pods and any other pod on the account
+are left alone: the launch check for "a pod for this profile is already running" asks only
+its own lane, shutdown refuses a pod whose name is not the plan's lane's, and the tunnel's
+orphan check kills a stale `ssh` only when its forward and its alias are the lane's own.
+Plans made before lanes existed have no lane recorded and keep running on the plain lane,
+so a pod launched under the old scheme is shut down by the same plan that started it.
+
 ## Tiers
 
 Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defaults:
@@ -239,8 +268,10 @@ offrig stage frontier --remove --yes         deletes the volume (the undo)
 - Auto-stop terminates the pod after 30 minutes with every GPU under 5% (configurable,
   or off).
 - Closing the app with a pod running asks whether to terminate it or keep it running.
-- offrig only touches pods it named (`offrig-<profile>`). Other pods are listed, never
-  changed.
+- offrig only touches pods it named: `offrig-<profile>` for the CLI and the app,
+  `offrig-<tag>-<profile>` for a project's side-car lane (see Lanes). A side-car never
+  touches another lane's pods, the plain lane's, or any other pod; those are listed,
+  never changed.
 - For agent sessions, the cap is enforced before any spend: a plan's worst case (live
   price × max hours) is committed against the human-set budget and refused over it, and
   a launch takes only a plan id, so an agent cannot name its own price.
@@ -255,6 +286,8 @@ offrig stage frontier --remove --yes         deletes the volume (the undo)
 | Zed default model (only if you ask) | same file | `offrig zed-remove` restores the previous default |
 | `OFFRIG_API_KEY` (placeholder; Zed wants a key) | user environment | `setx OFFRIG_API_KEY ""` or remove it in System Properties |
 | SSH alias `offrig` | `~/.ssh/config`, between `# >>> offrig:offrig >>>` markers | delete the marked block |
+| SSH alias `offrig-<tag>`, one per project that launched from a side-car | `~/.ssh/config`, between `# >>> offrig:offrig-<tag> >>>` markers | delete the marked block |
+| Project lanes | `%APPDATA%\offrig\lanes.toml` (project path, tag, alias, tunnel port) | delete the project's entry while no pod runs in its lane, or the whole file |
 | Pod host keys | `~/.ssh/known_hosts_offrig` | delete the file |
 | Settings | `%APPDATA%\offrig\config.toml` | delete the file |
 | Staged weights (only with `offrig stage --yes`) | a RunPod network volume `offrig-<profile>`; bills monthly | `offrig stage <profile> --remove --yes` |
@@ -423,8 +456,10 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 | Write the Zed provider or default model | `offrig zed-remove`, or restore `settings.json.offrig.bak` | Zed as before offrig | the operator |
 | Set `OFFRIG_API_KEY` | `setx OFFRIG_API_KEY ""` or delete it in System Properties | variable gone | the operator |
 | Write the SSH alias | delete the marked block in `~/.ssh/config` | config as before | the operator |
+| Allocate a project lane (the project's first `offrig_plan`) | delete the project's entry from `lanes.toml` once no pod runs in its lane; a new plan allocates again | lane free for reuse; the alias block is separate (row above) | the operator |
+| Write a lane's SSH alias block (a side-car launch) | delete the `# >>> offrig:offrig-<tag> >>>` block in `~/.ssh/config` | config as before; other lanes' blocks untouched | the operator |
 | Pull a model on the pod | `ollama rm <model>` on the pod, or terminate the pod | model gone | the operator |
-| Kill an orphaned offrig tunnel | none needed; only offrig's own `ssh` is ever killed | port free | offrig |
+| Kill an orphaned offrig tunnel | none needed; only an `ssh` with this lane's exact alias and forward is ever killed, never another lane's | port free | offrig |
 | Side-car launch (`offrig_launch`) | `offrig_shutdown`; automatic if setup fails; the watchdog at the deadline; the runner when its queue drains | pod terminated, plan closed with measured spend | the calling agent, with the watchdog as backstop |
 | Stage a volume (`offrig stage --yes`, bills monthly) | `offrig stage <profile> --remove --yes` | volume deleted, profile back to downloading | the human who staged it |
 | Start a job on a job pod (`offrig_exec action=start`) | `offrig_exec action=stop`, or `offrig_shutdown` | job killed with everything it started; its log stays until the pod is gone | the calling agent |
@@ -435,8 +470,8 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 ```text
 crates/offrig-core   library: RunPod client, pod specs and engine recipes, tunnel, remote
                      ops, Zed and SSH edits, guard, cost and idle logic, session workflow,
-                     project store, roles, context assembly, checks, runner decisions,
-                     watchdog, staging
+                     project lanes, project store, roles, context assembly, checks,
+                     runner decisions, watchdog, staging
 crates/offrig-cli    `offrig` command line
 crates/offrig-app    `offrig-app` desktop app (egui)
 crates/offrig-mcp    `offrig-mcp` side-car: MCP server for agents, plus the detached

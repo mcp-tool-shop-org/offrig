@@ -93,8 +93,10 @@ pub fn job_env() -> BTreeMap<String, String> {
     env
 }
 
-pub fn pod_name(profile: &Profile) -> String {
-    format!("offrig-{}", profile.name)
+/// The pod's name in the config's lane: `offrig-<profile>` on the plain lane,
+/// `offrig-<tag>-<profile>` on a project lane (see `lanes`).
+pub fn pod_name(cfg: &Config, profile: &Profile) -> String {
+    cfg.pod_name(profile)
 }
 
 pub fn ollama_env(profile: &Profile) -> BTreeMap<String, String> {
@@ -153,7 +155,7 @@ pub fn engine_env(profile: &Profile, r: &Recipe) -> BTreeMap<String, String> {
     env
 }
 
-pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
+pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
     let on_volume = profile.network_volume_id.is_some();
     let (image, start, env) = match (&profile.job, &profile.recipe) {
         (Some(j), _) => (j.image.clone(), BOOTSTRAP_JOB, job_env()),
@@ -163,7 +165,7 @@ pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
         (None, None) => (OLLAMA_IMAGE.to_string(), BOOTSTRAP, ollama_env(profile)),
     };
     PodCreate {
-        name: pod_name(profile),
+        name: pod_name(cfg, profile),
         image_name: image,
         gpu_type_ids: profile.gpu_type_ids.clone(),
         gpu_type_priority: "custom".into(),
@@ -209,6 +211,27 @@ mod tests {
         assert_eq!(body.network_volume_id, None);
         assert_eq!(body.docker_entrypoint, ["bash", "-c"]);
         assert_eq!(body.name, "offrig-medium");
+    }
+
+    #[test]
+    fn a_lane_pod_is_named_for_its_lane_and_is_as_closed_as_the_plain_one() {
+        let plain = Config::default();
+        let lane = crate::lanes::Lane {
+            tag: Some("aspire-si".into()),
+            ssh_alias: "offrig-aspire-si".into(),
+            tunnel_port: crate::lanes::LANE_PORT_BASE,
+        };
+        let cfg = plain.in_lane(&lane).expect("lane config");
+        for name in ["small", "medium", "frontier", "jam"] {
+            let a = pod_create(&plain, plain.profile(name).expect("profile"));
+            let b = pod_create(&cfg, cfg.profile(name).expect("profile"));
+            assert_eq!(a.name, format!("offrig-{name}"));
+            assert_eq!(b.name, format!("offrig-aspire-si-{name}"));
+            // Same pod apart from its name: only ssh exposed, the engine on loopback.
+            assert_eq!(b.ports, ["22/tcp"], "{name}");
+            assert_eq!(b.env, a.env, "{name}");
+            assert_eq!(b.docker_start_cmd, a.docker_start_cmd, "{name}");
+        }
     }
 
     #[test]

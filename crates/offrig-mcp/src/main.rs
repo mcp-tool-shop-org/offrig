@@ -18,6 +18,7 @@ use std::time::Duration;
 use offrig_core::config::Config;
 use offrig_core::cost;
 use offrig_core::error::chain;
+use offrig_core::lanes::{LaneCtx, Registry};
 use offrig_core::roles;
 use offrig_core::runpod::RunPod;
 use offrig_core::session::Session;
@@ -36,7 +37,9 @@ const STALE_SECS: i64 = 1800;
 #[derive(Clone)]
 pub struct Sidecar {
     store: Arc<Mutex<Option<Store>>>,
-    cfg: Arc<Config>,
+    /// The plain config, this project's lane and the lane registry. New plans run in
+    /// the project's lane; an existing plan runs in the lane it recorded.
+    ctx: Arc<LaneCtx>,
     project: Arc<PathBuf>,
     shared: Arc<ops::Shared>,
 }
@@ -339,17 +342,17 @@ impl Sidecar {
     /// Opening touches nothing on disk. The database is created on first use, so a
     /// side-car registered for every project leaves no `.offrig/` behind in folders
     /// where it was only started (a health check, a session that never called it).
-    pub fn new(project: &Path, cfg: Config) -> Self {
+    pub fn new(project: &Path, ctx: LaneCtx) -> Self {
         Self {
             store: Arc::new(Mutex::new(None)),
-            cfg: Arc::new(cfg),
+            ctx: Arc::new(ctx),
             project: Arc::new(project.to_path_buf()),
             shared: Arc::new(ops::Shared::default()),
         }
     }
 
     async fn copy(&self, a: CopyArgs, upload: bool) -> CallToolResult {
-        let (cfg, db) = (Arc::clone(&self.cfg), self.db_path());
+        let (ctx, db) = (Arc::clone(&self.ctx), self.db_path());
         let local = PathBuf::from(&a.local);
         let local = if local.is_absolute() {
             local
@@ -357,7 +360,7 @@ impl Sidecar {
             self.project.join(local)
         };
         let res =
-            tokio::task::spawn_blocking(move || ops::job_copy(&cfg, &db, upload, &local, &a.pod))
+            tokio::task::spawn_blocking(move || ops::job_copy(&ctx, &db, upload, &local, &a.pod))
                 .await;
         match res {
             Ok(Ok(v)) => ok(v),
@@ -391,7 +394,7 @@ impl Sidecar {
     }
 
     fn role_os(&self) -> Option<PathBuf> {
-        self.cfg.role_os_dir.as_ref().map(PathBuf::from)
+        self.ctx.base.role_os_dir.as_ref().map(PathBuf::from)
     }
 }
 
@@ -454,9 +457,25 @@ impl Sidecar {
             Ok(Err(e)) => (None, Vec::new(), Some(chain(&e))),
             Err(e) => (None, Vec::new(), Some(e.to_string())),
         };
+        // Only this project's pods are "ours": the lane's own names, and the pod of any
+        // open plan (a plan from before lanes holds a plain-lane `offrig-<profile>` pod).
+        // Another lane's pods are another project's, and count as other pods.
+        // Status never allocates a lane: a project that has not planned yet has none.
+        let own_lane = self.ctx.own_if_allocated().ok().flatten();
+        let own_cfg = own_lane
+            .as_ref()
+            .and_then(|l| self.ctx.base.in_lane(l).ok());
+        let plan_pods: Vec<&str> = open_plans
+            .iter()
+            .filter_map(|p| p["pod_id"].as_str())
+            .collect();
+        let is_ours = |p: &offrig_core::runpod::Pod| {
+            plan_pods.contains(&p.id.as_str())
+                || own_cfg.as_ref().is_some_and(|c| c.owns_pod(&p.name))
+        };
         let ours: Vec<Value> = pods
             .iter()
-            .filter(|p| p.name.starts_with("offrig-"))
+            .filter(|p| is_ours(p))
             .map(|p| json!({"name": p.name, "id": p.id, "status": p.desired_status, "cost_per_hr": p.cost_per_hr}))
             .collect();
         let others = pods.len() - ours.len();
@@ -494,6 +513,11 @@ impl Sidecar {
         };
         ok(json!({
             "project": self.project.display().to_string(),
+            "lane": own_lane.as_ref().map(|l| json!({
+                "tag": l.tag,
+                "ssh_alias": l.ssh_alias,
+                "tunnel_port": l.tunnel_port,
+            })),
             "budget": budget_json(&budget),
             "runpod": {
                 "balance": account.as_ref().map(|a| round2(a.client_balance)),
@@ -564,10 +588,16 @@ impl Sidecar {
         )
     )]
     async fn offrig_plan(&self, Parameters(a): Parameters<PlanArgs>) -> CallToolResult {
-        let profile = match self.cfg.profile(&a.profile) {
+        let profile = match self.ctx.base.profile(&a.profile) {
             Ok(p) => p.clone(),
             Err(_) => {
-                let names: Vec<&str> = self.cfg.profiles.iter().map(|p| p.name.as_str()).collect();
+                let names: Vec<&str> = self
+                    .ctx
+                    .base
+                    .profiles
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect();
                 return fail(
                     format!("no profile {:?}", a.profile),
                     format!("use one of: {}", names.join(", ")),
@@ -618,6 +648,16 @@ impl Sidecar {
             max_price_hr: max_price,
             note: a.note,
         };
+        // The project's lane is allocated here, the first time it plans a session.
+        let lane = match self.ctx.own() {
+            Ok(l) => l,
+            Err(e) => {
+                return fail(
+                    chain(&e),
+                    "the lane registry in offrig's config directory could not be updated; nothing was spent",
+                );
+            }
+        };
         let plan = self.with_store(|s| s.create_plan(new_plan));
         let plan = match plan {
             Ok(p) => p,
@@ -628,10 +668,20 @@ impl Sidecar {
                 );
             }
         };
+        // The plan records its lane, so its launch, runner and shutdown all use it.
+        if let Some(tag) = &lane.tag
+            && let Err(e) = self.with_store(|s| s.set_plan_lane(plan.id, tag))
+        {
+            return fail(
+                chain(&e),
+                "the plan could not record its lane; nothing was spent, plan again",
+            );
+        }
         let budget = self.with_store(|s| s.budget()).ok();
         let runway = account.as_ref().and_then(|ac| ac.runway_hours(max_price));
         ok(json!({
             "plan_id": plan.id,
+            "lane": lane.tag,
             "profile": plan.profile,
             "gpus": format!("{}x {}", plan.gpu_count, plan.gpu_types.join(" | ")),
             "max_price_hr": round2(plan.max_price_hr),
@@ -793,7 +843,7 @@ impl Sidecar {
                     }
                 }
                 ok(
-                    json!({"roles": ids, "role_os": self.cfg.role_os_dir, "next_action": "preview one before queuing work for it"}),
+                    json!({"roles": ids, "role_os": self.ctx.base.role_os_dir, "next_action": "preview one before queuing work for it"}),
                 )
             }
             "preview" => {
@@ -973,11 +1023,25 @@ impl Sidecar {
             );
         }
         // Preflight before any commitment: the key works, no pod for this profile is
-        // already up, and the profile's models are not on this machine.
-        let cfg = (*self.cfg).clone();
+        // already up in this project's lane, and the profile's models are not on this
+        // machine. Another project's pod for the same profile is not this one's.
+        let cfg = match self.with_store(|s| {
+            let cfg = self.ctx.cfg_for_plan(s, &plan)?;
+            self.ctx.adopt(s, &plan)?;
+            Ok(cfg)
+        }) {
+            Ok(c) => c,
+            Err(e) => {
+                return fail(
+                    chain(&e),
+                    "the plan's lane is unknown; nothing was spent, plan again",
+                );
+            }
+        };
+        let pre_cfg = cfg.clone();
         let prof = plan.profile.clone();
         let pre = tokio::task::spawn_blocking(move || {
-            let session = Session::new(cfg)?;
+            let session = Session::new(pre_cfg)?;
             let profile = session.cfg.profile(&prof)?.clone();
             session.plan_check(&profile)?;
             session.current_pod(&profile)
@@ -988,10 +1052,10 @@ impl Sidecar {
             Ok(Ok(Some(pod))) => {
                 return fail(
                     format!(
-                        "a pod for this profile is already running ({}, {})",
+                        "a pod for this profile is already running in this project's lane ({}, {})",
                         pod.name, pod.id
                     ),
-                    "shut it down first (offrig down from the CLI, or the app); offrig never runs two pods for one profile",
+                    "shut it down first (offrig_shutdown, offrig down from the CLI, or the app); offrig never runs two pods for one profile in one lane",
                 );
             }
             Ok(Err(e)) => {
@@ -1025,16 +1089,17 @@ impl Sidecar {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id, Arc::clone(&cancel));
-        let (cfg, db, shared) = (
-            (*self.cfg).clone(),
+        let (ctx, db, shared) = (
+            (*self.ctx).clone(),
             self.db_path(),
             Arc::clone(&self.shared),
         );
-        tokio::task::spawn_blocking(move || ops::run_launch(cfg, db, shared, id, job_id, cancel));
+        tokio::task::spawn_blocking(move || ops::run_launch(ctx, db, shared, id, job_id, cancel));
         let budget = self.with_store(|s| s.budget()).ok();
         ok(json!({
             "job_id": job_id,
             "plan_id": id,
+            "lane": cfg.lane_tag,
             "worst_case": round2(committed.worst_case),
             "deadline": committed.deadline().map(when),
             "watchdog": match &watchdog { Ok(()) => "started".to_string(), Err(e) => format!("FAILED to start: {e}; shut down by the deadline yourself") },
@@ -1202,13 +1267,13 @@ impl Sidecar {
         if a.instruction.trim().is_empty() {
             return fail("instruction is empty", "say what this turn should do");
         }
-        let (cfg, db, shared) = (
-            (*self.cfg).clone(),
+        let (ctx, db, shared) = (
+            Arc::clone(&self.ctx),
             self.db_path(),
             Arc::clone(&self.shared),
         );
         let res = tokio::task::spawn_blocking(move || {
-            ops::ask(&cfg, &db, &shared, a.handoff_id, &a.instruction, a.model)
+            ops::ask(&ctx, &db, &shared, a.handoff_id, &a.instruction, a.model)
         })
         .await;
         match res {
@@ -1238,10 +1303,10 @@ impl Sidecar {
         )
     )]
     async fn offrig_exec(&self, Parameters(a): Parameters<ExecArgs>) -> CallToolResult {
-        let (cfg, db) = (Arc::clone(&self.cfg), self.db_path());
+        let (ctx, db) = (Arc::clone(&self.ctx), self.db_path());
         let res = tokio::task::spawn_blocking(move || {
             ops::job_exec(
-                &cfg,
+                &ctx,
                 &db,
                 &a.action,
                 &a.name,
@@ -1304,9 +1369,13 @@ impl Sidecar {
         )
     )]
     async fn offrig_shutdown(&self, Parameters(a): Parameters<ShutdownArgs>) -> CallToolResult {
-        let (db, shared) = (self.db_path(), Arc::clone(&self.shared));
+        let (db, shared, ctx) = (
+            self.db_path(),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.ctx),
+        );
         let res = tokio::task::spawn_blocking(move || {
-            ops::shutdown(&db, &shared, a.plan_id, a.reason.as_deref())
+            ops::shutdown(&db, &shared, &ctx, a.plan_id, a.reason.as_deref())
         })
         .await;
         match res {
@@ -1426,11 +1495,16 @@ async fn main() -> anyhow::Result<()> {
         return run_watchdog(&project, plan_id);
     }
     let cfg = Config::load()?;
+    let registry = Registry::open_default()?;
     if let Some(plan_id) = flag_plan("--runner") {
+        // The runner takes its lane from the plan; it allocates nothing.
+        let ctx = LaneCtx::new(cfg, &project, registry);
         let keep_pod = std::env::args().any(|a| a == "--keep-pod");
-        return runner::run(&cfg, &project, plan_id, keep_pod);
+        return runner::run(&ctx, &project, plan_id, keep_pod);
     }
-    let sidecar = Sidecar::new(&project, cfg);
+    // The project's lane is allocated on its first plan (and kept), not at start.
+    let ctx = LaneCtx::new(cfg, &project, registry);
+    let sidecar = Sidecar::new(&project, ctx);
     let service = sidecar.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

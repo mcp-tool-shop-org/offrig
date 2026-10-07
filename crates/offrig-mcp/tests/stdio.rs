@@ -29,6 +29,7 @@ async fn the_sidecar_works_end_to_end_over_stdio() {
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_offrig-mcp")).configure(|c| {
         c.arg("--project").arg(&dir);
         c.env_remove("RUNPOD_API_KEY");
+        c.env("OFFRIG_CONFIG_DIR", dir.join("cfg"));
     });
     let client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("connect");
 
@@ -186,6 +187,7 @@ async fn the_sidecar_works_end_to_end_over_stdio() {
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_offrig-mcp")).configure(|c| {
         c.arg("--project").arg(&bare);
         c.env_remove("RUNPOD_API_KEY");
+        c.env("OFFRIG_CONFIG_DIR", dir.join("cfg"));
     });
     let probe = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("connect");
     probe.list_all_tools().await.expect("list");
@@ -193,6 +195,11 @@ async fn the_sidecar_works_end_to_end_over_stdio() {
     assert!(
         !bare.join(".offrig").exists(),
         "a health check must not leave .offrig/ behind"
+    );
+    // Nor may starting a side-car claim a lane: a lane is allocated by the first plan.
+    assert!(
+        !dir.join("cfg").join("lanes.toml").exists(),
+        "starting a side-car must not allocate a lane"
     );
     // The memory outlives the server.
     let reopened = Store::open(&dir.join(".offrig").join("offrig.db")).expect("reopen");

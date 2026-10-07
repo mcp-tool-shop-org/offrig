@@ -201,7 +201,7 @@ impl Worker {
         let p = self.profile()?;
         self.session
             .current_pod(&p)?
-            .ok_or_else(|| Error::PodNotFound(spec::pod_name(&p)))
+            .ok_or_else(|| Error::PodNotFound(spec::pod_name(&self.session.cfg, &p)))
     }
 
     fn events(&self) -> impl FnMut(Event) + '_ {

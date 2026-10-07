@@ -94,7 +94,7 @@ impl State {
 
     /// The live pod of the active profile.
     pub fn current_pod(&self) -> Option<&Pod> {
-        let name = spec::pod_name(self.active_profile()?);
+        let name = spec::pod_name(self.cfg.as_ref()?, self.active_profile()?);
         self.pods
             .iter()
             .find(|p| p.name == name && p.desired_status != "TERMINATED")
