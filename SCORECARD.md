@@ -38,5 +38,5 @@
 | B. Error handling | 10/10 |
 | C. Operator docs | 10/10 |
 | D. Shipping hygiene | 10/10 |
-| E. Identity (soft) | 9/10, with translations pending until they run |
-| **Overall** | **49/50** |
+| E. Identity (soft) | 10/10 |
+| **Overall** | **50/50** |

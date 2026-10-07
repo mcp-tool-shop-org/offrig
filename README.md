@@ -1,4 +1,8 @@
 <p align="center">
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+</p>
+
+<p align="center">
   <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/brand/main/logos/offrig/readme.png" alt="offrig" width="400">
 </p>
 
@@ -466,7 +470,7 @@ Comments and layout in Zed's settings are preserved: edits go through a JSONC sy
 
 ## Tests
 
-`cargo test --workspace` runs 252 tests, about 77% of lines covered:
+`cargo test --workspace` runs more than 250 tests, covering at least 90% of lines (CI fails below that):
 
 - **The core library:** RunPod parsing, pod specs for both engines, SSH config, Zed JSONC
   edits, guard rules, cost and idle logic, the store and its migrations, roles, context

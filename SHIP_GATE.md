@@ -58,7 +58,7 @@
 ## E. Identity (soft gate — does not block ship)
 
 - [x] `[all]` Logo in README header (2026-10-07; brand logos/offrig)
-- [ ] `[all]` Translations (polyglot-mcp, 8 languages)
+- [x] `[all]` Translations (polyglot-mcp, 8 languages) (2026-10-07; TranslateGemma 27B locally, untranslated passages in ja/it and one reversed sentence in es/fr/pt-BR fixed by hand)
 - [x] `[org]` Landing page (@mcptoolshop/site-theme) (2026-10-07; site-theme + Starlight handbook)
 - [x] `[all]` GitHub repo metadata: description, homepage, topics (2026-10-07)
 
