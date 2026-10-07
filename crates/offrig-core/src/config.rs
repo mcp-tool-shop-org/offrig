@@ -16,6 +16,8 @@ pub const SGLANG_IMAGE: &str = "lmsysorg/sglang:v0.5.20-cu130";
 /// The pinned PyTorch image for job profiles: CUDA 12.8, the first line with Blackwell
 /// (sm_120) kernels. Checked on Docker Hub 2026-10-06 (10 GB, published 2025-03-20).
 pub const JOB_IMAGE: &str = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04";
+/// The host CUDA version [`JOB_IMAGE`] needs: it is a CUDA 12.8 build.
+pub const JOB_IMAGE_CUDA: &str = "12.8";
 /// Ollama's port inside the pod. It listens on 127.0.0.1 only and is never exposed.
 pub const REMOTE_OLLAMA_PORT: u16 = 11434;
 /// The local Ollama's port on this machine. The tunnel must never use it.
@@ -103,6 +105,24 @@ pub struct Profile {
 pub struct Job {
     /// A pinned image tag, never `latest`. It needs bash; sshd is installed if missing.
     pub image: String,
+    /// The oldest host CUDA (driver) version the image runs on, from RunPod's list
+    /// ([`CUDA_VERSIONS`]). The pod is placed only on a host at this version or newer:
+    /// a CUDA 12.8 build on an older driver starts, then finds no GPU.
+    #[serde(default)]
+    pub min_cuda: Option<String>,
+}
+
+/// The host CUDA versions RunPod's `allowedCudaVersions` accepts, newest first
+/// (`PodCreateInput` in https://rest.runpod.io/v1/openapi.json, read 2026-10-07).
+pub const CUDA_VERSIONS: [&str; 12] = [
+    "13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8",
+];
+
+/// Every host CUDA version at `min` or newer, newest first. `None` for a version
+/// RunPod does not list.
+pub fn cuda_at_least(min: &str) -> Option<Vec<String>> {
+    let at = CUDA_VERSIONS.iter().position(|v| *v == min)?;
+    Some(CUDA_VERSIONS[..=at].iter().map(|v| v.to_string()).collect())
 }
 
 impl Job {
@@ -119,6 +139,14 @@ impl Job {
         }
         if models != 0 {
             return bad("a job profile serves no models; leave models empty".into());
+        }
+        if let Some(min) = &self.min_cuda
+            && cuda_at_least(min).is_none()
+        {
+            return bad(format!(
+                "min_cuda {min:?} is not one of RunPod's CUDA versions ({})",
+                CUDA_VERSIONS.join(", ")
+            ));
         }
         Ok(())
     }
@@ -401,6 +429,38 @@ pub fn default_profiles() -> Vec<Profile> {
             recipe: None,
             job: Some(Job {
                 image: JOB_IMAGE.into(),
+                min_cuda: Some(JOB_IMAGE_CUDA.into()),
+            }),
+        },
+        Profile {
+            name: "jam".into(),
+            tier: Tier::Small,
+            // ai-jam-sessions' singing renders: SoulX-Singer (2.8 GB of weights, fp16)
+            // fits any 24 GB card, so the cheap ones come first. 48 GB A40 had high
+            // stock at $0.49/hr on 2026-10-07; the plan prices the dearest listed card.
+            gpu_type_ids: vec![
+                "NVIDIA A40".into(),
+                "NVIDIA RTX A6000".into(),
+                "NVIDIA RTX A5000".into(),
+                "NVIDIA GeForce RTX 3090".into(),
+                "NVIDIA L4".into(),
+                "NVIDIA GeForce RTX 4090".into(),
+            ],
+            gpu_count: 1,
+            network_volume_id: None,
+            data_center_id: None,
+            // A Python 3.10 environment with torch (about 7 GB), uv's cache, the
+            // weights and the takes.
+            volume_gb: 40,
+            container_disk_gb: 40,
+            context_length: 0,
+            models: vec![],
+            wait_for_gpu_minutes: 0,
+            parallel: 1,
+            recipe: None,
+            job: Some(Job {
+                image: JOB_IMAGE.into(),
+                min_cuda: Some(JOB_IMAGE_CUDA.into()),
             }),
         },
     ]
@@ -581,10 +641,12 @@ mod tests {
         assert!(j.validate("t", 0, false).is_ok());
         let latest = Job {
             image: "runpod/pytorch:latest".into(),
+            min_cuda: None,
         };
         assert!(latest.validate("t", 0, false).is_err(), "latest refused");
         let untagged = Job {
             image: "runpod/pytorch".into(),
+            min_cuda: None,
         };
         assert!(
             untagged.validate("t", 0, false).is_err(),
@@ -597,9 +659,28 @@ mod tests {
             p.models = vec![model("qwen3:4b", 2.5, false)];
         }
         assert!(bad.validate().is_err(), "the config check runs it");
+        let jobs: Vec<&str> = cfg
+            .profiles
+            .iter()
+            .filter(|p| p.is_job())
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(jobs, ["job", "jam"], "only the job profiles are jobs");
+        for name in jobs {
+            let j = cfg.profile(name).expect("job").job.clone().expect("job");
+            assert_eq!(
+                j.min_cuda.as_deref(),
+                Some(JOB_IMAGE_CUDA),
+                "{name} asks for a host that runs its image"
+            );
+        }
+        let old_cuda = Job {
+            image: JOB_IMAGE.into(),
+            min_cuda: Some("12.10".into()),
+        };
         assert!(
-            cfg.profiles.iter().filter(|p| p.is_job()).count() == 1,
-            "only the job profile is a job"
+            old_cuda.validate("t", 0, false).is_err(),
+            "a CUDA version RunPod does not list is refused"
         );
     }
 

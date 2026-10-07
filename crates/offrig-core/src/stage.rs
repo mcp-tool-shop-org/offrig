@@ -114,6 +114,7 @@ pub fn stage_pod(profile: &Profile, volume: &NetworkVolume) -> Result<PodCreate>
         network_volume_id: Some(volume.id.clone()),
         volume_mount_path: "/workspace".into(),
         data_center_ids: vec![volume.data_center_id.clone()],
+        allowed_cuda_versions: vec![],
         docker_entrypoint: vec!["bash".into(), "-c".into()],
         docker_start_cmd: vec![STAGE_BOOTSTRAP.into()],
         env,

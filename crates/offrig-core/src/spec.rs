@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::{Config, Engine, OLLAMA_IMAGE, Profile, REMOTE_OLLAMA_PORT, Recipe};
+use crate::config::{
+    Config, Engine, OLLAMA_IMAGE, Profile, REMOTE_OLLAMA_PORT, Recipe, cuda_at_least,
+};
 use crate::runpod::PodCreate;
 
 /// Where weights live on the pod. On a network volume they outlive the pod.
@@ -174,6 +176,12 @@ pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
         network_volume_id: profile.network_volume_id.clone(),
         volume_mount_path: "/workspace".into(),
         data_center_ids: profile.data_center_id.iter().cloned().collect(),
+        allowed_cuda_versions: profile
+            .job
+            .as_ref()
+            .and_then(|j| j.min_cuda.as_deref())
+            .and_then(cuda_at_least)
+            .unwrap_or_default(),
         docker_entrypoint: vec!["bash".into(), "-c".into()],
         docker_start_cmd: vec![start.into()],
         env,
@@ -348,6 +356,48 @@ mod tests {
         );
         assert!(!BOOTSTRAP_JOB.contains("ollama") && !BOOTSTRAP_JOB.contains("sglang"));
         assert!(BOOTSTRAP_JOB.contains("PasswordAuthentication=no"));
+    }
+
+    #[test]
+    fn job_pods_land_only_on_hosts_that_run_their_cuda_build() {
+        let cfg = Config::default();
+        for name in ["job", "jam"] {
+            let body = pod_create(&cfg, cfg.profile(name).expect("job profile"));
+            assert_eq!(
+                body.allowed_cuda_versions,
+                ["13.0", "12.9", "12.8"],
+                "{name}: a CUDA 12.8 image needs a 12.8 driver or newer"
+            );
+            let v = serde_json::to_value(&body).expect("json");
+            assert_eq!(
+                v["allowedCudaVersions"][2], "12.8",
+                "{name}: RunPod's field name"
+            );
+        }
+        let medium = pod_create(&cfg, cfg.profile("medium").expect("medium"));
+        assert!(
+            medium.allowed_cuda_versions.is_empty(),
+            "unchanged for Ollama"
+        );
+    }
+
+    #[test]
+    fn the_jam_pod_is_a_job_pod_on_a_cheap_card() {
+        let cfg = Config::default();
+        let p = cfg.profile("jam").expect("jam profile");
+        let body = pod_create(&cfg, p);
+        assert_eq!(body.name, "offrig-jam");
+        assert_eq!(body.docker_start_cmd, [BOOTSTRAP_JOB], "sshd only");
+        assert_eq!(body.ports, ["22/tcp"]);
+        assert_eq!(body.gpu_count, 1);
+        assert_eq!(body.gpu_type_ids[0], "NVIDIA A40");
+        assert!(
+            !body
+                .gpu_type_ids
+                .iter()
+                .any(|g| g.contains("PRO 6000") || g.contains("H100")),
+            "a singing render never rents a training card"
+        );
     }
 
     #[test]

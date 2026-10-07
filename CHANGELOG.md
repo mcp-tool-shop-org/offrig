@@ -4,6 +4,13 @@
 
 First version, built and tested live on 2026-10-02.
 
+- A `jam` job profile for ai-jam-sessions' singing renders (SoulX-Singer): one cheap
+  24-48 GB card, A40 first, on the same pinned PyTorch image as `job`.
+- Job profiles name the oldest host CUDA version their image runs on (`min_cuda`), and the
+  pod is created with RunPod's `allowedCudaVersions` from it. The PyTorch image is a CUDA
+  12.8 build, so `job` and `jam` land only on 12.8 hosts or newer: on an older driver the
+  pod starts and torch finds no GPU, after the rent has begun.
+
 - Job pods: a profile with a `job` rents a GPU for work that runs on it (a training run)
   instead of a model server. The pod runs a pinned PyTorch image with sshd only, no
   forwarding and no tunnel. New side-car tools `offrig_put`, `offrig_exec` (start, status,

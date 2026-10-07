@@ -161,6 +161,7 @@ Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defau
 | frontier-mini | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B FP8 (31 GB): the frontier engine path, rehearsed cheaply | about $1.7/hr |
 | frontier-mini-awq | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B AWQ (17 GB): the frontier's 4-bit MoE kernels, rehearsed cheaply | about $1.7/hr |
 | job | 1 × RTX PRO 6000 (96 GB); A100 or H100 80 GB if none is free | none: a **job pod** runs your work, not a model server | $2.09/hr (A100 fallback $1.59) |
+| jam | 1 × A40 (48 GB) first; A6000, A5000, 3090, L4 or 4090 if none is free | none: a **job pod** for ai-jam-sessions' singing renders (SoulX-Singer) | $0.49/hr (A40) |
 
 A profile with a `recipe` runs another engine than Ollama: a pinned image
 (`lmsysorg/sglang:v0.5.20-cu130`), a Hugging Face model it downloads at start, and
@@ -196,8 +197,15 @@ with sshd and nothing else:
   the side-car and the ssh session. It is sent as base64, so nothing in it is read by the
   ssh shell. Its log and exit status stay in `/workspace/offrig/jobs/`. Hugging Face
   downloads go to `/workspace/hf` on the pod volume.
+- The image is a CUDA 12.8 build, so a job profile names the oldest host CUDA version it
+  runs on (`min_cuda = "12.8"`) and the pod is created with RunPod's `allowedCudaVersions`
+  from it. Without that, a host with an older driver starts the pod and torch finds no GPU,
+  after the rent has begun.
 - Budget, plan, watchdog and shutdown work as for every other profile. Copy results back
   before `offrig_shutdown`: the pod's disk goes with it.
+- `jam` is the job profile ai-jam-sessions renders its singing on: SoulX-Singer needs far
+  less than a training card, so it rents a cheap 24-48 GB one. The setup and the session
+  live in that repository (`docs/vocal-offrig.md`); offrig knows nothing about singing.
 
 ### Staging weights on a network volume
 

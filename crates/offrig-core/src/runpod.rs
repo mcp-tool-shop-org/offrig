@@ -94,6 +94,9 @@ pub struct PodCreate {
     pub volume_mount_path: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub data_center_ids: Vec<String>,
+    /// Hosts whose CUDA (driver) version is in this list; empty means any host.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_cuda_versions: Vec<String>,
     pub docker_entrypoint: Vec<String>,
     pub docker_start_cmd: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -531,6 +534,7 @@ mod tests {
             network_volume_id: Some("vol1".into()),
             volume_mount_path: "/workspace".into(),
             data_center_ids: vec![],
+            allowed_cuda_versions: vec![],
             docker_entrypoint: vec!["bash".into(), "-c".into()],
             docker_start_cmd: vec!["echo".into()],
             env: BTreeMap::new(),
@@ -541,6 +545,10 @@ mod tests {
         assert_eq!(v["networkVolumeId"], "vol1");
         assert!(v.get("volumeInGb").is_none());
         assert!(v.get("dataCenterIds").is_none());
+        assert!(
+            v.get("allowedCudaVersions").is_none(),
+            "any host when unset"
+        );
     }
 
     #[test]
