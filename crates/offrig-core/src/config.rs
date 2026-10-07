@@ -103,6 +103,18 @@ pub struct Profile {
     /// `exec`, results come back with `get`. A job profile lists no models.
     #[serde(default)]
     pub job: Option<Job>,
+    /// The oldest host CUDA (driver) version this profile's work runs on, from RunPod's
+    /// list ([`CUDA_VERSIONS`]). A plan passes every version at this or newer to the pod
+    /// create as `allowedCudaVersions`, so the pod is never placed on an older driver
+    /// (issue #9). For a job profile the image's own floor ([`Job::min_cuda`]) also
+    /// applies, and the newer of the two wins ([`Profile::effective_min_cuda`]).
+    #[serde(default)]
+    pub min_cuda: Option<String>,
+    /// The least total VRAM (all of the profile's GPUs together, in GB) a plan accepts.
+    /// Offers below it are never chosen, so the fallback cards cannot silently shrink
+    /// the memory the work needs. Compared with the offers' own memory figure.
+    #[serde(default)]
+    pub min_vram_gb: Option<u32>,
 }
 
 /// The image a job pod runs. Nothing is served and nothing is tunnelled.
@@ -196,6 +208,39 @@ impl Profile {
     pub fn is_job(&self) -> bool {
         self.job.is_some()
     }
+
+    /// The host CUDA floor the pod must be placed above: the newer of the profile's own
+    /// `min_cuda` and the job image's. `None` when neither is set (any host).
+    pub fn effective_min_cuda(&self) -> Option<String> {
+        let own = self.min_cuda.as_deref();
+        let image = self.job.as_ref().and_then(|j| j.min_cuda.as_deref());
+        match (own, image) {
+            (Some(a), Some(b)) => Some(newer_cuda(a, b).to_string()),
+            (Some(v), None) | (None, Some(v)) => Some(v.to_string()),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Parse `"12.8"` into `(12, 8)`.
+pub fn parse_cuda(v: &str) -> Option<(u32, u32)> {
+    let (a, b) = v.trim().split_once('.')?;
+    Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+/// The newer of two CUDA version strings. An unparseable one loses.
+pub fn newer_cuda<'a>(a: &'a str, b: &'a str) -> &'a str {
+    match (parse_cuda(a), parse_cuda(b)) {
+        (Some(x), Some(y)) if y > x => b,
+        (None, Some(_)) => b,
+        _ => a,
+    }
+}
+
+/// Whether a host reporting CUDA `have` meets the floor `need`. `None` when either
+/// does not parse, so a missing report is never mistaken for a pass or a fail.
+pub fn cuda_meets(have: &str, need: &str) -> Option<bool> {
+    Some(parse_cuda(have)? >= parse_cuda(need)?)
 }
 
 fn default_parallel() -> u32 {
@@ -329,6 +374,8 @@ pub fn default_profiles() -> Vec<Profile> {
             parallel: 4,
             recipe: None,
             job: None,
+            min_cuda: None,
+            min_vram_gb: None,
         },
         Profile {
             name: "medium".into(),
@@ -356,6 +403,8 @@ pub fn default_profiles() -> Vec<Profile> {
             parallel: 4,
             recipe: None,
             job: None,
+            min_cuda: None,
+            min_vram_gb: None,
         },
         Profile {
             name: "frontier".into(),
@@ -397,6 +446,8 @@ pub fn default_profiles() -> Vec<Profile> {
                 hf_token_secret: None,
             }),
             job: None,
+            min_cuda: None,
+            min_vram_gb: None,
         },
         rehearsal(
             "frontier-mini",
@@ -437,6 +488,13 @@ pub fn default_profiles() -> Vec<Profile> {
                 image: JOB_IMAGE.into(),
                 min_cuda: Some(JOB_IMAGE_CUDA.into()),
             }),
+            // The jobs this profile runs install a current vLLM, whose PyTorch is a
+            // CUDA 13 build: an A100 host on a CUDA 12.8 driver cost $0.40 and failed
+            // after setup (issue #9). RunPod lists 13.0 as its newest, so this is the
+            // only allowed version; a plan that cannot find such a host waits or fails
+            // rather than renting one that cannot run the work.
+            min_cuda: Some("13.0".into()),
+            min_vram_gb: None,
         },
         Profile {
             name: "jam".into(),
@@ -468,6 +526,8 @@ pub fn default_profiles() -> Vec<Profile> {
                 image: JOB_IMAGE.into(),
                 min_cuda: Some(JOB_IMAGE_CUDA.into()),
             }),
+            min_cuda: None,
+            min_vram_gb: None,
         },
     ]
 }
@@ -506,6 +566,8 @@ fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
             hf_token_secret: None,
         }),
         job: None,
+        min_cuda: None,
+        min_vram_gb: None,
     }
 }
 
@@ -597,6 +659,21 @@ impl Config {
             }
             if let Some(j) = &p.job {
                 j.validate(&p.name, p.models.len(), p.recipe.is_some())?;
+            }
+            if let Some(min) = &p.min_cuda
+                && cuda_at_least(min).is_none()
+            {
+                return Err(Error::Config(format!(
+                    "profile {}: min_cuda {min:?} is not one of RunPod's CUDA versions ({})",
+                    p.name,
+                    CUDA_VERSIONS.join(", ")
+                )));
+            }
+            if p.min_vram_gb == Some(0) {
+                return Err(Error::Config(format!(
+                    "profile {}: min_vram_gb must be above 0 (leave it out for no floor)",
+                    p.name
+                )));
             }
             if p.network_volume_id.is_some() && p.data_center_id.is_none() {
                 return Err(Error::Config(format!(
@@ -726,6 +803,70 @@ mod tests {
             old_cuda.validate("t", 0, false).is_err(),
             "a CUDA version RunPod does not list is refused"
         );
+    }
+
+    #[test]
+    fn configs_written_before_the_profile_limits_still_load() {
+        // A profile as an older offrig saved it: no min_cuda, no min_vram_gb.
+        let cfg = Config::default();
+        let medium = cfg.profile("medium").expect("medium").clone();
+        let mut text = toml::to_string_pretty(&cfg).expect("serialize");
+        assert!(
+            !text.contains("min_vram_gb"),
+            "unset limits are not written: {text}"
+        );
+        text = text.replace(
+            "min_cuda = \"13.0\"
+",
+            "",
+        );
+        let back: Config = toml::from_str(&text).expect("old file loads");
+        back.validate().expect("and validates");
+        let job = back.profile("job").expect("job");
+        assert_eq!(job.min_cuda, None, "absent means unset");
+        assert_eq!(job.min_vram_gb, None);
+        assert_eq!(
+            job.effective_min_cuda().as_deref(),
+            Some(JOB_IMAGE_CUDA),
+            "the image's own floor still applies"
+        );
+        assert_eq!(back.profile("medium").expect("medium"), &medium);
+    }
+
+    #[test]
+    fn the_job_profile_asks_for_cuda_13_and_the_limits_are_checked() {
+        let cfg = Config::default();
+        let job = cfg.profile("job").expect("job");
+        assert_eq!(job.min_cuda.as_deref(), Some("13.0"));
+        assert_eq!(job.effective_min_cuda().as_deref(), Some("13.0"));
+        assert_eq!(
+            cfg.profile("jam")
+                .expect("jam")
+                .effective_min_cuda()
+                .as_deref(),
+            Some(JOB_IMAGE_CUDA)
+        );
+        assert_eq!(cfg.profile("medium").expect("m").effective_min_cuda(), None);
+        let mut bad = cfg.clone();
+        bad.profiles[0].min_cuda = Some("12.10".into());
+        assert!(bad.validate().is_err(), "an unlisted CUDA version");
+        let mut zero = cfg.clone();
+        zero.profiles[0].min_vram_gb = Some(0);
+        assert!(zero.validate().is_err(), "a zero floor is a mistake");
+        let mut fine = cfg;
+        fine.profiles[0].min_vram_gb = Some(80);
+        fine.validate().expect("a real floor");
+    }
+
+    #[test]
+    fn cuda_versions_compare_as_numbers() {
+        assert_eq!(cuda_meets("12.8", "12.8"), Some(true));
+        assert_eq!(cuda_meets("12.10", "12.8"), Some(true), "not as text");
+        assert_eq!(cuda_meets("12.4", "12.8"), Some(false));
+        assert_eq!(cuda_meets("13.0", "12.9"), Some(true));
+        assert_eq!(cuda_meets("garbage", "12.8"), None);
+        assert_eq!(newer_cuda("12.8", "13.0"), "13.0");
+        assert_eq!(newer_cuda("13.0", "12.8"), "13.0");
     }
 
     #[test]

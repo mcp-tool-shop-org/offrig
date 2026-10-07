@@ -16,6 +16,7 @@ pub mod guard;
 pub mod job;
 pub mod lanes;
 pub mod ollama;
+pub mod planning;
 pub mod proc;
 pub mod remote;
 pub mod roles;

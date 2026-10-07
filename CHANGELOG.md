@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Hardware limits on a plan (issues #9 and #10). A plan could land on a fallback card the
+  work could not use: a `job` plan rented an A100 host on a CUDA 12.8 driver, and the job's
+  CUDA 13 PyTorch failed after setup. Worst-case pricing also always used the profile's top
+  price ($3.49/hr), so a 3.5 h pod expecting a $2.09 card committed $12.22 instead of $7.32.
+  - Profiles gain `min_cuda` (oldest host CUDA; the pod create sends every version at or
+    above it as `allowedCudaVersions`, and a job profile uses the newer of this and its
+    image's floor) and `min_vram_gb` (least total VRAM; smaller offers are never chosen).
+    Both default to unset, so existing `config.toml` files load unchanged. The `job` profile
+    now sets `min_cuda = "13.0"`.
+  - `offrig_plan` takes `max_price_hr` (total $/hr; dearer offers are left out and the worst
+    case is `max_hours x min(max_price_hr, dearest listed price left)`) and `no_fallback`
+    (only the profile's first GPU family; the two RTX PRO 6000 Blackwell editions count as
+    one). A plan with nothing left is refused with the reason for each dropped GPU. The reply
+    lists the GPUs that were left out.
+  - The plan stores its GPU list, price and CUDA floor, and `offrig_launch` now rents only
+    from them. Before this the launch built the pod from the profile's full list and ignored
+    what the plan priced.
+  - `offrig_job` (and the launch result) report the GPU type and, when the pod API reports
+    it, the host CUDA version rented. A host older than the plan's floor, a GPU outside the
+    plan's list or a price above the plan's produces a `warnings` entry and a `WARNING`
+    `next_action`; nothing is terminated automatically. `offrig_status` shows each open
+    plan's GPU list, price and CUDA floor, and each pod's GPU.
+  - Unverified: whether the pod API reports the host's CUDA version, and under what field
+    name. offrig reads `machine.cudaVersion` if present and says so in `rented.notes` when it
+    is not, rather than treating a missing report as a pass.
+
 - One lane, one live plan (issue #7). A lane has one SSH alias, so a second pod in it
   re-pointed the alias and sent the first plan's `offrig_put`, `offrig_exec` and
   `offrig_get` to the wrong pod. `offrig_launch` now refuses while the lane has an open

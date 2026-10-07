@@ -55,6 +55,23 @@ pub struct Machine {
     pub gpu_type_id: Option<String>,
     #[serde(default)]
     pub data_center_id: Option<String>,
+    /// The host driver's CUDA version, if the pod API reports one on the machine.
+    /// Read tolerantly: the field's name and presence are not confirmed against a live
+    /// response, so `None` means "not reported", never "unknown host is fine".
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub cuda_version: Option<String>,
+}
+
+/// A string field RunPod may send as a string or a bare number (`"12.8"` or `12.8`).
+fn lenient_string<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    })
 }
 
 impl Pod {
@@ -71,6 +88,11 @@ impl Pod {
 
     pub fn gpu_type(&self) -> Option<&str> {
         self.machine.as_ref()?.gpu_type_id.as_deref()
+    }
+
+    /// The host driver's CUDA version when the pod API reports it.
+    pub fn host_cuda(&self) -> Option<&str> {
+        self.machine.as_ref()?.cuda_version.as_deref()
     }
 }
 

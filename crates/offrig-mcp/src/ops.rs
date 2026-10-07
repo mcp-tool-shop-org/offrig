@@ -18,7 +18,7 @@ use offrig_core::runpod::{Pod, RunPod};
 use offrig_core::session::{Event, Session, Wait};
 use offrig_core::store::{Plan, State, Store};
 use offrig_core::tunnel::Tunnel;
-use offrig_core::{Error, Result, roles, runner, spec, watchdog};
+use offrig_core::{Error, Result, planning, roles, runner, spec, watchdog};
 use serde_json::{Value, json};
 
 /// State shared by every tool call in one side-car process.
@@ -42,9 +42,24 @@ struct Progress<'a> {
     store: &'a Store,
     job: i64,
     v: Value,
+    /// What the plan asked for, to set the rented pod against (see `planning::audit_rental`).
+    gpu_types: Vec<String>,
+    max_price_hr: f64,
+    min_cuda: Option<String>,
 }
 
 impl Progress<'_> {
+    /// The rented pod against the plan: GPU type, host CUDA, price, and any warnings.
+    fn rented(&self, pod: &Pod) -> Value {
+        planning::audit_rental(
+            pod,
+            &self.gpu_types,
+            self.max_price_hr,
+            self.min_cuda.as_deref(),
+        )
+        .to_json()
+    }
+
     fn push(&self) {
         // Progress is advisory; a failed write must not stop the launch.
         let _ = self.store.update_job(self.job, "running", &self.v, None);
@@ -61,6 +76,7 @@ impl Progress<'_> {
             Event::Step(s) | Event::Warn(s) => self.step(s),
             Event::Pod(p) => {
                 self.v["ssh"] = json!(p.ssh_endpoint().map(|(h, port)| format!("{h}:{port}")));
+                self.v["rented"] = self.rented(&p);
                 self.push();
             }
             Event::Pull { model, state } => {
@@ -158,10 +174,17 @@ fn launch(
     let cfg = &ctx.cfg_for_plan(store, &plan)?;
     let profile = cfg.profile(&plan.profile)?.clone();
     let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
+    // The plan's own CUDA floor, else the profile's (a plan made before plans stored one).
+    let min_cuda = store
+        .plan_min_cuda(plan_id)?
+        .or_else(|| profile.effective_min_cuda());
     let mut progress = Progress {
         store,
         job: job_id,
         v: json!({ "step": "starting" }),
+        gpu_types: plan.gpu_types.clone(),
+        max_price_hr: plan.max_price_hr,
+        min_cuda: min_cuda.clone(),
     };
 
     // Stop waiting the moment the plan stops being committed (a shutdown, or the
@@ -185,7 +208,9 @@ fn launch(
         });
     }
 
-    let body = spec::pod_create(cfg, &profile);
+    // Rent only from what the plan priced: its GPU list and its CUDA floor, not the
+    // profile's (issues #9 and #10). A plan that stored no list uses the profile's.
+    let body = spec::pod_create_for_plan(cfg, &profile, &plan.gpu_types, min_cuda.as_deref());
     let now = now_unix();
     let left = plan.deadline().map_or(0, |d| (d - now).max(0)) as u64;
     let wait = Wait {
@@ -219,16 +244,18 @@ fn launch(
     // From here the pod bills. If getting it ready fails, terminate it rather than
     // leave it running unused until the deadline (the launch's compensator).
     let ready = (|| -> Result<Value> {
-        session.wait_ready(&pod.id, &mut |e| progress.event(e))?;
+        let up = session.wait_ready(&pod.id, &mut |e| progress.event(e))?;
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled("getting the pod ready".into()));
         }
+        let rented = progress.rented(&up);
         if profile.is_job() {
             // Nothing is served: ready means sshd answers. Work goes up with offrig_put.
             return Ok(json!({
                 "step": "ready",
                 "pod_id": pod.id,
                 "cost_per_hr": pod.cost_per_hr,
+                "rented": rented,
                 "ssh_alias": cfg.ssh_alias,
                 "lane": cfg.lane_tag,
                 "job_dir": spec::JOB_DIR,
@@ -242,6 +269,7 @@ fn launch(
             "step": "ready",
             "pod_id": pod.id,
             "cost_per_hr": pod.cost_per_hr,
+            "rented": rented,
             "tunnel": cfg.tunnel_base_url(),
             "lane": cfg.lane_tag,
             "models": profile.models.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),

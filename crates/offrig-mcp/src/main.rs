@@ -19,6 +19,7 @@ use offrig_core::config::Config;
 use offrig_core::cost;
 use offrig_core::error::chain;
 use offrig_core::lanes::{LaneCtx, Registry};
+use offrig_core::planning;
 use offrig_core::roles;
 use offrig_core::runpod::RunPod;
 use offrig_core::session::Session;
@@ -120,6 +121,17 @@ pub struct PlanArgs {
     /// What the session is for, kept with the plan.
     #[serde(default)]
     pub note: Option<String>,
+    /// The most the pod may cost, in total $/hr for all its GPUs (the figure
+    /// offrig_offers prints). Offers above it are left out of the plan, which also keeps
+    /// it off the pricier fallback cards, and the worst case is priced from
+    /// min(max_price_hr, the dearest listed price left) instead of the profile's top.
+    #[serde(default)]
+    pub max_price_hr: Option<f64>,
+    /// Rent only the profile's first GPU family, never the fallback cards. The two RTX
+    /// PRO 6000 Blackwell editions count as one family; other cards are each their own.
+    /// Refused if that family has none free.
+    #[serde(default)]
+    pub no_fallback: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -440,6 +452,9 @@ impl Sidecar {
                         "lane": cfg.as_ref().map(|c| c.lane_tag.clone().unwrap_or_else(|| "plain".into())),
                         "pod_name": cfg.as_ref().and_then(|c| c.profile(&p.profile).ok().map(|x| c.pod_name(x))),
                         "pod_id": p.pod_id,
+                        "gpus": p.gpu_types,
+                        "max_price_hr": round2(p.max_price_hr),
+                        "min_cuda": s.plan_min_cuda(p.id).ok().flatten(),
                         "deadline": p.deadline().map(when),
                         "watchdog_alive": watchdog::alive(s, p.id, now, WATCHDOG_STALE_SECS),
                         "runner_alive": runner::alive(s, p.id, now),
@@ -488,7 +503,7 @@ impl Sidecar {
         let ours: Vec<Value> = pods
             .iter()
             .filter(|p| is_ours(p))
-            .map(|p| json!({"name": p.name, "id": p.id, "status": p.desired_status, "cost_per_hr": p.cost_per_hr}))
+            .map(|p| json!({"name": p.name, "id": p.id, "status": p.desired_status, "cost_per_hr": p.cost_per_hr, "gpu": p.gpu_type(), "host_cuda": p.host_cuda()}))
             .collect();
         let others = pods.len() - ours.len();
         let stale = handoffs
@@ -590,7 +605,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_plan",
-        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Refused if the worst case exceeds the budget left. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
+        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
         annotations(
             title = "Plan a session",
             read_only_hint = false,
@@ -616,7 +631,7 @@ impl Sidecar {
                 );
             }
         };
-        let (count, types) = (profile.gpu_count, profile.gpu_type_ids.clone());
+        let count = profile.gpu_count;
         let dc = profile.data_center_id.clone();
         let res = tokio::task::spawn_blocking(move || {
             let rp = RunPod::from_env()?;
@@ -636,22 +651,25 @@ impl Sidecar {
             }
             Err(e) => return fail(e.to_string(), "retry"),
         };
-        // The price the plan is held to: the dearest free listed GPU, because RunPod
-        // takes the first type in priority order that has capacity.
-        let listed: Vec<f64> = offers
-            .iter()
-            .filter(|o| types.contains(&o.id))
-            .filter_map(|o| o.price_per_hr)
-            .collect();
-        let Some(max_price) = listed.iter().copied().reduce(f64::max) else {
-            return fail(
-                format!(
-                    "none of the {} profile's GPUs has {count} free right now, so there is no price to plan against",
-                    profile.name
-                ),
-                "check offrig_offers later, or plan a different profile",
-            );
+        // The GPUs the plan may rent and the price it is held to: the profile's list
+        // narrowed by price, memory and fallback. The price is the dearest listed GPU
+        // left (capped by max_price_hr), because RunPod takes the first type in
+        // priority order that has capacity. The launch rents only from this list.
+        let a_max_price = a.max_price_hr;
+        let limits = planning::Limits {
+            max_price_hr: a.max_price_hr,
+            no_fallback: a.no_fallback.unwrap_or(false),
         };
+        let choice = match planning::choose(&profile, &offers, &limits) {
+            Ok(c) => c,
+            Err(e) => {
+                return fail(
+                    chain(&e),
+                    "check offrig_offers, loosen max_price_hr or no_fallback, or plan a different profile; nothing was spent",
+                );
+            }
+        };
+        let (types, max_price) = (choice.gpu_types.clone(), choice.max_price_hr);
         let new_plan = NewPlan {
             profile: profile.name.clone(),
             gpu_count: count,
@@ -680,6 +698,17 @@ impl Sidecar {
                 );
             }
         };
+        // The plan records its host CUDA floor, so its launch applies the one it was
+        // priced with even if the profile is edited in between.
+        let min_cuda = profile.effective_min_cuda();
+        if let Some(v) = &min_cuda
+            && let Err(e) = self.with_store(|s| s.set_plan_min_cuda(plan.id, v))
+        {
+            return fail(
+                chain(&e),
+                "the plan could not record its CUDA floor; nothing was spent, plan again",
+            );
+        }
         // The plan records its lane, so its launch, runner and shutdown all use it.
         if let Some(tag) = &lane.tag
             && let Err(e) = self.with_store(|s| s.set_plan_lane(plan.id, tag))
@@ -697,6 +726,12 @@ impl Sidecar {
             "profile": plan.profile,
             "gpus": format!("{}x {}", plan.gpu_count, plan.gpu_types.join(" | ")),
             "max_price_hr": round2(plan.max_price_hr),
+            "highest_listed_price_hr": round2(choice.highest_listed),
+            "max_price_hr_requested": a_max_price,
+            "no_fallback": limits.no_fallback,
+            "min_vram_gb": profile.min_vram_gb,
+            "min_cuda": min_cuda,
+            "left_out": choice.dropped.iter().map(|(t, w)| json!({"gpu": t, "why": w})).collect::<Vec<_>>(),
             "max_hours": plan.max_hours,
             "worst_case": round2(plan.worst_case),
             "budget": budget.as_ref().map(budget_json),
@@ -1214,7 +1249,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait, pod id and rate, model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait, pod id and rate, the GPU type and host CUDA version actually rented (with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1262,12 +1297,33 @@ impl Sidecar {
             "cancelled" => "the launch was stopped; nothing more is billing for it",
             _ => "read the error; a pod rented by this launch was terminated; plan again",
         };
+        // What was rented, set against the plan. A mismatch (an old host driver, a GPU
+        // the plan did not list, a price above the plan's) is repeated at the top level
+        // and in next_action so it cannot be missed; the pod is never terminated for it.
+        let warnings: Vec<String> = job.progress["rented"]["warnings"]
+            .as_array()
+            .map(|w| {
+                w.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let next = if warnings.is_empty() {
+            next.to_string()
+        } else {
+            format!(
+                "WARNING, read before using this pod: {} Then: {next}",
+                warnings.join(" ")
+            )
+        };
         ok(json!({
             "project": self.project.display().to_string(),
             "job_id": job.id,
             "plan_id": job.plan_id,
             "state": job.state,
             "progress": job.progress,
+            "rented": job.progress["rented"],
+            "warnings": warnings,
             "error": job.error,
             "plan_state": plan.as_ref().map(|p| p.state.clone()),
             "watchdog_alive": alive,

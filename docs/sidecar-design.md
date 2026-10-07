@@ -168,7 +168,7 @@ the side-car's tools.
 |---|---|---|
 | `offrig_status` | read | Balance, runway, pods, budget left, active plan and job, guard summary. Liveness is computed, never stored. |
 | `offrig_offers` | read | Live GPU offers for a count, filtered to usable cards. |
-| `offrig_plan` | write, no spend | Makes a plan from a profile, maximum hours and budget cap. Returns `plan_id`, worst-case cost and runway after. |
+| `offrig_plan` | write, no spend | Makes a plan from a profile, maximum hours and budget cap. Optional `max_price_hr` (total $/hr) and `no_fallback` narrow the GPU list, the profile's `min_vram_gb` drops small cards, and the worst case is `max_hours x min(max_price_hr, dearest listed price left)`. The plan stores the list and the profile's CUDA floor, and the launch rents only from them. Returns `plan_id`, worst-case cost and runway after. |
 | `offrig_launch` | **spends** | Takes `plan_id` only. Starts a background job (wait for GPUs, boot, pull, tunnel, guard). Returns `job_id`. Idempotent per plan. |
 | `offrig_job` | read | Job state, progress, pull percent and `next_action`. |
 | `offrig_memory_search` | read | FTS over active records, filterable by kind, task and tag. Each result carries its source and date. |
