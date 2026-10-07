@@ -637,4 +637,63 @@ mod tests {
             assert_eq!(dir, Path::new("E:/AI/x"));
         }
     }
+
+    #[test]
+    fn a_copy_is_refused_before_ssh_when_the_local_side_cannot_work() {
+        let base = std::env::temp_dir().join(format!("offrig-job-refuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("dir");
+        // Upload of a file that is not there.
+        let err = put("offrig", &base.join("missing.json"), "x.json").expect_err("missing");
+        assert!(
+            matches!(&err, Error::Refused(m) if m.contains("does not exist")),
+            "{err}"
+        );
+        // A bad pod path is refused first, in either direction.
+        let file = base.join("f.txt");
+        std::fs::write(&file, b"x").expect("write");
+        assert!(matches!(
+            put("offrig", &file, "a b").expect_err("space"),
+            Error::Refused(_)
+        ));
+        assert!(matches!(
+            get("offrig", "../etc", &file).expect_err("dotdot"),
+            Error::Refused(_)
+        ));
+        // A download whose local parent is a file cannot make its folder.
+        let under_file = file.join("sub").join("out.bin");
+        let err = get("offrig", "/workspace/job/out.bin", &under_file).expect_err("parent");
+        assert!(matches!(err, Error::Refused(_) | Error::Io { .. }), "{err}");
+        // Fetching a log checks the job name before touching anything.
+        assert!(fetch_log("offrig", "bad name", &base.join("l.log")).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_local_path_without_a_file_name_is_refused() {
+        let err = split_local(Path::new("..")).expect_err("no file name");
+        assert!(matches!(err, Error::Refused(_)), "{err}");
+        // A relative path is made absolute against the current directory.
+        let (dir, name) = split_local(Path::new("some-output.bin")).expect("relative");
+        assert_eq!(name, "some-output.bin");
+        assert!(dir.is_absolute());
+    }
+
+    #[test]
+    fn run_and_job_scripts_refuse_what_cannot_run() {
+        assert!(matches!(
+            run_script("  ", 10).expect_err("empty"),
+            Error::Refused(_)
+        ));
+        assert!(matches!(
+            start_script("job", "").expect_err("empty"),
+            Error::Refused(_)
+        ));
+        assert!(start_script("bad name", "ls").is_err());
+        assert!(status_script("bad name", 5).is_err());
+        assert!(stop("offrig", "bad name").is_err());
+        assert!(start("offrig", "bad name", "ls").is_err());
+        assert!(status("offrig", "bad name", 5).is_err());
+        assert!(run("offrig", "", None).is_err());
+    }
 }
