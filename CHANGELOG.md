@@ -1,6 +1,43 @@
 # Changelog
 
-## Unreleased
+All notable changes to offrig are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and offrig follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0] - 2026-10-07
+
+The first release. offrig has run real work since 2026-10-02, and since 2026-10-07 two
+projects have used it at once, each in its own lane: training runs on `job` pods and
+singing renders on `jam` pods. This release adds downloadable Windows binaries, structured
+errors and exit codes, and a handbook. Everything below the next list was built before the
+first release and ships in it.
+
+- **Windows release binaries.** Each version tag builds `offrig.exe`, `offrig-mcp.exe` and
+  `offrig-app.exe` in CI into `offrig-<version>-windows-x64.zip`, with `SHA256SUMS`. The
+  workflow stages a draft release and never publishes it; a person checks the draft first.
+  Windows only, because offrig relies on Windows' OpenSSH, `%APPDATA%` and Zed's paths.
+- **Side-car errors carry a code.** Every tool failure, including bad arguments and an
+  unknown tool, returns `ok:false`, a stable `code`, the `error` text, a `next_action` and
+  `retryable`. `error` and `next_action` are unchanged, so existing callers keep working.
+  Budget refusals have their own code, `budget_exceeded`.
+- **CLI exit codes:** `0` success, `1` something to fix on your side, `2` a runtime
+  failure. Bad arguments now exit `1` instead of clap's `2`.
+- **CLI log levels:** `-q` (errors and a command's own results only), `-v` (each RunPod
+  call and its timing, on stderr) and `--debug` (failed response bodies and full error
+  chains). The API key and any `Bearer` token are redacted at every level, and a panic
+  prints one line unless `--debug` is set.
+- **`offrig-mcp --help` and `--version`** answer instead of starting to serve stdio.
+- **The app has its icon,** in the window and on the `.exe`.
+- **`scripts/verify.sh` and `scripts/verify.ps1`** run the format check, clippy, the tests
+  and a smoke run of each binary in one command.
+- **Turning auto-stop off now survives a restart.** It used to be saved as a missing key,
+  which reloads as the 30-minute default. It is now saved as `auto_stop_idle_minutes =
+  "off"`; numbers, including `0`, are still minutes.
+- **Coverage of at least 90% of lines, enforced.** The tests grew from about 250 to more
+  than 450 and cover 94% of lines. CI fails below 90% (`cargo llvm-cov --fail-under-lines
+  90`), and `codecov.yml` sets 90% targets for the project and for each change.
+- **CI** adds an OSV scan of `Cargo.lock`, and uploads coverage to Codecov over OIDC.
+- **A handbook and landing page** at https://mcp-tool-shop-org.github.io/offrig/.
 
 - Launch follow-ups from the first real runs of the hardware-limits build (issue #15).
   - A narrowed plan waits for capacity instead of failing. `offrig_plan` takes
@@ -118,7 +155,7 @@
   and pods `offrig-<profile>`. Plans made before lanes keep running on it.
 - `OFFRIG_CONFIG_DIR` points offrig at another config directory (tests and sandboxes).
 
-## 0.1.0 (unreleased)
+## 0.1.0 (never released; the first build, part of 1.0.0)
 
 First version, built and tested live on 2026-10-02.
 
