@@ -70,6 +70,19 @@ pub fn date_utc(unix: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// `YYYY-MM-DDTHH:MM:SSZ` (UTC) for unix seconds: the form pod env vars and other
+/// machine-read times use.
+pub fn iso_utc(unix: i64) -> String {
+    let secs = unix.rem_euclid(86_400);
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        date_utc(unix),
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
+}
+
 pub fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -161,6 +174,16 @@ mod tests {
             parse_timestamp("2026-10-02T15:55:07Z")
         );
         assert_eq!(parse_timestamp("2024-02-29T12:00:00Z"), Some(1_709_208_000));
+    }
+
+    #[test]
+    fn iso_utc_is_a_utc_instant_with_seconds() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            iso_utc(1_709_208_000 + 3 * 3600 + 25 * 60 + 9),
+            "2024-02-29T15:25:09Z"
+        );
+        assert_eq!(iso_utc(-1), "1969-12-31T23:59:59Z");
     }
 
     #[test]

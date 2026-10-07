@@ -12,9 +12,11 @@ use clap::{Parser, Subcommand};
 use offrig_core::config::{Config, Profile};
 use offrig_core::cost::{self, Idle, IdleTracker};
 use offrig_core::error::chain;
+use offrig_core::lanes::Registry;
 use offrig_core::remote::{self, PullState};
 use offrig_core::runpod::Pod;
 use offrig_core::session::{Event, Session, Wait};
+use offrig_core::siblings;
 use offrig_core::trace::{self, Level};
 use offrig_core::tunnel::{self, Tunnel};
 use offrig_core::{guard, ollama::Ollama, spec, zed};
@@ -401,6 +403,12 @@ fn run(cli: Cli) -> Result<()> {
                 a.runway_hours(0.0)
                     .map_or("unlimited".into(), |h| format!("{h:.1} h"))
             );
+            // Other lanes' pods are named from the lane registry, and their plans read
+            // from those projects' stores, read-only. A registry that cannot be read
+            // leaves them as plain "lane" pods.
+            let lanes = Registry::open_default()
+                .and_then(|r| r.all_if_present())
+                .unwrap_or_default();
             for p in s.rp.list_pods()? {
                 let ours = if s.cfg.owns_pod(&p.name) {
                     "offrig"
@@ -424,6 +432,21 @@ fn run(cli: Cli) -> Result<()> {
                     p.ssh_endpoint()
                         .map_or(String::new(), |(h, port)| format!(", ssh {h}:{port}")),
                 );
+                if ours != "offrig"
+                    && let Some((lane, project)) = siblings::lane_of(&p.name, &s.cfg, &lanes)
+                {
+                    let sib = siblings::Sibling {
+                        plan: project
+                            .as_deref()
+                            .map_or(siblings::PlanView::NoProject, |d| {
+                                siblings::read_plan(std::path::Path::new(d), &p.id)
+                            }),
+                        lane,
+                        project,
+                        pod: p,
+                    };
+                    println!("      {}", sib.summary());
+                }
             }
             Ok(())
         }

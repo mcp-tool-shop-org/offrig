@@ -346,13 +346,14 @@ fn launch(
 
     // Rent only from what the plan priced: its GPU list and its CUDA floor, not the
     // profile's (issues #9 and #10). A plan that stored no list uses the profile's.
-    let body = spec::pod_create_for_plan(
+    let mut body = spec::pod_create_for_plan(
         cfg,
         &profile,
         &plan.gpu_types,
         min_cuda.as_deref(),
         store.plan_container_disk_gb(plan_id)?,
     );
+    spec::mark_plan(&mut body, &plan);
     let now = now_unix();
     let left = plan.deadline().map_or(0, |d| (d - now).max(0)) as u64;
     // The plan's own wait, else the profile's, kept inside the time the plan has left.

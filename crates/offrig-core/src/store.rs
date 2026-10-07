@@ -8,7 +8,7 @@
 //! - every handoff state change goes through one transition law and is logged;
 //! - liveness is computed by one predicate that status and the reaper both use.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,31 @@ fn table_lacks(conn: &Connection, table: &str, col: &str) -> Result<bool> {
         .collect::<rusqlite::Result<_>>()
         .map_err(db("reading a table's columns"))?;
     Ok(!cols.is_empty() && !cols.iter().any(|c| c == col))
+}
+
+/// `file:` URI for a database path, percent-encoding everything but unreserved
+/// characters and `/`, `:`, so a path with spaces, `?` or `#` still names the file.
+fn plain_uri(path: &Path) -> String {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let s = abs.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file:");
+    // A drive path (`C:/...`) needs the empty authority: `file:///C:/...`.
+    if !s.starts_with('/') {
+        out.push_str("///");
+    }
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn immutable_uri(path: &Path) -> String {
+    format!("{}?immutable=1", plain_uri(path))
 }
 
 fn db(what: &str) -> impl FnOnce(rusqlite::Error) -> Error + '_ {
@@ -528,6 +553,53 @@ impl Store {
         }
         let conn = Connection::open(path).map_err(db("opening the project database"))?;
         Self::init(conn)
+    }
+
+    /// Open an existing store for reading only, and change nothing on disk.
+    ///
+    /// The file is opened with SQLite's read-only flag (it is never created) and
+    /// `query_only` is on, so a write fails in SQLite itself. Nothing here sets a pragma
+    /// that writes (no journal mode, no migration): a store from an older offrig is
+    /// reported, never upgraded. A store in WAL mode that no one has open has no `-wal`
+    /// or `-shm` file, and a plain read-only open would create both; so in that case it
+    /// is opened `immutable` instead, which takes no locks and writes no side file. A
+    /// store someone has open (its `-wal` or `-shm` exist) is read normally, through the
+    /// files that are already there. This is how one lane reads another project's plans
+    /// (issue #26).
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        let side = |ext: &str| {
+            let mut o = path.as_os_str().to_os_string();
+            o.push(ext);
+            PathBuf::from(o)
+        };
+        let idle = !side("-wal").exists() && !side("-shm").exists();
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI;
+        let target = if idle {
+            immutable_uri(path)
+        } else {
+            plain_uri(path)
+        };
+        let conn = Connection::open_with_flags(&target, flags)
+            .map_err(db("opening the project database read-only"))?;
+        conn.execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 2000;")
+            .map_err(db("setting read-only pragmas"))?;
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(db("reading the schema version"))?;
+        if version > SCHEMA_VERSION {
+            return Err(Error::Refused(format!(
+                "the project database is schema v{version}; this offrig knows v{SCHEMA_VERSION}"
+            )));
+        }
+        if version < 2 {
+            return Err(Error::Refused(format!(
+                "the project database is schema v{version}; its own offrig upgrades it, a read-only view does not"
+            )));
+        }
+        Ok(Self { conn })
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -1996,5 +2068,134 @@ mod tests {
         assert!((s.budget().expect("b").cap - 15.0).abs() < 1e-9);
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    fn ro_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("offrig-ro-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("dir");
+        d
+    }
+
+    fn files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut v: Vec<_> = std::fs::read_dir(dir)
+            .expect("dir")
+            .map(|e| {
+                let e = e.expect("entry");
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(e.path()).expect("read"),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn committed_plan(s: &Store) -> Plan {
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 1.0,
+                max_price_hr: 2.0,
+                note: Some("n".into()),
+            })
+            .unwrap_or_else(|e| panic!("{e}"));
+        s.commit_plan(p.id).expect("commit")
+    }
+
+    #[test]
+    fn a_read_only_open_reads_plans_and_changes_nothing_on_disk() {
+        let dir = ro_dir("idle");
+        let path = dir.join("a b#c").join("offrig.db"); // a path that needs URI escaping
+        {
+            let s = Store::open(&path).expect("open");
+            s.set_budget_cap(50.0).expect("cap");
+            committed_plan(&s);
+        }
+        let folder = path.parent().expect("folder").to_path_buf();
+        let before = files(&folder);
+        {
+            let ro = Store::open_read_only(&path).expect("read-only");
+            let open = ro.open_plans().expect("plans");
+            assert_eq!(open.len(), 1);
+            assert_eq!(open[0].note.as_deref(), Some("n"));
+            // SQLite itself refuses a write.
+            assert!(ro.set_budget_cap(1.0).is_err());
+            assert!(ro.set_setting("k", "v").is_err());
+        }
+        assert_eq!(files(&folder), before, "no byte and no side file changed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_only_open_sees_a_live_writers_committed_rows() {
+        let dir = ro_dir("live");
+        let path = dir.join("offrig.db");
+        let writer = Store::open(&path).expect("open");
+        writer.set_budget_cap(50.0).expect("cap");
+        committed_plan(&writer);
+        // The writer is still open, so its -wal/-shm exist: the read goes through them.
+        let ro = Store::open_read_only(&path).expect("read-only");
+        assert_eq!(ro.open_plans().expect("plans").len(), 1);
+        assert!(ro.set_setting("k", "v").is_err(), "still read-only");
+        drop(ro);
+        drop(writer);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_only_open_never_creates_migrates_or_reads_a_foreign_version() {
+        let dir = ro_dir("refuse");
+        // Missing: not created.
+        let missing = dir.join("nope").join("offrig.db");
+        assert!(Store::open_read_only(&missing).is_err());
+        assert!(!missing.exists() && !missing.parent().expect("p").exists());
+        // Not a database.
+        let junk = dir.join("junk.db");
+        std::fs::write(
+            &junk,
+            b"definitely not sqlite, but long enough to be read as a header",
+        )
+        .expect("junk");
+        let before = std::fs::read(&junk).expect("read");
+        assert!(Store::open_read_only(&junk).is_err());
+        assert_eq!(std::fs::read(&junk).expect("read"), before);
+        // A v1 store is reported, not upgraded.
+        let v1 = dir.join("v1.db");
+        {
+            let c = Connection::open(&v1).expect("open");
+            c.execute_batch(
+                "CREATE TABLE plans (id INTEGER PRIMARY KEY); PRAGMA user_version = 1;",
+            )
+            .expect("v1");
+        }
+        let before = std::fs::read(&v1).expect("read");
+        let e = Store::open_read_only(&v1).err().expect("refused");
+        assert!(e.to_string().contains("schema v1"), "{e}");
+        assert_eq!(std::fs::read(&v1).expect("read"), before, "not migrated");
+        // A newer schema is refused too.
+        let v9 = dir.join("v9.db");
+        {
+            let c = Connection::open(&v9).expect("open");
+            c.execute_batch("PRAGMA user_version = 9;").expect("v9");
+        }
+        let e = Store::open_read_only(&v9).err().expect("refused");
+        assert!(e.to_string().contains("schema v9"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_uris_escape_what_would_end_a_path() {
+        let u = plain_uri(Path::new("/tmp/a b/c#d?e%f.db"));
+        assert!(u.starts_with("file:"), "{u}");
+        assert!(u.ends_with("/tmp/a%20b/c%23d%3Fe%25f.db"), "{u}");
+        assert!(immutable_uri(Path::new("/x.db")).ends_with("/x.db?immutable=1"));
+        // A drive path gets the empty authority.
+        if cfg!(windows) {
+            let u = plain_uri(Path::new("C:\\data\\x.db"));
+            assert_eq!(u, "file:///C:/data/x.db");
+        }
     }
 }

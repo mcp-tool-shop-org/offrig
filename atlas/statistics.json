@@ -115,28 +115,33 @@
         "path": ".github/workflows/ci.yml"
       },
       {
+        "commits": 2,
+        "lines": 100,
+        "path": ".github/workflows/pages.yml"
+      },
+      {
         "commits": 1,
         "lines": 123,
         "path": ".github/workflows/release.yml"
       },
       {
-        "commits": 1,
-        "lines": 1,
+        "commits": 3,
+        "lines": 9,
         "path": ".gitignore"
       },
       {
-        "commits": 25,
-        "lines": 203,
+        "commits": 27,
+        "lines": 285,
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 6,
-        "lines": 5255,
+        "commits": 8,
+        "lines": 5271,
         "path": "Cargo.lock"
       },
       {
-        "commits": 4,
-        "lines": 34,
+        "commits": 6,
+        "lines": 42,
         "path": "Cargo.toml"
       },
       {
@@ -145,9 +150,49 @@
         "path": "LICENSE"
       },
       {
-        "commits": 28,
-        "lines": 843,
+        "commits": 2,
+        "lines": 952,
+        "path": "README.es.md"
+      },
+      {
+        "commits": 2,
+        "lines": 1020,
+        "path": "README.fr.md"
+      },
+      {
+        "commits": 2,
+        "lines": 828,
+        "path": "README.hi.md"
+      },
+      {
+        "commits": 2,
+        "lines": 1012,
+        "path": "README.it.md"
+      },
+      {
+        "commits": 2,
+        "lines": 816,
+        "path": "README.ja.md"
+      },
+      {
+        "commits": 30,
+        "lines": 975,
         "path": "README.md"
+      },
+      {
+        "commits": 2,
+        "lines": 946,
+        "path": "README.pt-BR.md"
+      },
+      {
+        "commits": 2,
+        "lines": 842,
+        "path": "README.zh.md"
+      },
+      {
+        "commits": 2,
+        "lines": 84,
+        "path": "SCORECARD.md"
       },
       {
         "commits": 1,
@@ -155,8 +200,13 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 25,
-        "lines": 708,
+        "commits": 2,
+        "lines": 168,
+        "path": "SHIP_GATE.md"
+      },
+      {
+        "commits": 27,
+        "lines": 782,
         "path": "atlas/README.md"
       },
       {
@@ -165,18 +215,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 25,
-        "lines": 3059,
+        "commits": 27,
+        "lines": 3389,
         "path": "atlas/page.json"
       },
       {
-        "commits": 25,
-        "lines": 3395,
+        "commits": 27,
+        "lines": 3938,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 25,
-        "lines": 13870,
+        "commits": 27,
+        "lines": 14505,
         "path": "atlas/structure.json"
       },
       {
@@ -883,6 +933,101 @@
         "commits": 1,
         "lines": 23,
         "path": "scripts/verify.sh"
+      },
+      {
+        "commits": 2,
+        "lines": 72,
+        "path": "site/astro.config.mjs"
+      },
+      {
+        "commits": 2,
+        "lines": 12254,
+        "path": "site/package-lock.json"
+      },
+      {
+        "commits": 2,
+        "lines": 36,
+        "path": "site/package.json"
+      },
+      {
+        "commits": 2,
+        "lines": 2,
+        "path": "site/public/favicon.svg"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "site/src/assets/logo.png"
+      },
+      {
+        "commits": 2,
+        "lines": 14,
+        "path": "site/src/content.config.ts"
+      },
+      {
+        "commits": 2,
+        "lines": 248,
+        "path": "site/src/content/docs/handbook/configuration.md"
+      },
+      {
+        "commits": 2,
+        "lines": 178,
+        "path": "site/src/content/docs/handbook/getting-started.md"
+      },
+      {
+        "commits": 2,
+        "lines": 114,
+        "path": "site/src/content/docs/handbook/index.md"
+      },
+      {
+        "commits": 2,
+        "lines": 232,
+        "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
+      },
+      {
+        "commits": 2,
+        "lines": 230,
+        "path": "site/src/content/docs/handbook/reference.md"
+      },
+      {
+        "commits": 2,
+        "lines": 140,
+        "path": "site/src/content/docs/handbook/security.md"
+      },
+      {
+        "commits": 2,
+        "lines": 242,
+        "path": "site/src/content/docs/handbook/side-car.md"
+      },
+      {
+        "commits": 2,
+        "lines": 166,
+        "path": "site/src/content/docs/handbook/usage.md"
+      },
+      {
+        "commits": 2,
+        "lines": 70,
+        "path": "site/src/pages/index.astro"
+      },
+      {
+        "commits": 2,
+        "lines": 234,
+        "path": "site/src/site-config.ts"
+      },
+      {
+        "commits": 2,
+        "lines": 6,
+        "path": "site/src/styles/global.css"
+      },
+      {
+        "commits": 2,
+        "lines": 10,
+        "path": "site/src/styles/starlight-custom.css"
+      },
+      {
+        "commits": 2,
+        "lines": 10,
+        "path": "site/tsconfig.json"
       }
     ]
   },
@@ -890,9 +1035,9 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-10-07T23:31:26.891Z",
+  "generatedAt": "2026-10-07T23:41:16.961Z",
   "generatedFrom": {
-    "commit": "08b2f65e7c84d2cef5a4fc3d3f8246072f82b0b9"
+    "commit": "a9c3d65d6b1090573cfa63381bc0d40a532a48d3"
   },
   "pairs": [
     {
@@ -1016,7 +1161,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 34.75,
+    "appliedChangesetLimit": 35.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -1025,8 +1170,8 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-10-07T19:27:07-04:00",
-    "inScopeFiles": 139,
+    "headDate": "2026-10-07T19:31:29-04:00",
+    "inScopeFiles": 141,
     "pinnedStart": null,
     "priorFloor": "fallen",
     "qualifyingCommits": 42,
@@ -1034,7 +1179,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-10T23:27:07.000Z",
+    "since": "2026-04-10T23:31:29.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

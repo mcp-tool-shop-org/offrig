@@ -145,6 +145,109 @@ fn status_lists_each_kind_of_pod_with_its_spend() {
 }
 
 #[test]
+fn status_names_another_lanes_pod_with_its_plan_read_from_that_projects_store() {
+    use offrig_core::lanes::Registry;
+    use offrig_core::store::{NewPlan, Store};
+    let (rig, pods) = rig_with("status-sibling", vec![], 50.0);
+    // A sibling project with a lane in the rig's registry and a committed plan.
+    let sib = rig.dir.join("sibling-project");
+    std::fs::create_dir_all(&sib).expect("project");
+    let tag = Registry::at(rig.dir.join("cfg"))
+        .lane_for_project(&sib, &small())
+        .expect("lane")
+        .tag
+        .expect("tag");
+    let store_path = sib.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&store_path).expect("store");
+        s.set_budget_cap(100.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 2.0,
+                max_price_hr: 2.0,
+                note: Some("cut the trailer".into()),
+            })
+            .expect("plan");
+        s.commit_plan(p.id).expect("commit");
+        s.attach_pod(p.id, "sibpod").expect("attach");
+    }
+    let before = std::fs::read(&store_path).expect("store bytes");
+    pods.lock().expect("pods").extend([
+        pod(&format!("offrig-{tag}-job"), "sibpod"),
+        pod("offrig-nolane-job", "pod9"),
+    ]);
+    let o = rig.run(&["status"]);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let text = out(&o);
+    assert!(
+        text.contains(&format!("[lane  ] offrig-{tag}-job sibpod")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("lane {tag}, project "))
+            && text.contains("plan 1 (cut the trailer), ends 20")
+            && text.contains("worst case $4.00"),
+        "{text}"
+    );
+    // A lane-shaped pod the registry does not know stays a bare "lane" pod.
+    assert!(text.contains("[lane  ] offrig-nolane-job pod9"), "{text}");
+    assert_eq!(
+        text.matches("worst case").count(),
+        1,
+        "only the registered one: {text}"
+    );
+    assert_eq!(
+        std::fs::read(&store_path).expect("store bytes"),
+        before,
+        "reading changed nothing"
+    );
+}
+
+#[test]
+fn up_marks_its_pod_as_the_plain_lane_in_the_create_body() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = Arc::clone(&bodies);
+    let pods: Pods = Arc::default();
+    let inner = runpod(Arc::clone(&pods), 50.0);
+    let models = model_names();
+    let names: Vec<&str> = models.iter().map(String::as_str).collect();
+    let rig = Rig::new(
+        "up-env",
+        |c| c.active_profile = "small".into(),
+        &names,
+        move |route, body| {
+            if route == "POST /pods" {
+                log.lock().expect("log").push(body.to_string());
+            }
+            inner(route, body)
+        },
+    );
+    let o = rig.run(&["up", "--detach", "--no-zed"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}
+{}",
+        out(&o),
+        err(&o)
+    );
+    let sent: Value =
+        serde_json::from_str(&bodies.lock().expect("log")[0]).expect("create body is json");
+    assert_eq!(sent["env"]["OFFRIG_LANE"], "plain", "{sent}");
+    assert!(
+        sent["env"].get("OFFRIG_PLAN").is_none() && sent["env"].get("OFFRIG_DEADLINE").is_none(),
+        "the CLI has no plan: {sent}"
+    );
+    assert!(
+        sent["env"]["OLLAMA_HOST"].is_string(),
+        "the profile's own env stays: {sent}"
+    );
+}
+
+#[test]
 fn gpus_lists_offers_and_filters_by_vram() {
     let (rig, _) = rig_with("gpus", vec![], 50.0);
     let o = rig.run(&["gpus", "--count", "2"]);

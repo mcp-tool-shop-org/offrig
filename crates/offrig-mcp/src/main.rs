@@ -23,6 +23,7 @@ use offrig_core::planning;
 use offrig_core::roles;
 use offrig_core::runpod::RunPod;
 use offrig_core::session::Session;
+use offrig_core::siblings;
 use offrig_core::sidecar_port;
 use offrig_core::store::{self, Kind, NewHandoff, NewPlan, NewRecord, Query, State, Store};
 use offrig_core::watchdog::{self, Verdict};
@@ -521,7 +522,7 @@ impl Sidecar {
 impl Sidecar {
     #[tool(
         name = "offrig_status",
-        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods, open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
+        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods, other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
         annotations(title = "offrig status", read_only_hint = true, open_world_hint = true)
     )]
     async fn offrig_status(&self) -> CallToolResult {
@@ -605,7 +606,19 @@ impl Sidecar {
             .filter(|p| is_ours(p))
             .map(|p| json!({"name": p.name, "id": p.id, "status": p.desired_status, "cost_per_hr": p.cost_per_hr, "gpu": p.gpu_type(), "host_cuda": p.host_cuda()}))
             .collect();
-        let others = pods.len() - ours.len();
+        // Everything else on the account: another lane's pods are named (lane, project,
+        // and the plan read from that project's store, read-only); only pods offrig did
+        // not create are left as a count and their names.
+        let not_ours: Vec<offrig_core::runpod::Pod> =
+            pods.iter().filter(|p| !is_ours(p)).cloned().collect();
+        let lanes = self.ctx.registry.all_if_present().unwrap_or_default();
+        let others = siblings::split(not_ours, &self.ctx.base, &lanes);
+        let sibling_pods: Vec<Value> = others
+            .siblings
+            .iter()
+            .map(siblings::Sibling::to_json)
+            .collect();
+        let foreign_names: Vec<&str> = others.foreign.iter().map(|p| p.name.as_str()).collect();
         let stale = handoffs
             .iter()
             .filter(|h| store::is_stale(h, now, STALE_SECS))
@@ -652,7 +665,9 @@ impl Sidecar {
                 "spend_per_hr": account.as_ref().map(|a| round2(a.current_spend_per_hr)),
                 "runway_hours": account.as_ref().and_then(|a| a.runway_hours(0.0)).map(|h| (h * 10.0).round() / 10.0),
                 "offrig_pods": ours,
-                "other_pods": others,
+                "sibling_pods": sibling_pods,
+                "other_pods": foreign_names.len(),
+                "other_pod_names": foreign_names,
                 "note": remote_note,
             },
             "handoffs": {

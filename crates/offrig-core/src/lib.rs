@@ -23,6 +23,7 @@ pub mod roles;
 pub mod runner;
 pub mod runpod;
 pub mod session;
+pub mod siblings;
 pub mod sidecar_port;
 pub mod spec;
 pub mod sshconfig;
