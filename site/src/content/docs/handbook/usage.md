@@ -65,8 +65,8 @@ and send it to the model server.
 - Before a launch, offrig shows the cheapest free match and your runway with the pod
   running.
 - Auto-stop terminates the pod after 30 minutes with every GPU under 5% busy. The minutes
-  are set by `auto_stop_idle_minutes` in the config, and leaving it unset turns auto-stop
-  off.
+  are set by `auto_stop_idle_minutes` in the config; `auto_stop_idle_minutes = "off"`
+  turns it off.
 - offrig only changes pods it named. Every other pod on the account is listed and left
   alone.
 

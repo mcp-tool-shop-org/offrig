@@ -42,75 +42,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 22,
-      "changed": 7,
+      "added": 7,
+      "changed": 6,
       "moved": 0,
-      "parts": 3,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.",
-        "subjects": [
-          ".github/workflows/pages.yml",
-          "site/astro.config.mjs",
-          "site/src/"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "site/src/content/docs/ is now read by site/astro.config.mjs.",
-        "subjects": [
-          "site/src/content/docs/",
-          "site/astro.config.mjs"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "site/src/content/docs/handbook/ is now read by site/astro.config.mjs.",
-        "subjects": [
-          "site/src/content/docs/handbook/",
-          "site/astro.config.mjs"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "site/astro.config.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "site/astro.config.mjs"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "site/package-lock.json is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "site/package-lock.json"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "site/package.json is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "site/package.json"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "And 16 more new files that belong to no part.",
-        "subjects": []
-      },
-      {
         "kind": "counts",
-        "sentence": "22 files added and 7 changed content, across 3 parts.",
+        "sentence": "Nothing structural changed since 2026-10-07; 7 files added and 6 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "8a2c9b987bab9c541ed9191aa82814940f1386b8",
-      "generatedAt": "2026-10-07T20:54:51.960Z"
+      "commit": "d5c35531210fdd708af5765e9fd004a6cf1ade43",
+      "generatedAt": "2026-10-07T21:20:43.576Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -194,7 +143,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "d5c35531210fdd708af5765e9fd004a6cf1ade43",
+  "commit": "0f16bb89834660124224eabdcef56c524d67f2a7",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Rust (65 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
@@ -533,7 +482,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-10-07T21:20:43.576Z",
+  "generatedAt": "2026-10-07T21:21:12.435Z",
   "limits": [
     "7 writes and 4 reads use paths built at run time and are not named here.",
     "9 writes and 9 reads go to a path their caller passes, not to this repository.",

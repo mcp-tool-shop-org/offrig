@@ -108,7 +108,8 @@ bash scripts/verify.sh        or    pwsh scripts/verify.ps1
 
 Both run the format check, clippy with warnings as errors, the full test suite, and smoke
 runs of `offrig --help`, `offrig --version` and `offrig-mcp --help`. CI also runs
-`cargo deny`, an OSV scan of `Cargo.lock`, coverage and `atlas check`.
+`cargo deny`, an OSV scan of `Cargo.lock`, coverage (it fails below 90% of lines) and
+`atlas check`.
 
 Release binaries are built by CI from the version tag. A local release build embeds the
 builder's paths, so publish only CI builds.

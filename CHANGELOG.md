@@ -30,7 +30,13 @@ first release and ships in it.
 - **The app has its icon,** in the window and on the `.exe`.
 - **`scripts/verify.sh` and `scripts/verify.ps1`** run the format check, clippy, the tests
   and a smoke run of each binary in one command.
-- **CI** adds an OSV scan of `Cargo.lock`, and coverage uploaded to Codecov over OIDC.
+- **Turning auto-stop off now survives a restart.** It used to be saved as a missing key,
+  which reloads as the 30-minute default. It is now saved as `auto_stop_idle_minutes =
+  "off"`; numbers, including `0`, are still minutes.
+- **Coverage of at least 90% of lines, enforced.** The tests grew from about 250 to more
+  than 450 and cover 94% of lines. CI fails below 90% (`cargo llvm-cov --fail-under-lines
+  90`), and `codecov.yml` sets 90% targets for the project and for each change.
+- **CI** adds an OSV scan of `Cargo.lock`, and uploads coverage to Codecov over OIDC.
 - **A handbook and landing page** at https://mcp-tool-shop-org.github.io/offrig/.
 
 - Launch follow-ups from the first real runs of the hardware-limits build (issue #15).

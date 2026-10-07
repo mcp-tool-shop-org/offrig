@@ -5300,7 +5300,7 @@
           "path": ".gitignore"
         },
         {
-          "hash": "90f8af1efd24e868af9b6f355585c35e626fef3e3b3d65b47656f26bb05f1dc9",
+          "hash": "982a26adb766a50cf635650d2076d304d7b6a6a3089aa67c97cda3287ed0d096",
           "path": "CHANGELOG.md"
         },
         {
@@ -5316,11 +5316,39 @@
           "path": "LICENSE"
         },
         {
-          "hash": "7a616f372c7cc2453c098ba1becb6fd3fff2a7345787f9cc47a8e5df0119957d",
+          "hash": "72b7b928f88b6d81c59502c41317cf24e0cf35b3ebc049e6027d28ad3fa01552",
+          "path": "README.es.md"
+        },
+        {
+          "hash": "17a2c95de6dcb0132a6d5f15428039676ab3f6b6aecc39cd34a45d4437acbb5d",
+          "path": "README.fr.md"
+        },
+        {
+          "hash": "3af987b40b03d99d6f142be65741b050a7f3347b57737f51db8264672ecbf312",
+          "path": "README.hi.md"
+        },
+        {
+          "hash": "0b5ad8a584d43f9153ea51c5d557c2a93da8debad96fab0f01629b5051b15eb2",
+          "path": "README.it.md"
+        },
+        {
+          "hash": "b95ae5c2896c4542f934991160f4c5c28c84e8443e2adaee2704abe13980d5c4",
+          "path": "README.ja.md"
+        },
+        {
+          "hash": "743043e279cdf940727c46bebedf258825e8ddd85a52f8befb4ca07d2eb6e5b1",
           "path": "README.md"
         },
         {
-          "hash": "b00fe74cf255d8d6944fb5374a73f2502e777569e36e2d5f52656be9af010c32",
+          "hash": "eb1de85028285919e6b733987d93f5544e6fd6236f83266a052d46861e553d30",
+          "path": "README.pt-BR.md"
+        },
+        {
+          "hash": "ea73134b2c3178c2d304b6ee68efb0632082c74eaae439b95b3fbf3163cd70de",
+          "path": "README.zh.md"
+        },
+        {
+          "hash": "3c017bfa97fdfee4c7eae39d5750cc204be05380d766271bd29449b02a0aa031",
           "path": "SCORECARD.md"
         },
         {
@@ -5328,7 +5356,7 @@
           "path": "SECURITY.md"
         },
         {
-          "hash": "c889b94510aee48bb4e9f25e17702417910f3543045f7536da282a9efc8132a5",
+          "hash": "780479a5badf36a7a8a15c67d6850e2bfa88e9c3712df64ca8a42c27e6fe090a",
           "path": "SHIP_GATE.md"
         },
         {
@@ -6532,8 +6560,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "d5c35531210fdd708af5765e9fd004a6cf1ade43",
-    "tracked": 126
+    "commit": "0f16bb89834660124224eabdcef56c524d67f2a7",
+    "tracked": 133
   },
   "landings": [
     {
@@ -6831,7 +6859,7 @@
       "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
     },
     {
-      "hash": "98a9cbc194234705863bebcf8a6f3b1f9ca3cdc0d7f2903ae0118269fd4289d6",
+      "hash": "6f56a7dc289c6aa8023b9e6cf7485989841c17534a92ebc72e3ef02cd969000e",
       "path": "site/src/content/docs/handbook/reference.md"
     },
     {
@@ -6843,7 +6871,7 @@
       "path": "site/src/content/docs/handbook/side-car.md"
     },
     {
-      "hash": "49c96e239007eabf8c81667891ace02cdafb4b9ebe936dc3e17f51ac20be20e0",
+      "hash": "9471fa1f2bfa66ec9d031fea103488d095e09b65cb77fef8cef786e8e9c21e5c",
       "path": "site/src/content/docs/handbook/usage.md"
     },
     {

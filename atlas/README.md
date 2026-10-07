@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-10-07 from commit d5c3553 by Atlas 1.24.0.
+Mapped at 2026-10-07 from commit 0f16bb8 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,16 +8,9 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 5 parts, mostly Rust (65 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-10-07 (8a2c9b9)
+## What changed since 2026-10-07 (d5c3553)
 
-- Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.
-- site/src/content/docs/ is now read by site/astro.config.mjs.
-- site/src/content/docs/handbook/ is now read by site/astro.config.mjs.
-- site/astro.config.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
-- site/package-lock.json is new and belongs to no part, so atlas check fails on it against the previous map.
-- site/package.json is new and belongs to no part, so atlas check fails on it against the previous map.
-- And 16 more new files that belong to no part.
-- 22 files added and 7 changed content, across 3 parts.
+Nothing structural changed since 2026-10-07; 7 files added and 6 changed content.
 
 ## What comes in
 

@@ -130,18 +130,18 @@
         "path": ".gitignore"
       },
       {
-        "commits": 25,
-        "lines": 203,
+        "commits": 26,
+        "lines": 238,
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 6,
-        "lines": 5255,
+        "commits": 7,
+        "lines": 5263,
         "path": "Cargo.lock"
       },
       {
-        "commits": 4,
-        "lines": 34,
+        "commits": 5,
+        "lines": 38,
         "path": "Cargo.toml"
       },
       {
@@ -150,13 +150,48 @@
         "path": "LICENSE"
       },
       {
-        "commits": 29,
-        "lines": 883,
+        "commits": 1,
+        "lines": 476,
+        "path": "README.es.md"
+      },
+      {
+        "commits": 1,
+        "lines": 510,
+        "path": "README.fr.md"
+      },
+      {
+        "commits": 1,
+        "lines": 414,
+        "path": "README.hi.md"
+      },
+      {
+        "commits": 1,
+        "lines": 506,
+        "path": "README.it.md"
+      },
+      {
+        "commits": 1,
+        "lines": 408,
+        "path": "README.ja.md"
+      },
+      {
+        "commits": 31,
+        "lines": 911,
         "path": "README.md"
       },
       {
         "commits": 1,
-        "lines": 49,
+        "lines": 473,
+        "path": "README.pt-BR.md"
+      },
+      {
+        "commits": 1,
+        "lines": 421,
+        "path": "README.zh.md"
+      },
+      {
+        "commits": 3,
+        "lines": 132,
         "path": "SCORECARD.md"
       },
       {
@@ -165,13 +200,13 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 1,
-        "lines": 84,
+        "commits": 3,
+        "lines": 158,
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 24,
-        "lines": 681,
+        "commits": 25,
+        "lines": 723,
         "path": "atlas/README.md"
       },
       {
@@ -180,18 +215,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 24,
-        "lines": 2905,
+        "commits": 25,
+        "lines": 3074,
         "path": "atlas/page.json"
       },
       {
-        "commits": 24,
-        "lines": 3204,
+        "commits": 25,
+        "lines": 3508,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 24,
-        "lines": 13516,
+        "commits": 25,
+        "lines": 13825,
         "path": "atlas/structure.json"
       },
       {
@@ -946,6 +981,11 @@
       },
       {
         "commits": 1,
+        "lines": 114,
+        "path": "site/src/content/docs/handbook/reference.md"
+      },
+      {
+        "commits": 1,
         "lines": 70,
         "path": "site/src/content/docs/handbook/security.md"
       },
@@ -990,93 +1030,86 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-10-07T21:20:43.576Z",
+  "generatedAt": "2026-10-07T21:21:12.435Z",
   "generatedFrom": {
-    "commit": "d5c35531210fdd708af5765e9fd004a6cf1ade43"
+    "commit": "0f16bb89834660124224eabdcef56c524d67f2a7"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "README.md",
-      "either": 25,
-      "shared": 21,
-      "strength": 0.84
+      "either": 27,
+      "shared": 22,
+      "strength": 0.814815
     },
     {
       "a": "CHANGELOG.md",
       "b": "crates/offrig-core/src/config.rs",
-      "either": 22,
+      "either": 23,
       "shared": 13,
-      "strength": 0.590909
+      "strength": 0.565217
     },
     {
       "a": "CHANGELOG.md",
       "b": "crates/offrig-mcp/src/main.rs",
-      "either": 25,
-      "shared": 13,
-      "strength": 0.52
-    },
-    {
-      "a": "CHANGELOG.md",
-      "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 21,
-      "shared": 11,
-      "strength": 0.52381
-    },
-    {
-      "a": "README.md",
-      "b": "crates/offrig-core/src/config.rs",
       "either": 26,
       "shared": 13,
       "strength": 0.5
     },
     {
-      "a": "README.md",
-      "b": "crates/offrig-mcp/src/main.rs",
-      "either": 28,
-      "shared": 14,
+      "a": "CHANGELOG.md",
+      "b": "crates/offrig-mcp/src/ops.rs",
+      "either": 22,
+      "shared": 11,
+      "strength": 0.5
+    },
+    {
+      "a": "Cargo.lock",
+      "b": "Cargo.toml",
+      "either": 8,
+      "shared": 4,
       "strength": 0.5
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 21,
-      "shared": 21,
+      "either": 22,
+      "shared": 22,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 21,
-      "shared": 21,
+      "either": 22,
+      "shared": 22,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 21,
-      "shared": 21,
+      "either": 22,
+      "shared": 22,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 21,
-      "shared": 21,
+      "either": 22,
+      "shared": 22,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 21,
-      "shared": 21,
+      "either": 22,
+      "shared": 22,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 21,
-      "shared": 21,
+      "either": 22,
+      "shared": 22,
       "strength": 1
     },
     {
@@ -1123,7 +1156,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 34.75,
+    "appliedChangesetLimit": 34.5,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -1132,16 +1165,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-10-07T17:20:37-04:00",
-    "inScopeFiles": 139,
+    "headDate": "2026-10-07T17:20:44-04:00",
+    "inScopeFiles": 138,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 42,
+    "qualifyingCommits": 45,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-10T21:20:37.000Z",
+    "since": "2026-04-10T21:20:44.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
