@@ -20,6 +20,17 @@
     plan's floor keeps the loud `warnings` entry; nothing is terminated. If `nvidia-smi`
     gives nothing, `rented.notes` says the floor is unchecked.
 
+- Job-tool gaps from real runs (issue #12).
+  - `offrig_get` creates missing local parent folders instead of refusing with "is not a
+    directory", as `offrig_put` already does on the pod side. A path that exists but is a
+    file is still refused.
+  - `offrig_exec action=run` runs a short command synchronously with a timeout (default
+    30 s, at most 120 s) and returns `stdout`, `stderr`, `exit_code` and `timed_out`. The
+    command is sent as base64 and run under `timeout` with stdin closed; output is capped
+    at 64 KB per stream. `name` is now optional (only start, status and stop need it).
+  - `offrig_exec action=status` collapses carriage-return progress lines in its log tail to
+    their last frame, and takes `save_log` to copy the job's whole log to a local file.
+
 - Hardware limits on a plan (issues #9 and #10). A plan could land on a fallback card the
   work could not use: a `job` plan rented an A100 host on a CUDA 12.8 driver, and the job's
   CUDA 13 PyTorch failed after setup. Worst-case pricing also always used the profile's top

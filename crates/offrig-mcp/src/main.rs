@@ -269,16 +269,27 @@ pub struct AskArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ExecArgs {
-    /// start, status or stop.
+    /// start, status, stop or run.
     pub action: String,
-    /// The job's name: 1-40 letters, digits, - or _. It names the log on the pod.
-    pub name: String,
-    /// action=start: the bash command, run in /workspace/job on the pod.
+    /// start, status, stop: the job's name, 1-40 letters, digits, - or _. It names the
+    /// log on the pod. Not used by run.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// start: the bash command, run detached in /workspace/job on the pod. run: a short
+    /// bash command, run now in /workspace/job and waited for.
     #[serde(default)]
     pub command: Option<String>,
-    /// action=status: how many log lines to return (default 40, max 400).
+    /// action=status: how many log lines to return (default 40, max 400). Progress bars
+    /// redrawn with carriage returns are collapsed to their last frame.
     #[serde(default)]
     pub tail: Option<u32>,
+    /// action=run: seconds before the command is ended (default 30, at most 120).
+    #[serde(default)]
+    pub timeout_secs: Option<u32>,
+    /// action=status: also copy the job's whole log to this local file (absolute, or
+    /// relative to the project), exactly as the job wrote it. Parent folders are created.
+    #[serde(default)]
+    pub save_log: Option<String>,
     /// The job plan whose pod to act on. Optional with exactly one open job plan;
     /// required with several (the refusal lists them).
     #[serde(default)]
@@ -1431,7 +1442,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_exec",
-        description = "Run work on a launched job pod (profile job: a PyTorch image with sshd and no model server). action=start runs a bash command detached in /workspace/job, so it outlives this side-car; action=status returns running/exited with its exit code and the log tail; action=stop kills it. Starting a name that is still running does nothing. Takes an optional plan_id: with more than one open job plan it is required, and without it the call is refused and the open plans are listed; with it, only that plan's own pod is used. The reply states the project, lane and plan_id acted on. Spends nothing beyond the pod already billing.",
+        description = "Run work on a launched job pod (profile job: a PyTorch image with sshd and no model server). action=start runs a bash command detached in /workspace/job, so it outlives this side-car; action=status returns running/exited with its exit code and the log tail (progress bars collapsed to their last frame; save_log copies the whole log to a local file); action=stop kills it; action=run runs a short command now (ls, nvidia-smi) with a timeout (default 30 s, at most 120 s) and returns stdout, stderr and the exit code. Starting a name that is still running does nothing. Takes an optional plan_id: with more than one open job plan it is required, and without it the call is refused and the open plans are listed; with it, only that plan's own pod is used. The reply states the project, lane and plan_id acted on. Spends nothing beyond the pod already billing.",
         annotations(
             title = "Run a command on the job pod",
             read_only_hint = false,
@@ -1442,23 +1453,38 @@ impl Sidecar {
     )]
     async fn offrig_exec(&self, Parameters(a): Parameters<ExecArgs>) -> CallToolResult {
         let (ctx, db) = (Arc::clone(&self.ctx), self.db_path());
+        let save_log = a.save_log.as_deref().map(|p| {
+            let p = PathBuf::from(p);
+            if p.is_absolute() {
+                p
+            } else {
+                self.project.join(p)
+            }
+        });
+        let ran = a.action == "run";
         let res = tokio::task::spawn_blocking(move || {
             ops::job_exec(
                 &ctx,
                 &db,
-                &a.action,
-                &a.name,
-                a.command.as_deref(),
-                a.tail.unwrap_or(40).min(400),
-                a.plan_id,
+                &ops::ExecRequest {
+                    action: &a.action,
+                    name: a.name.as_deref(),
+                    command: a.command.as_deref(),
+                    tail_lines: a.tail.unwrap_or(40).min(400),
+                    plan_id: a.plan_id,
+                    timeout_secs: a.timeout_secs,
+                    save_log: save_log.as_deref(),
+                },
             )
         })
         .await;
         match res {
             Ok(Ok(mut v)) => {
-                v["next_action"] = json!(
+                v["next_action"] = json!(if ran {
+                    "the command has finished; offrig_get the results, then offrig_shutdown when the work is done"
+                } else {
                     "follow with offrig_exec action=status; offrig_get the results, then offrig_shutdown"
-                );
+                });
                 ok(v)
             }
             Ok(Err(e)) => fail(chain(&e), "follow the error; the pod bills until shutdown"),
@@ -1483,7 +1509,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_get",
-        description = "Copy a file or directory from the launched job pod here (scp). Do this before offrig_shutdown: the pod's disk is deleted with it. Takes an optional plan_id: required with more than one open job plan (otherwise refused, listing them); only that plan's own pod is used. The reply states the project, lane and plan_id acted on.",
+        description = "Copy a file or directory from the launched job pod here (scp); missing local parent folders are created. Do this before offrig_shutdown: the pod's disk is deleted with it. Takes an optional plan_id: required with more than one open job plan (otherwise refused, listing them); only that plan's own pod is used. The reply states the project, lane and plan_id acted on.",
         annotations(
             title = "Copy files from the job pod",
             read_only_hint = false,

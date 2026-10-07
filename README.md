@@ -128,8 +128,8 @@ so a session survives compaction or a restart without re-explaining anything.
 | `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
 | `offrig_run` | Starts a detached runner that keeps every model slot busy: drafts each ready handoff, revises at most twice against failed checks, feeds results to dependent handoffs, then shuts the pod down when the queue is dry (unless `keep_pod`). Work that code cannot check waits in review |
 | `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job`. Optional `plan_id` (see below) |
-| `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`), or kills it (`stop`). Optional `plan_id` (see below) |
-| `offrig_get` | Copies a file or directory back from a job pod; do it before the shutdown, which deletes the pod's disk. Optional `plan_id` (see below) |
+| `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`; `save_log` also copies the whole log to a local file), kills it (`stop`), or runs a short command now and returns its stdout, stderr and exit code (`run`, `timeout_secs` default 30, at most 120). Optional `plan_id` (see below) |
+| `offrig_get` | Copies a file or directory back from a job pod, creating missing local parent folders; do it before the shutdown, which deletes the pod's disk. Optional `plan_id` (see below) |
 | `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason |
 
 **Which job plan a job tool acts on.** `offrig_put`, `offrig_exec` and `offrig_get` take an
@@ -317,6 +317,14 @@ with sshd and nothing else:
   the side-car and the ssh session. It is sent as base64, so nothing in it is read by the
   ssh shell. Its log and exit status stay in `/workspace/offrig/jobs/`. Hugging Face
   downloads go to `/workspace/hf` on the pod volume.
+- `offrig_exec action=run` is for quick checks (`ls`, `nvidia-smi`), not work: it runs the
+  command to completion under `timeout` (default 30 s, at most 120 s) and returns `stdout`,
+  `stderr`, `exit_code` and `timed_out`. Output is cut to the last 64 KB of each stream
+  (`truncated`) and is untrusted pod output. A command that needs longer is a `start`.
+- A job's log tail has progress bars collapsed: tqdm-style redraws joined by carriage
+  returns show only their last frame. `offrig_exec action=status save_log=<local path>`
+  also copies the job's whole log, as written, to a local file (parent folders are created),
+  so the tail can stay short.
 - The image is a CUDA 12.8 build, so a job profile names the oldest host CUDA version it
   runs on (`min_cuda = "12.8"`) and the pod is created with RunPod's `allowedCudaVersions`
   from it. Without that, a host with an older driver starts the pod and torch finds no GPU,
@@ -556,6 +564,7 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 | Side-car launch (`offrig_launch`) | `offrig_shutdown`; automatic if setup fails; the watchdog at the deadline; the runner when its queue drains | pod terminated, plan closed with measured spend | the calling agent, with the watchdog as backstop |
 | Stage a volume (`offrig stage --yes`, bills monthly) | `offrig stage <profile> --remove --yes` | volume deleted, profile back to downloading | the human who staged it |
 | Start a job on a job pod (`offrig_exec action=start`) | `offrig_exec action=stop`, or `offrig_shutdown` | job killed with everything it started; its log stays until the pod is gone | the calling agent |
+| Run a short command on a job pod (`offrig_exec action=run`) | only what the command itself does; ended by `timeout` at most 120 s in, or by `offrig_shutdown` | the pod as the command left it | the calling agent |
 | Copy files to or from a job pod (`offrig_put`, `offrig_get`) | delete the copy (on the pod, `offrig_exec`; here, the file) | as before the copy | the calling agent |
 
 ## Layout
