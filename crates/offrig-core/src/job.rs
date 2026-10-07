@@ -359,8 +359,17 @@ mod tests {
             &down[down.len() - 2..],
             ["offrig:/workspace/job/out", "out"]
         );
-        let (dir, name) = split_local(Path::new("E:/AI/x/geometry.json")).expect("split");
+        // An absolute path on this platform splits into the directory scp runs in and a
+        // bare file name, so nothing before the name (a drive letter) reaches scp.
+        let base = std::env::temp_dir().join("offrig-job-test");
+        let (dir, name) = split_local(&base.join("geometry.json")).expect("split");
         assert_eq!(name, "geometry.json");
-        assert_eq!(dir, Path::new("E:/AI/x"));
+        assert_eq!(dir, base);
+        #[cfg(windows)]
+        {
+            let (dir, name) = split_local(Path::new("E:/AI/x/geometry.json")).expect("split");
+            assert_eq!(name, "geometry.json");
+            assert_eq!(dir, Path::new("E:/AI/x"));
+        }
     }
 }
