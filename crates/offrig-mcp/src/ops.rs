@@ -206,6 +206,17 @@ fn launch(
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::Cancelled("getting the pod ready".into()));
         }
+        if profile.is_job() {
+            // Nothing is served: ready means sshd answers. Work goes up with offrig_put.
+            return Ok(json!({
+                "step": "ready",
+                "pod_id": pod.id,
+                "cost_per_hr": pod.cost_per_hr,
+                "ssh_alias": cfg.ssh_alias,
+                "job_dir": spec::JOB_DIR,
+                "next": "offrig_put your files, then offrig_exec a command; offrig_get the results",
+            }));
+        }
         let tunnel = session.open_tunnel(&profile, &mut |e| progress.event(e))?;
         *lock(&shared.tunnel) = Some(tunnel);
         session.ensure_models(&profile, &mut |e| progress.event(e))?;
@@ -401,5 +412,95 @@ pub fn shutdown(db: &Path, shared: &Shared, plan_id: i64, reason: Option<&str>) 
         "spent": spent,
         "budget": budget,
         "terminated_with_in_flight": in_flight,
+    }))
+}
+
+/// The open plan whose pod is a launched job pod, with the ssh alias pointed at it.
+fn job_pod(cfg: &Config, store: &Store) -> Result<(i64, String)> {
+    let plan = store
+        .open_plans()?
+        .into_iter()
+        .find(|p| p.pod_id.is_some() && cfg.profile(&p.profile).is_ok_and(|x| x.is_job()))
+        .ok_or_else(|| {
+            Error::Refused(
+                "no launched job pod; plan the job profile (offrig_plan profile=job) and launch it"
+                    .into(),
+            )
+        })?;
+    let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
+    let pod = session
+        .rp
+        .get_pod(plan.pod_id.as_deref().unwrap_or_default())?;
+    session.write_ssh(&pod)?;
+    Ok((plan.id, cfg.ssh_alias.clone()))
+}
+
+/// offrig_exec: start, follow or stop a command on the job pod.
+pub fn job_exec(
+    cfg: &Config,
+    db: &Path,
+    action: &str,
+    name: &str,
+    command: Option<&str>,
+    tail_lines: u32,
+) -> Result<Value> {
+    let store = Store::open(db)?;
+    let (plan_id, alias) = job_pod(cfg, &store)?;
+    match action {
+        "start" => {
+            let command =
+                command.ok_or_else(|| Error::Refused("action=start needs a command".into()))?;
+            let j = store.journal(
+                "job_start",
+                Some(plan_id),
+                &json!({ "name": name, "command": command }),
+            )?;
+            let started = offrig_core::job::start(&alias, name, command)?;
+            store.journal_outcome(
+                j,
+                if started {
+                    "started"
+                } else {
+                    "already running"
+                },
+            )?;
+            Ok(json!({ "plan_id": plan_id, "name": name, "started": started }))
+        }
+        "status" => {
+            let s = offrig_core::job::status(&alias, name, tail_lines)?;
+            Ok(json!({ "plan_id": plan_id, "name": name, "status": s }))
+        }
+        "stop" => {
+            let j = store.journal("job_stop", Some(plan_id), &json!({ "name": name }))?;
+            offrig_core::job::stop(&alias, name)?;
+            store.journal_outcome(j, "stop sent")?;
+            Ok(json!({ "plan_id": plan_id, "name": name, "stopped": true }))
+        }
+        other => Err(Error::Refused(format!(
+            "action {other:?}: use start, status or stop"
+        ))),
+    }
+}
+
+/// offrig_put / offrig_get: copy a file or directory to or from the job pod.
+pub fn job_copy(
+    cfg: &Config,
+    db: &Path,
+    upload: bool,
+    local: &Path,
+    remote: &str,
+) -> Result<Value> {
+    let store = Store::open(db)?;
+    let (plan_id, alias) = job_pod(cfg, &store)?;
+    let pod_path = if upload {
+        offrig_core::job::put(&alias, local, remote)?
+    } else {
+        offrig_core::job::get(&alias, remote, local)?
+    };
+    Ok(json!({
+        "plan_id": plan_id,
+        "direction": if upload { "up" } else { "down" },
+        "local": local.display().to_string(),
+        "pod": pod_path,
     }))
 }

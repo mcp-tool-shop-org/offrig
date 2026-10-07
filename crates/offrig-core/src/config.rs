@@ -13,6 +13,9 @@ pub const OLLAMA_IMAGE: &str = "ollama/ollama:0.35.0";
 /// covers Blackwell (sm_120); v0.5.20 over v0.5.21, which was a day old on
 /// 2026-10-03. Research and sources: docs/sidecar-design.md, phase 3b.
 pub const SGLANG_IMAGE: &str = "lmsysorg/sglang:v0.5.20-cu130";
+/// The pinned PyTorch image for job profiles: CUDA 12.8, the first line with Blackwell
+/// (sm_120) kernels. Checked on Docker Hub 2026-10-06 (10 GB, published 2025-03-20).
+pub const JOB_IMAGE: &str = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04";
 /// Ollama's port inside the pod. It listens on 127.0.0.1 only and is never exposed.
 pub const REMOTE_OLLAMA_PORT: u16 = 11434;
 /// The local Ollama's port on this machine. The tunnel must never use it.
@@ -88,6 +91,42 @@ pub struct Profile {
     /// `recipe.model` from Hugging Face at start and serves it as `models[0].name`.
     #[serde(default)]
     pub recipe: Option<Recipe>,
+    /// A job pod: no model server, only sshd on a pinned image, for work that runs
+    /// on the GPU itself (a training run). Files go up with `put`, commands run with
+    /// `exec`, results come back with `get`. A job profile lists no models.
+    #[serde(default)]
+    pub job: Option<Job>,
+}
+
+/// The image a job pod runs. Nothing is served and nothing is tunnelled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Job {
+    /// A pinned image tag, never `latest`. It needs bash; sshd is installed if missing.
+    pub image: String,
+}
+
+impl Job {
+    pub fn validate(&self, profile: &str, models: usize, recipe: bool) -> Result<()> {
+        let bad = |why: String| Err(Error::Config(format!("profile {profile}: {why}")));
+        if !pinned(&self.image) {
+            return bad(format!(
+                "job image {:?} needs a pinned tag, not latest",
+                self.image
+            ));
+        }
+        if recipe {
+            return bad("a profile is a job or a recipe, not both".into());
+        }
+        if models != 0 {
+            return bad("a job profile serves no models; leave models empty".into());
+        }
+        Ok(())
+    }
+}
+
+/// `repo:tag` with a real tag: not empty, not `latest`, not a registry port.
+fn pinned(image: &str) -> bool {
+    matches!(image.rsplit_once(':'), Some((_, tag)) if !tag.is_empty() && tag != "latest" && !tag.contains('/'))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +157,11 @@ pub struct Recipe {
 impl Profile {
     pub fn engine(&self) -> Option<Engine> {
         self.recipe.as_ref().map(|r| r.engine)
+    }
+
+    /// A job pod runs commands, not a model server.
+    pub fn is_job(&self) -> bool {
+        self.job.is_some()
     }
 }
 
@@ -176,14 +220,11 @@ fn model(name: &str, size_gb: f64, images: bool) -> ModelEntry {
 impl Recipe {
     pub fn validate(&self, profile: &str, models: usize) -> Result<()> {
         let bad = |why: String| Err(Error::Config(format!("profile {profile}: {why}")));
-        match self.image.rsplit_once(':') {
-            Some((_, tag)) if !tag.is_empty() && tag != "latest" && !tag.contains('/') => {}
-            _ => {
-                return bad(format!(
-                    "recipe image {:?} needs a pinned tag, not latest",
-                    self.image
-                ));
-            }
+        if !pinned(&self.image) {
+            return bad(format!(
+                "recipe image {:?} needs a pinned tag, not latest",
+                self.image
+            ));
         }
         if self.model.trim().is_empty() || self.model.contains(char::is_whitespace) {
             return bad(format!(
@@ -253,6 +294,7 @@ pub fn default_profiles() -> Vec<Profile> {
             wait_for_gpu_minutes: 0,
             parallel: 4,
             recipe: None,
+            job: None,
         },
         Profile {
             name: "medium".into(),
@@ -279,6 +321,7 @@ pub fn default_profiles() -> Vec<Profile> {
             wait_for_gpu_minutes: 0,
             parallel: 4,
             recipe: None,
+            job: None,
         },
         Profile {
             name: "frontier".into(),
@@ -319,6 +362,7 @@ pub fn default_profiles() -> Vec<Profile> {
                 ],
                 hf_token_secret: None,
             }),
+            job: None,
         },
         rehearsal(
             "frontier-mini",
@@ -332,6 +376,33 @@ pub fn default_profiles() -> Vec<Profile> {
             17.0,
             "QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ",
         ),
+        Profile {
+            name: "job".into(),
+            tier: Tier::Medium,
+            // The medium tier's cards: 96 GB first, the 80 GB cards when none is free.
+            // Enough for a 30B model in bf16 next to a small student being trained.
+            gpu_type_ids: vec![
+                "NVIDIA RTX PRO 6000 Blackwell Server Edition".into(),
+                "NVIDIA RTX PRO 6000 Blackwell Workstation Edition".into(),
+                "NVIDIA A100-SXM4-80GB".into(),
+                "NVIDIA A100 80GB PCIe".into(),
+                "NVIDIA H100 NVL".into(),
+                "NVIDIA H100 80GB HBM3".into(),
+            ],
+            gpu_count: 1,
+            network_volume_id: None,
+            data_center_id: None,
+            volume_gb: 200,
+            container_disk_gb: 60,
+            context_length: 0,
+            models: vec![],
+            wait_for_gpu_minutes: 0,
+            parallel: 1,
+            recipe: None,
+            job: Some(Job {
+                image: JOB_IMAGE.into(),
+            }),
+        },
     ]
 }
 
@@ -368,6 +439,7 @@ fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
             ],
             hf_token_secret: None,
         }),
+        job: None,
     }
 }
 
@@ -446,6 +518,9 @@ impl Config {
             if let Some(r) = &p.recipe {
                 r.validate(&p.name, p.models.len())?;
             }
+            if let Some(j) = &p.job {
+                j.validate(&p.name, p.models.len(), p.recipe.is_some())?;
+            }
             if p.network_volume_id.is_some() && p.data_center_id.is_none() {
                 return Err(Error::Config(format!(
                     "profile {}: a network volume needs data_center_id (the volume's data center)",
@@ -495,6 +570,37 @@ mod tests {
         let back: Config = toml::from_str(&text).expect("config should parse back");
         assert_eq!(cfg, back);
         assert_eq!(cfg.zed_api_url(), "http://127.0.0.1:11435/v1");
+    }
+
+    #[test]
+    fn job_profiles_are_pinned_serve_nothing_and_are_never_a_recipe() {
+        let cfg = Config::default();
+        let job = cfg.profile("job").expect("job profile");
+        assert!(job.is_job() && job.models.is_empty() && job.recipe.is_none());
+        let j = job.job.clone().expect("job");
+        assert!(j.validate("t", 0, false).is_ok());
+        let latest = Job {
+            image: "runpod/pytorch:latest".into(),
+        };
+        assert!(latest.validate("t", 0, false).is_err(), "latest refused");
+        let untagged = Job {
+            image: "runpod/pytorch".into(),
+        };
+        assert!(
+            untagged.validate("t", 0, false).is_err(),
+            "untagged refused"
+        );
+        assert!(j.validate("t", 1, false).is_err(), "a job serves no models");
+        assert!(j.validate("t", 0, true).is_err(), "job or recipe, not both");
+        let mut bad = cfg.clone();
+        if let Some(p) = bad.profiles.iter_mut().find(|p| p.name == "job") {
+            p.models = vec![model("qwen3:4b", 2.5, false)];
+        }
+        assert!(bad.validate().is_err(), "the config check runs it");
+        assert!(
+            cfg.profiles.iter().filter(|p| p.is_job()).count() == 1,
+            "only the job profile is a job"
+        );
     }
 
     #[test]

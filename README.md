@@ -127,6 +127,9 @@ so a session survives compaction or a restart without re-explaining anything.
 | `offrig_job` | Launch progress, watchdog liveness, minutes left, spend so far |
 | `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
 | `offrig_run` | Starts a detached runner that keeps every model slot busy: drafts each ready handoff, revises at most twice against failed checks, feeds results to dependent handoffs, then shuts the pod down when the queue is dry (unless `keep_pod`). Work that code cannot check waits in review |
+| `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job` |
+| `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`), or kills it (`stop`) |
+| `offrig_get` | Copies a file or directory back from a job pod; do it before the shutdown, which deletes the pod's disk |
 | `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason |
 
 Roles come from Role OS (dossiers and starter-pack cards) plus four game roles shipped
@@ -157,6 +160,7 @@ Profiles live in `%APPDATA%\offrig\config.toml` (written on first change). Defau
 | frontier | 4 × RTX PRO 6000 (384 GB), **SGLang** | Qwen3-Coder-480B AWQ 4-bit (252 GB), about 130 GB left for context | $8.36/hr |
 | frontier-mini | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B FP8 (31 GB): the frontier engine path, rehearsed cheaply | about $1.7/hr |
 | frontier-mini-awq | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B AWQ (17 GB): the frontier's 4-bit MoE kernels, rehearsed cheaply | about $1.7/hr |
+| job | 1 × RTX PRO 6000 (96 GB); A100 or H100 80 GB if none is free | none: a **job pod** runs your work, not a model server | $2.09/hr (A100 fallback $1.59) |
 
 A profile with a `recipe` runs another engine than Ollama: a pinned image
 (`lmsysorg/sglang:v0.5.20-cu130`), a Hugging Face model it downloads at start, and
@@ -173,6 +177,27 @@ offrig checks every minute and creates the pod the moment the GPUs free up. Noth
 while it waits, Ctrl+C or the app's Cancel launch stops it, and if RunPod's price API is down it
 simply retries the create each minute. Large multi-GPU setups come and go within minutes.
 Prices are secure-cloud prices, read live; the pricing page is not the available price.
+
+### Job pods
+
+A profile with a `job` rents a GPU for work that runs on it, such as a training run, rather
+than for serving a model. Its pod runs a pinned PyTorch image
+(`runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04`, CUDA 12.8 for Blackwell)
+with sshd and nothing else:
+
+- It serves no model, so there is no tunnel and nothing is wired into Zed. sshd allows no
+  forwarding at all (`AllowTcpForwarding=no`); the only way in is ssh to the pod.
+- A job profile lists no models and cannot also have a recipe; the config check refuses
+  either.
+- `offrig up` and the app refuse a job profile before renting anything. It runs through
+  the side-car: `offrig_plan profile=job`, `offrig_launch`, then `offrig_put`,
+  `offrig_exec` and `offrig_get`. The launch is ready when sshd answers.
+- A command runs detached on the pod (`setsid nohup`) in `/workspace/job`, so it outlives
+  the side-car and the ssh session. It is sent as base64, so nothing in it is read by the
+  ssh shell. Its log and exit status stay in `/workspace/offrig/jobs/`. Hugging Face
+  downloads go to `/workspace/hf` on the pod volume.
+- Budget, plan, watchdog and shutdown work as for every other profile. Copy results back
+  before `offrig_shutdown`: the pod's disk goes with it.
 
 ### Staging weights on a network volume
 
@@ -394,6 +419,8 @@ Scored against the studio's workflow standards (0 missing, 1 partial, 2 present,
 | Kill an orphaned offrig tunnel | none needed; only offrig's own `ssh` is ever killed | port free | offrig |
 | Side-car launch (`offrig_launch`) | `offrig_shutdown`; automatic if setup fails; the watchdog at the deadline; the runner when its queue drains | pod terminated, plan closed with measured spend | the calling agent, with the watchdog as backstop |
 | Stage a volume (`offrig stage --yes`, bills monthly) | `offrig stage <profile> --remove --yes` | volume deleted, profile back to downloading | the human who staged it |
+| Start a job on a job pod (`offrig_exec action=start`) | `offrig_exec action=stop`, or `offrig_shutdown` | job killed with everything it started; its log stays until the pod is gone | the calling agent |
+| Copy files to or from a job pod (`offrig_put`, `offrig_get`) | delete the copy (on the pod, `offrig_exec`; here, the file) | as before the copy | the calling agent |
 
 ## Layout
 

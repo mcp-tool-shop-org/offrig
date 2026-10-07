@@ -4,6 +4,12 @@
 
 First version, built and tested live on 2026-10-02.
 
+- Job pods: a profile with a `job` rents a GPU for work that runs on it (a training run)
+  instead of a model server. The pod runs a pinned PyTorch image with sshd only, no
+  forwarding and no tunnel. New side-car tools `offrig_put`, `offrig_exec` (start, status,
+  stop; detached on the pod) and `offrig_get`; a default `job` profile on the medium
+  tier's GPUs. `offrig up` and the app refuse a job profile before renting.
+
 - Core library: RunPod REST and GraphQL client, pod spec with a pinned Ollama image and
   an sshd bootstrap, SSH tunnel with orphan reclaim, on-pod model pulls that survive the
   client exiting, Zed settings edits through a JSONC syntax tree, guard checks, cost and

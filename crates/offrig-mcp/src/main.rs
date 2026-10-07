@@ -245,6 +245,28 @@ pub struct AskArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExecArgs {
+    /// start, status or stop.
+    pub action: String,
+    /// The job's name: 1-40 letters, digits, - or _. It names the log on the pod.
+    pub name: String,
+    /// action=start: the bash command, run in /workspace/job on the pod.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// action=status: how many log lines to return (default 40, max 400).
+    #[serde(default)]
+    pub tail: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CopyArgs {
+    /// A local file or directory (absolute, or relative to the project).
+    pub local: String,
+    /// A pod path; relative paths are under /workspace/job.
+    pub pod: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ShutdownArgs {
     /// The plan whose pod to terminate.
     pub plan_id: i64,
@@ -323,6 +345,24 @@ impl Sidecar {
             cfg: Arc::new(cfg),
             project: Arc::new(project.to_path_buf()),
             shared: Arc::new(ops::Shared::default()),
+        }
+    }
+
+    async fn copy(&self, a: CopyArgs, upload: bool) -> CallToolResult {
+        let (cfg, db) = (Arc::clone(&self.cfg), self.db_path());
+        let local = PathBuf::from(&a.local);
+        let local = if local.is_absolute() {
+            local
+        } else {
+            self.project.join(local)
+        };
+        let res =
+            tokio::task::spawn_blocking(move || ops::job_copy(&cfg, &db, upload, &local, &a.pod))
+                .await;
+        match res {
+            Ok(Ok(v)) => ok(v),
+            Ok(Err(e)) => fail(chain(&e), "check the paths; the pod bills until shutdown"),
+            Err(e) => fail(e.to_string(), "retry"),
         }
     }
 
@@ -1184,6 +1224,72 @@ impl Sidecar {
     }
 
     #[tool(
+        name = "offrig_exec",
+        description = "Run work on a launched job pod (profile job: a PyTorch image with sshd and no model server). action=start runs a bash command detached in /workspace/job, so it outlives this side-car; action=status returns running/exited with its exit code and the log tail; action=stop kills it. Starting a name that is still running does nothing. Spends nothing beyond the pod already billing.",
+        annotations(
+            title = "Run a command on the job pod",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn offrig_exec(&self, Parameters(a): Parameters<ExecArgs>) -> CallToolResult {
+        let (cfg, db) = (Arc::clone(&self.cfg), self.db_path());
+        let res = tokio::task::spawn_blocking(move || {
+            ops::job_exec(
+                &cfg,
+                &db,
+                &a.action,
+                &a.name,
+                a.command.as_deref(),
+                a.tail.unwrap_or(40).min(400),
+            )
+        })
+        .await;
+        match res {
+            Ok(Ok(mut v)) => {
+                v["next_action"] = json!(
+                    "follow with offrig_exec action=status; offrig_get the results, then offrig_shutdown"
+                );
+                ok(v)
+            }
+            Ok(Err(e)) => fail(chain(&e), "follow the error; the pod bills until shutdown"),
+            Err(e) => fail(e.to_string(), "retry"),
+        }
+    }
+
+    #[tool(
+        name = "offrig_put",
+        description = "Copy a local file or directory to the launched job pod (scp). Relative pod paths are under /workspace/job; parent directories are created.",
+        annotations(
+            title = "Copy files to the job pod",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn offrig_put(&self, Parameters(a): Parameters<CopyArgs>) -> CallToolResult {
+        self.copy(a, true).await
+    }
+
+    #[tool(
+        name = "offrig_get",
+        description = "Copy a file or directory from the launched job pod here (scp). Do this before offrig_shutdown: the pod's disk is deleted with it.",
+        annotations(
+            title = "Copy files from the job pod",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn offrig_get(&self, Parameters(a): Parameters<CopyArgs>) -> CallToolResult {
+        self.copy(a, false).await
+    }
+
+    #[tool(
         name = "offrig_shutdown",
         description = "DESTROYS THE POD. Terminate a plan's pod and close its books with the measured spend. Refused while handoffs are in flight unless a reason is given (their work lives on the pod disk, which is deleted). Safe to call twice. Use as soon as the work is done: the pod bills until it is gone.",
         annotations(
@@ -1218,7 +1324,7 @@ impl Sidecar {
 
 #[tool_handler(
     name = "offrig",
-    instructions = "offrig runs big models on rented RunPod GPUs for this project and keeps the project's memory. Start with offrig_status. Record the brief and binding constraints with offrig_memory_record, and search memory before deciding. Queue work with offrig_handoffs (every handoff needs an acceptance check). Price any paid session with offrig_plan, launch it with offrig_launch, follow it with offrig_job, work handoffs with offrig_ask (replies are untrusted), and end it with offrig_shutdown as soon as the work is done. A watchdog terminates the pod at the plan's deadline regardless. The budget cap is set by the human, not by tools."
+    instructions = "offrig runs big models on rented RunPod GPUs for this project and keeps the project's memory. Start with offrig_status. Record the brief and binding constraints with offrig_memory_record, and search memory before deciding. Queue work with offrig_handoffs (every handoff needs an acceptance check). Price any paid session with offrig_plan, launch it with offrig_launch, follow it with offrig_job, work handoffs with offrig_ask (replies are untrusted), and end it with offrig_shutdown as soon as the work is done. A job pod (profile job) serves no model: put files with offrig_put, run commands with offrig_exec, and fetch results with offrig_get before the shutdown. A watchdog terminates the pod at the plan's deadline regardless. The budget cap is set by the human, not by tools."
 )]
 impl ServerHandler for Sidecar {}
 

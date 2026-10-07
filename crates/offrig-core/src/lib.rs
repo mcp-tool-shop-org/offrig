@@ -13,6 +13,7 @@ pub mod cost;
 pub mod error;
 pub mod fsutil;
 pub mod guard;
+pub mod job;
 pub mod ollama;
 pub mod proc;
 pub mod remote;
