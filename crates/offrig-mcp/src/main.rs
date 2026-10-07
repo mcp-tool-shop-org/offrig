@@ -56,13 +56,39 @@ fn ok(mut v: Value) -> CallToolResult {
     CallToolResult::structured(v)
 }
 
-/// Errors are results the agent can act on, never protocol errors.
-fn fail(error: impl Into<String>, next_action: impl Into<String>) -> CallToolResult {
+/// Whether a caller can reasonably try the same call again.
+fn retryable_code(code: &str) -> bool {
+    matches!(
+        code,
+        "no_capacity" | "timeout" | "network" | "ssh" | "model_server"
+    )
+}
+
+fn error_result(code: &str, retryable: bool, error: String, next_action: String) -> CallToolResult {
     CallToolResult::structured_error(json!({
         "ok": false,
-        "error": error.into(),
-        "next_action": next_action.into(),
+        "code": code,
+        "error": offrig_core::trace::redact(&error),
+        "next_action": next_action,
+        "retryable": retryable,
     }))
+}
+
+/// Errors are results the agent can act on, never protocol errors. Every one carries
+/// a stable machine `code`, the message in `error`, the hint in `next_action` and
+/// whether a retry can help.
+fn fail(code: &str, error: impl Into<String>, next_action: impl Into<String>) -> CallToolResult {
+    error_result(code, retryable_code(code), error.into(), next_action.into())
+}
+
+/// A failure from the library: the code and retryability come from the error.
+fn fail_err(e: &offrig_core::Error, next_action: impl Into<String>) -> CallToolResult {
+    error_result(e.code(), e.retryable(), chain(e), next_action.into())
+}
+
+/// A background task that panicked or was cancelled.
+fn fail_internal(e: &dyn std::fmt::Display, next_action: impl Into<String>) -> CallToolResult {
+    error_result("internal", true, e.to_string(), next_action.into())
 }
 
 fn budget_json(b: &store::Budget) -> Value {
@@ -410,8 +436,8 @@ impl Sidecar {
         .await;
         match res {
             Ok(Ok(v)) => ok(v),
-            Ok(Err(e)) => fail(chain(&e), "check the paths; the pod bills until shutdown"),
-            Err(e) => fail(e.to_string(), "retry"),
+            Ok(Err(e)) => fail_err(&e, "check the paths; the pod bills until shutdown"),
+            Err(e) => fail_internal(&e, "retry"),
         }
     }
 
@@ -499,7 +525,7 @@ impl Sidecar {
         });
         let (budget, handoffs, journal, ready, open_plans, has_brief) = match local {
             Ok(v) => v,
-            Err(e) => return fail(chain(&e), "check the project database at .offrig/offrig.db"),
+            Err(e) => return fail_err(&e, "check the project database at .offrig/offrig.db"),
         };
         let remote = tokio::task::spawn_blocking(|| {
             let rp = RunPod::from_env()?;
@@ -605,6 +631,7 @@ impl Sidecar {
     async fn offrig_offers(&self, Parameters(a): Parameters<OffersArgs>) -> CallToolResult {
         if a.gpu_count == 0 || a.gpu_count > 8 {
             return fail(
+                "invalid_input",
                 "gpu_count must be 1 to 8",
                 "use 1 for the medium tier or 4 for frontier",
             );
@@ -613,8 +640,8 @@ impl Sidecar {
         let res = tokio::task::spawn_blocking(move || RunPod::from_env()?.gpu_offers(n)).await;
         let offers = match res {
             Ok(Ok(o)) => o,
-            Ok(Err(e)) => return fail(chain(&e), "check RUNPOD_API_KEY and network, then retry"),
-            Err(e) => return fail(e.to_string(), "retry"),
+            Ok(Err(e)) => return fail_err(&e, "check RUNPOD_API_KEY and network, then retry"),
+            Err(e) => return fail_internal(&e, "retry"),
         };
         let min = a.min_vram_gb.unwrap_or(0);
         let list: Vec<Value> = offers
@@ -654,6 +681,7 @@ impl Sidecar {
                     .map(|p| p.name.as_str())
                     .collect();
                 return fail(
+                    "not_found",
                     format!("no profile {:?}", a.profile),
                     format!("use one of: {}", names.join(", ")),
                 );
@@ -661,10 +689,7 @@ impl Sidecar {
         };
         let container_disk_gb = match a.container_disk_gb.map(planning::validate_container_disk) {
             Some(Err(e)) => {
-                return fail(
-                    chain(&e),
-                    "pass a container_disk_gb of 1 to 2000, or leave it out",
-                );
+                return fail_err(&e, "pass a container_disk_gb of 1 to 2000, or leave it out");
             }
             Some(Ok(gb)) => Some(gb),
             None => None,
@@ -682,12 +707,12 @@ impl Sidecar {
         let (offers, account) = match res {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "plans need live prices; check RUNPOD_API_KEY and network",
                 );
             }
-            Err(e) => return fail(e.to_string(), "retry"),
+            Err(e) => return fail_internal(&e, "retry"),
         };
         // The GPUs the plan may rent and the price it is held to: the profile's list
         // narrowed by price, memory and fallback. The price is the dearest listed GPU
@@ -701,8 +726,8 @@ impl Sidecar {
         let choice = match planning::choose(&profile, &offers, &limits) {
             Ok(c) => c,
             Err(e) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "check offrig_offers, loosen max_price_hr or no_fallback, or plan a different profile; nothing was spent",
                 );
             }
@@ -720,8 +745,8 @@ impl Sidecar {
         let lane = match self.ctx.own() {
             Ok(l) => l,
             Err(e) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "the lane registry in offrig's config directory could not be updated; nothing was spent",
                 );
             }
@@ -730,8 +755,8 @@ impl Sidecar {
         let plan = match plan {
             Ok(p) => p,
             Err(e) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "shorten max_hours or choose a cheaper profile; the cap itself is the human's to change",
                 );
             }
@@ -742,8 +767,8 @@ impl Sidecar {
         if let Some(v) = &min_cuda
             && let Err(e) = self.with_store(|s| s.set_plan_min_cuda(plan.id, v))
         {
-            return fail(
-                chain(&e),
+            return fail_err(
+                &e,
                 "the plan could not record its CUDA floor; nothing was spent, plan again",
             );
         }
@@ -751,8 +776,8 @@ impl Sidecar {
         if let Some(tag) = &lane.tag
             && let Err(e) = self.with_store(|s| s.set_plan_lane(plan.id, tag))
         {
-            return fail(
-                chain(&e),
+            return fail_err(
+                &e,
                 "the plan could not record its lane; nothing was spent, plan again",
             );
         }
@@ -760,16 +785,16 @@ impl Sidecar {
         if let Some(m) = a.wait_minutes
             && let Err(e) = self.with_store(|s| s.set_plan_wait_minutes(plan.id, m))
         {
-            return fail(
-                chain(&e),
+            return fail_err(
+                &e,
                 "the plan could not record its wait; nothing was spent, plan again",
             );
         }
         if let Some(gb) = container_disk_gb
             && let Err(e) = self.with_store(|s| s.set_plan_container_disk_gb(plan.id, gb))
         {
-            return fail(
-                chain(&e),
+            return fail_err(
+                &e,
                 "the plan could not record its container disk; nothing was spent, plan again",
             );
         }
@@ -818,8 +843,8 @@ impl Sidecar {
         let kind = match a.kind.as_deref().map(Kind::parse).transpose() {
             Ok(k) => k,
             Err(e) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "omit kind or use brief, constraint, decision, fact or checkpoint",
                 );
             }
@@ -838,7 +863,7 @@ impl Sidecar {
                     "next_action": if n == 0 { "nothing recorded on this; record what you learn with offrig_memory_record" } else { "cite records by id when you rely on them" },
                 }))
             }
-            Err(e) => fail(chain(&e), "simplify the query to a few plain words"),
+            Err(e) => fail_err(&e, "simplify the query to a few plain words"),
         }
     }
 
@@ -857,10 +882,7 @@ impl Sidecar {
         let kind = match Kind::parse(&a.kind) {
             Ok(k) => k,
             Err(e) => {
-                return fail(
-                    chain(&e),
-                    "use brief, constraint, decision, fact or checkpoint",
-                );
+                return fail_err(&e, "use brief, constraint, decision, fact or checkpoint");
             }
         };
         let new = NewRecord {
@@ -878,8 +900,8 @@ impl Sidecar {
             Ok(id) => ok(
                 json!({"id": id, "kind": kind.as_str(), "next_action": "cite it as #id; supersede it rather than contradict it"}),
             ),
-            Err(e) => fail(
-                chain(&e),
+            Err(e) => fail_err(
+                &e,
                 "search for the record it conflicts with, then supersede it with a reason",
             ),
         }
@@ -902,14 +924,11 @@ impl Sidecar {
             "add" => {
                 let role = a.role.unwrap_or_default();
                 if let Err(e) = roles::load(&role, self.role_os().as_deref()) {
-                    return fail(
-                        chain(&e),
-                        "call offrig_handoffs with action=roles for valid ids",
-                    );
+                    return fail_err(&e, "call offrig_handoffs with action=roles for valid ids");
                 }
                 let checks = match offrig_core::checks::parse(&a.checks) {
                     Ok(c) => c,
-                    Err(e) => return fail(chain(&e), "fix that check and add again"),
+                    Err(e) => return fail_err(&e, "fix that check and add again"),
                 };
                 let new = NewHandoff {
                     role_id: role,
@@ -925,7 +944,7 @@ impl Sidecar {
                     Ok(id) => ok(
                         json!({"id": id, "state": "pending", "next_action": "add the rest of the queue, or preview the role block"}),
                     ),
-                    Err(e) => fail(chain(&e), "fix the field named in the error and add again"),
+                    Err(e) => fail_err(&e, "fix the field named in the error and add again"),
                 }
             }
             "list" => match self.with_store(|s| s.handoffs()) {
@@ -933,7 +952,7 @@ impl Sidecar {
                     "handoffs": hs.iter().map(|h| handoff_json(h, now)).collect::<Vec<_>>(),
                     "next_action": "work ready handoffs in order; dependencies gate the rest",
                 })),
-                Err(e) => fail(chain(&e), "check the project database"),
+                Err(e) => fail_err(&e, "check the project database"),
             },
             "roles" => {
                 let mut ids: Vec<String> =
@@ -971,12 +990,13 @@ impl Sidecar {
                             "next_action": "queue work for this role with action=add",
                         }))
                     }
-                    Err(e) => fail(chain(&e), "call action=roles for valid ids"),
+                    Err(e) => fail_err(&e, "call action=roles for valid ids"),
                 }
             }
             "output" => {
                 let Some(id) = a.handoff_id else {
                     return fail(
+                        "invalid_input",
                         "output needs handoff_id",
                         "pass the handoff's id from action=list",
                     );
@@ -989,11 +1009,14 @@ impl Sidecar {
                 });
                 let (h, outs, why) = match res {
                     Ok((Some(h), o, w)) => (h, o, w),
-                    Ok((None, ..)) => return fail(format!("no handoff {id}"), "list the queue"),
-                    Err(e) => return fail(chain(&e), "check the project database"),
+                    Ok((None, ..)) => {
+                        return fail("not_found", format!("no handoff {id}"), "list the queue");
+                    }
+                    Err(e) => return fail_err(&e, "check the project database"),
                 };
                 let Some(best) = offrig_core::runner::best(&outs) else {
                     return fail(
+                        "not_ready",
                         format!("handoff {id} has no output yet"),
                         "run the queue with offrig_run",
                     );
@@ -1032,6 +1055,7 @@ impl Sidecar {
             act @ ("complete" | "invalid" | "violation" | "fail" | "retry") => {
                 let Some(id) = a.handoff_id else {
                     return fail(
+                        "invalid_input",
                         format!("{act} needs handoff_id"),
                         "pass the handoff's id from action=list",
                     );
@@ -1043,6 +1067,7 @@ impl Sidecar {
                     _ if act == "complete" => "acceptance check met".to_string(),
                     _ => {
                         return fail(
+                            "invalid_input",
                             format!("{act} needs a reason"),
                             "pass reason: what failed, kept in the handoff's history",
                         );
@@ -1074,13 +1099,14 @@ impl Sidecar {
                             _ => "a runner working the queue picks it up; otherwise offrig_run, or offrig_ask for one turn",
                         },
                     })),
-                    Err(e) => fail(
-                        chain(&e),
+                    Err(e) => fail_err(
+                        &e,
                         "list the handoff to see its state; blocked ones need override_reason",
                     ),
                 }
             }
             other => fail(
+                "invalid_input",
                 format!("unknown action {other:?}"),
                 "use add, list, roles, preview, complete, invalid, violation, fail or retry",
             ),
@@ -1102,11 +1128,18 @@ impl Sidecar {
         let id = a.plan_id;
         let plan = match self.with_store(|s| s.plan(id)) {
             Ok(Some(p)) => p,
-            Ok(None) => return fail(format!("no plan {id}"), "make one with offrig_plan"),
-            Err(e) => return fail(chain(&e), "check the project database"),
+            Ok(None) => {
+                return fail(
+                    "not_found",
+                    format!("no plan {id}"),
+                    "make one with offrig_plan",
+                );
+            }
+            Err(e) => return fail_err(&e, "check the project database"),
         };
         if plan.state == "closed" || plan.state == "cancelled" {
             return fail(
+                "invalid_state",
                 format!("plan {id} is {}", plan.state),
                 "make a new plan with offrig_plan",
             );
@@ -1126,6 +1159,7 @@ impl Sidecar {
         }
         if plan.state == "committed" {
             return fail(
+                "invalid_state",
                 format!(
                     "plan {id} is committed but no launch for it is running in this side-car (pod: {:?})",
                     plan.pod_id
@@ -1143,8 +1177,8 @@ impl Sidecar {
         }) {
             Ok(c) => c,
             Err(e) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "the plan's lane is unknown; nothing was spent, plan again",
                 );
             }
@@ -1152,8 +1186,8 @@ impl Sidecar {
         // One lane, one ssh alias, one pod at a time: a lane that already has a live
         // plan refuses a second launch before anything remote is asked.
         if let Err(e) = self.with_store(|s| ops::lane_busy(&self.ctx, s, &cfg, id, &[])) {
-            return fail(
-                chain(&e),
+            return fail_err(
+                &e,
                 "offrig_shutdown that plan (or wait for it to finish); nothing was spent",
             );
         }
@@ -1169,12 +1203,9 @@ impl Sidecar {
         let lane_pods = match pre {
             Ok(Ok(pods)) => pods,
             Ok(Err(e)) => {
-                return fail(
-                    chain(&e),
-                    "fix the problem named in the error; nothing was spent",
-                );
+                return fail_err(&e, "fix the problem named in the error; nothing was spent");
             }
-            Err(e) => return fail(e.to_string(), "retry; nothing was spent"),
+            Err(e) => return fail_internal(&e, "retry; nothing was spent"),
         };
         // The check and the commitment happen under one hold of the store, so two
         // launches racing in this side-car cannot both pass.
@@ -1186,23 +1217,20 @@ impl Sidecar {
         }) {
             Ok(Ok(p)) => p,
             Ok(Err(e)) => {
-                return fail(
-                    chain(&e),
+                return fail_err(
+                    &e,
                     "shut that pod down first (offrig_shutdown, offrig down from the CLI, or the app); nothing was spent",
                 );
             }
             Err(e) => {
-                return fail(
-                    chain(&e),
-                    "make a cheaper or shorter plan; nothing was spent",
-                );
+                return fail_err(&e, "make a cheaper or shorter plan; nothing was spent");
             }
         };
         let job_id = match self.with_store(|s| s.create_job(id, "launch")) {
             Ok(j) => j,
             Err(e) => {
                 let _ = self.with_store(|s| s.close_plan(id, 0.0));
-                return fail(chain(&e), "nothing was rented; the commitment was released");
+                return fail_err(&e, "nothing was rented; the commitment was released");
             }
         };
         let watchdog = spawn_watchdog(&self.project, id);
@@ -1277,19 +1305,25 @@ impl Sidecar {
         });
         let (plan, launch, run, alive, workable) = match checked {
             Ok(v) => v,
-            Err(e) => return fail(chain(&e), "check the project database"),
+            Err(e) => return fail_err(&e, "check the project database"),
         };
         let Some(plan) = plan else {
-            return fail(format!("no plan {id}"), "plan and launch first");
+            return fail(
+                "not_found",
+                format!("no plan {id}"),
+                "plan and launch first",
+            );
         };
         if plan.state != "committed" || plan.pod_id.is_none() {
             return fail(
+                "invalid_state",
                 format!("plan {id} has no live pod"),
                 "launch it with offrig_launch first",
             );
         }
         if launch.as_ref().is_none_or(|j| j.state != "done") {
             return fail(
+                "not_ready",
                 "the launch is not ready yet",
                 "wait until offrig_job reports state done",
             );
@@ -1304,17 +1338,19 @@ impl Sidecar {
         }
         if workable == 0 {
             return fail(
+                "invalid_state",
                 "nothing is ready to run",
                 "queue handoffs with offrig_handoffs, or close the ones in review",
             );
         }
         let job = match self.with_store(|s| s.create_job(id, "run")) {
             Ok(j) => j,
-            Err(e) => return fail(chain(&e), "check the project database"),
+            Err(e) => return fail_err(&e, "check the project database"),
         };
         if let Err(e) = spawn_runner(&self.project, id, a.keep_pod) {
             let _ = self.with_store(|s| s.update_job(job, "failed", &json!({}), Some(&e)));
             return fail(
+                "internal",
                 format!("could not start the runner: {e}"),
                 "work handoffs with offrig_ask instead",
             );
@@ -1347,11 +1383,12 @@ impl Sidecar {
             Ok(Some(j)) => j,
             Ok(None) => {
                 return fail(
+                    "not_found",
                     "no such job",
                     "pass the job_id from offrig_launch, or a plan_id",
                 );
             }
-            Err(e) => return fail(chain(&e), "check the project database"),
+            Err(e) => return fail_err(&e, "check the project database"),
         };
         let now = cost::now_unix();
         // While the pod boots, the launch thread's last step can be minutes old (a slow
@@ -1448,7 +1485,11 @@ impl Sidecar {
     )]
     async fn offrig_ask(&self, Parameters(a): Parameters<AskArgs>) -> CallToolResult {
         if a.instruction.trim().is_empty() {
-            return fail("instruction is empty", "say what this turn should do");
+            return fail(
+                "invalid_input",
+                "instruction is empty",
+                "say what this turn should do",
+            );
         }
         let (ctx, db, shared) = (
             Arc::clone(&self.ctx),
@@ -1466,11 +1507,11 @@ impl Sidecar {
                 );
                 ok(v)
             }
-            Ok(Err(e)) => fail(
-                chain(&e),
+            Ok(Err(e)) => fail_err(
+                &e,
                 "if no session is running, launch a plan; otherwise follow the error",
             ),
-            Err(e) => fail(e.to_string(), "retry"),
+            Err(e) => fail_internal(&e, "retry"),
         }
     }
 
@@ -1521,8 +1562,8 @@ impl Sidecar {
                 });
                 ok(v)
             }
-            Ok(Err(e)) => fail(chain(&e), "follow the error; the pod bills until shutdown"),
-            Err(e) => fail(e.to_string(), "retry"),
+            Ok(Err(e)) => fail_err(&e, "follow the error; the pod bills until shutdown"),
+            Err(e) => fail_internal(&e, "retry"),
         }
     }
 
@@ -1584,11 +1625,11 @@ impl Sidecar {
                 );
                 ok(v)
             }
-            Ok(Err(e)) => fail(
-                chain(&e),
+            Ok(Err(e)) => fail_err(
+                &e,
                 "follow the error; the pod still bills until shutdown succeeds or the watchdog's deadline",
             ),
-            Err(e) => fail(e.to_string(), "retry"),
+            Err(e) => fail_internal(&e, "retry"),
         }
     }
 }
@@ -1597,7 +1638,80 @@ impl Sidecar {
     name = "offrig",
     instructions = "offrig runs big models on rented RunPod GPUs for this project and keeps the project's memory. Start with offrig_status. Record the brief and binding constraints with offrig_memory_record, and search memory before deciding. Queue work with offrig_handoffs (every handoff needs an acceptance check). Price any paid session with offrig_plan, launch it with offrig_launch, follow it with offrig_job, work handoffs with offrig_ask (replies are untrusted), and end it with offrig_shutdown as soon as the work is done. A job pod (profile job) serves no model: put files with offrig_put, run commands with offrig_exec, and fetch results with offrig_get before the shutdown. A watchdog terminates the pod at the plan's deadline regardless. The budget cap is set by the human, not by tools."
 )]
-impl ServerHandler for Sidecar {}
+impl ServerHandler for Sidecar {
+    /// The router's own failures (arguments that do not parse, an unknown tool) come
+    /// back as protocol errors or bare text. Every tool failure has one shape, so they
+    /// are rewritten into the structured result the tools themselves return.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        match Self::tool_router().call(tcc).await {
+            Ok(rmcp::model::CallToolResponse::Complete(r))
+                if r.is_error == Some(true) && r.structured_content.is_none() =>
+            {
+                Ok(rmcp::model::CallToolResponse::Complete(router_failure(&r)))
+            }
+            Ok(other) => Ok(other),
+            Err(e) => Ok(rmcp::model::CallToolResponse::Complete(error_result(
+                if e.message.contains("not found") {
+                    "not_found"
+                } else if e.code == rmcp::model::ErrorCode::INTERNAL_ERROR {
+                    "internal"
+                } else {
+                    "invalid_input"
+                },
+                false,
+                e.message.to_string(),
+                "check the tool name and its arguments against the tool's schema".into(),
+            ))),
+        }
+    }
+}
+
+/// A router failure that arrived as plain text, as a structured result.
+fn router_failure(r: &CallToolResult) -> CallToolResult {
+    let text = r
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    error_result(
+        "invalid_input",
+        false,
+        if text.is_empty() {
+            "the arguments could not be read".into()
+        } else {
+            text
+        },
+        "check the arguments against the tool's schema".into(),
+    )
+}
+
+/// `--help` and `--version` answer and exit; without them the binary would start
+/// serving MCP on stdio and wait for a client.
+fn info_flag(mut args: impl Iterator<Item = String>) -> Option<String> {
+    args.find_map(|a| match a.as_str() {
+        "-h" | "--help" => Some(format!(
+            "offrig-mcp {}: the offrig side-car, an MCP server on stdio
+
+             USAGE:
+  offrig-mcp [--project <dir>]            serve MCP on stdin/stdout for the project
+               offrig-mcp --sidecar-port [--check]     print the port this project's shell-driven side-car uses
+               offrig-mcp --help | --version
+
+             The project directory is --project, else OFFRIG_PROJECT, else the current directory.
+             RUNPOD_API_KEY must be set for the tools that talk to RunPod. Tool failures are
+             structured results with ok:false, code, error, next_action and retryable.",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "-V" | "--version" => Some(format!("offrig-mcp {}", env!("CARGO_PKG_VERSION"))),
+        _ => None,
+    })
+}
 
 fn project_dir() -> anyhow::Result<PathBuf> {
     let mut args = std::env::args().skip(1);
@@ -1708,6 +1822,10 @@ fn sidecar_port(project: &Path, cfg: Config, registry: Registry) -> anyhow::Resu
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if let Some(text) = info_flag(std::env::args().skip(1)) {
+        println!("{text}");
+        return Ok(());
+    }
     // stdout carries the protocol; anything human goes to stderr.
     let project = project_dir()?;
     if let Some(plan_id) = watchdog_plan() {

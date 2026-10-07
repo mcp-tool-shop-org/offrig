@@ -20,7 +20,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-app",
-      "qualifyingSourceCommits": 5,
+      "qualifyingSourceCommits": 6,
       "rebaseline": null
     },
     {
@@ -125,8 +125,8 @@
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 5,
-        "lines": 5245,
+        "commits": 6,
+        "lines": 5255,
         "path": "Cargo.lock"
       },
       {
@@ -150,8 +150,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 21,
-        "lines": 538,
+        "commits": 22,
+        "lines": 561,
         "path": "atlas/README.md"
       },
       {
@@ -160,19 +160,69 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 21,
-        "lines": 2348,
+        "commits": 22,
+        "lines": 2432,
         "path": "atlas/page.json"
       },
       {
-        "commits": 21,
-        "lines": 2684,
+        "commits": 22,
+        "lines": 2736,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 21,
-        "lines": 11638,
+        "commits": 22,
+        "lines": 11753,
         "path": "atlas/structure.json"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "crates/offrig-app/Cargo.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 18,
+        "path": "crates/offrig-app/assets/icon/make_ico.py"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig.ico"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig_128.png"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig_16.png"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig_256.png"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig_32.png"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig_48.png"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "crates/offrig-app/assets/icon/offrig_64.png"
+      },
+      {
+        "commits": 1,
+        "lines": 22,
+        "path": "crates/offrig-app/build.rs"
       },
       {
         "commits": 3,
@@ -180,8 +230,8 @@
         "path": "crates/offrig-app/src/app.rs"
       },
       {
-        "commits": 1,
-        "lines": 5,
+        "commits": 2,
+        "lines": 38,
         "path": "crates/offrig-app/src/main.rs"
       },
       {
@@ -700,9 +750,9 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-10-07T19:28:03.990Z",
+  "generatedAt": "2026-10-07T19:36:02.038Z",
   "generatedFrom": {
-    "commit": "44cae7567376c1ddaa26302c609ae7788c78f351"
+    "commit": "0f6fd059bc14542c3b64b65064d1bebe67881314"
   },
   "pairs": [
     {
@@ -750,43 +800,43 @@
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 18,
-      "shared": 18,
+      "either": 19,
+      "shared": 19,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 18,
-      "shared": 18,
+      "either": 19,
+      "shared": 19,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 18,
-      "shared": 18,
+      "either": 19,
+      "shared": 19,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 18,
-      "shared": 18,
+      "either": 19,
+      "shared": 19,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 18,
-      "shared": 18,
+      "either": 19,
+      "shared": 19,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 18,
-      "shared": 18,
+      "either": 19,
+      "shared": 19,
       "strength": 1
     },
     {
@@ -833,7 +883,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 20.75,
+    "appliedChangesetLimit": 22.5,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -842,16 +892,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-10-07T12:09:09-07:00",
-    "inScopeFiles": 83,
+    "headDate": "2026-10-07T12:31:40-07:00",
+    "inScopeFiles": 90,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 35,
+    "qualifyingCommits": 36,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-10T19:09:09.000Z",
+    "since": "2026-04-10T19:31:40.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

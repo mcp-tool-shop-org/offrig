@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
+use crate::trace;
 
 pub const REST_BASE: &str = "https://rest.runpod.io/v1";
 pub const GRAPHQL_URL: &str = "https://api.runpod.io/graphql";
@@ -223,22 +224,26 @@ impl RunPod {
     }
 
     pub fn list_pods(&self) -> Result<Vec<Pod>> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .get(self.url("/pods?includeMachine=true"))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("list pods", e))?;
+        trace::api("list pods", resp.status().as_u16(), started);
         read_json(resp, "list pods")
     }
 
     pub fn get_pod(&self, id: &str) -> Result<Pod> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .get(self.url(&format!("/pods/{id}?includeMachine=true")))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("get pod", e))?;
+        trace::api("get pod", resp.status().as_u16(), started);
         read_json(resp, &format!("get pod {id}"))
     }
 
@@ -251,43 +256,51 @@ impl RunPod {
     }
 
     pub fn create_pod(&self, spec: &PodCreate) -> Result<Pod> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .post(self.url("/pods"))
             .header("Authorization", self.auth())
             .send_json(spec)
             .map_err(|e| Error::http("create pod", e))?;
+        trace::api("create pod", resp.status().as_u16(), started);
         read_json(resp, &format!("create pod {}", spec.name))
     }
 
     /// Terminate a pod. Its container disk is gone afterwards; a network volume is not.
     pub fn delete_pod(&self, id: &str) -> Result<()> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .delete(self.url(&format!("/pods/{id}")))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("delete pod", e))?;
+        trace::api("delete pod", resp.status().as_u16(), started);
         read_ok(resp, &format!("delete pod {id}"))
     }
 
     pub fn stop_pod(&self, id: &str) -> Result<()> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .post(self.url(&format!("/pods/{id}/stop")))
             .header("Authorization", self.auth())
             .send_empty()
             .map_err(|e| Error::http("stop pod", e))?;
+        trace::api("stop pod", resp.status().as_u16(), started);
         read_ok(resp, &format!("stop pod {id}"))
     }
 
     pub fn list_volumes(&self) -> Result<Vec<NetworkVolume>> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .get(self.url("/networkvolumes"))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("list network volumes", e))?;
+        trace::api("list network volumes", resp.status().as_u16(), started);
         read_json(resp, "list network volumes")
     }
 
@@ -299,22 +312,26 @@ impl RunPod {
     ) -> Result<NetworkVolume> {
         let body =
             serde_json::json!({ "name": name, "size": size_gb, "dataCenterId": data_center_id });
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .post(self.url("/networkvolumes"))
             .header("Authorization", self.auth())
             .send_json(&body)
             .map_err(|e| Error::http("create network volume", e))?;
+        trace::api("create network volume", resp.status().as_u16(), started);
         read_json(resp, &format!("create network volume {name}"))
     }
 
     pub fn delete_volume(&self, id: &str) -> Result<()> {
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .delete(self.url(&format!("/networkvolumes/{id}")))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("delete network volume", e))?;
+        trace::api("delete network volume", resp.status().as_u16(), started);
         read_ok(resp, &format!("delete network volume {id}"))
     }
 
@@ -329,12 +346,14 @@ impl RunPod {
         struct GqlError {
             message: String,
         }
+        let started = std::time::Instant::now();
         let resp = self
             .agent
             .post(&self.graphql_url)
             .header("Authorization", self.auth())
             .send_json(serde_json::json!({ "query": query }))
             .map_err(|e| Error::http(what, e))?;
+        trace::api(what, resp.status().as_u16(), started);
         let parsed: Resp<T> = read_json(resp, what)?;
         if !parsed.errors.is_empty() {
             let message = parsed
@@ -471,6 +490,7 @@ fn read_body(mut resp: ureq::http::Response<ureq::Body>, what: &str) -> Result<(
         .read_to_string()
         .map_err(|e| Error::http(what, e))?;
     if !(200..300).contains(&status) {
+        trace::debug(&format!("runpod: {what} failed, response body: {text}"));
         let mut body = text;
         body.truncate(600);
         return Err(Error::Api {

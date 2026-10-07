@@ -800,7 +800,7 @@ impl Store {
         let worst = (p.max_price_hr * p.max_hours * 100.0).ceil() / 100.0;
         let b = self.budget()?;
         if worst > b.remaining + 1e-9 {
-            return Err(Error::Refused(format!(
+            return Err(Error::Budget(format!(
                 "worst case ${worst:.2} ({}h at ${:.2}/hr) exceeds the ${:.2} left of the ${:.2} budget; \
                  shorten max_hours, pick a cheaper profile, or raise the cap",
                 p.max_hours, p.max_price_hr, b.remaining, b.cap

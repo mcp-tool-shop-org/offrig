@@ -28,6 +28,7 @@ pub mod spec;
 pub mod sshconfig;
 pub mod stage;
 pub mod store;
+pub mod trace;
 pub mod tunnel;
 pub mod watchdog;
 pub mod zed;
