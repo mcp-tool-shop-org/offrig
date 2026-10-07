@@ -71,7 +71,8 @@ unknown tool name, is a structured result:
 | `network` | The request didn't reach RunPod | yes |
 | `ssh` | ssh to the pod failed, or it has no ssh endpoint yet | yes |
 | `timeout` | Something took longer than its limit | yes |
-| `no_capacity` | No GPU of the plan's types is free | yes |
+| `no_capacity` | No GPU of the plan's types is free; nothing was rented | yes |
+| `pod_not_ready` | A pod was rented and billed but never became ready; it was terminated | yes |
 | `model_server` | Ollama or SGLang on the pod failed | yes |
 | `database` | The project store failed | no |
 | `io` | A local file operation failed | no |

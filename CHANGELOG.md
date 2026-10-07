@@ -30,6 +30,17 @@ first release and ships in it.
 - **The app has its icon,** in the window and on the `.exe`.
 - **`scripts/verify.sh` and `scripts/verify.ps1`** run the format check, clippy, the tests
   and a smoke run of each binary in one command.
+- **Every project can see the others' pods.** `offrig_status` lists each other offrig
+  pod with its lane, project, GPU, price and status, and the open plan behind it: plan id,
+  note, deadline and committed worst case. The other project's store is read strictly
+  read-only, leaving no files behind. Pods offrig did not create are only counted and
+  named. Pods carry `OFFRIG_LANE`, and on side-car launches `OFFRIG_PLAN` and
+  `OFFRIG_DEADLINE`, as environment variables visible in RunPod's console.
+- **A failed launch says what it cost.** `offrig_job` gives the failure's `code`,
+  `retryable`, and whether a pod was rented and billed. The new code `pod_not_ready` means a
+  pod was rented but never became ready, and was terminated; `no_capacity` means nothing was
+  rented. `rented` is filled as soon as the pod exists. A `job_id` that is really a plan id
+  gets a message naming the right call.
 - **Turning auto-stop off now survives a restart.** It used to be saved as a missing key,
   which reloads as the 30-minute default. It is now saved as `auto_stop_idle_minutes =
   "off"`; numbers, including `0`, are still minutes.

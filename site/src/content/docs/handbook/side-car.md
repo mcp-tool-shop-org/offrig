@@ -31,14 +31,19 @@ No tool can change the cap. An agent reads it; only a person sets it.
 ## The loop an agent follows
 
 1. **`offrig_status`.** The project, budget, RunPod balance and runway, open plans, pods,
-   and the handoff queue. Call it first in any session.
+   and the handoff queue. It also names other projects' offrig pods, with each one's plan,
+   note and deadline (see [Lanes](../lanes-and-jobs/#seeing-other-lanes-pods)). Call it
+   first in any session.
 2. **`offrig_plan`.** Prices a session at its worst case: live price × max hours. It is
    refused if the worst case is over what's left of the cap. Planning costs nothing.
 3. **`offrig_launch`.** Takes only a `plan_id`, so an agent cannot name its own price. It
    commits the worst case, waits for GPUs (renting nothing while it waits), boots the pod,
    and starts the watchdog. Calling it twice with the same plan returns the same job.
-4. **`offrig_job`.** Launch progress, the GPU type and host CUDA version actually rented,
-   minutes left, and spend so far.
+4. **`offrig_job`.** Launch progress, the GPU type and price rented (as soon as the pod
+   exists) and the host CUDA version once ssh is up, minutes left, and spend so far. Poll it
+   with the `plan_id`, or with the `job_id` from `offrig_launch`; the two are different
+   numbers. If the launch fails, `offrig_job` gives the failure's `code`, whether it is
+   `retryable`, and whether a pod was rented and billed (see below).
 5. **The work.** On a model pod: `offrig_ask` or `offrig_run`. On a job pod: `offrig_put`,
    `offrig_exec`, then `offrig_get`.
 6. **`offrig_shutdown`.** Terminates the pod and closes the plan's books with the measured
@@ -68,7 +73,15 @@ the session and the side-car are all gone.
 - It logs to `.offrig/watchdog-<plan>.log`.
 
 If getting a rented pod ready fails, the launch terminates the pod itself instead of
-leaving it billing. A capacity wait counts against the plan's hours, so leave room for it
+leaving it billing. The two ways a launch can fail cost different amounts, and
+`offrig_job` says which happened:
+
+| Code | What happened | Cost |
+|---|---|---|
+| `no_capacity` | No GPU of the plan's types came free within the wait | nothing: no pod was rented (`pod_rented: false`) |
+| `pod_not_ready` | A pod was rented but never became ready (no ssh endpoint, or the image never finished) | the minutes it billed, shown in `failure.spent`; the pod is terminated and the plan closed |
+
+Count a `pod_not_ready` as a paid attempt; a `no_capacity` can simply be retried. A capacity wait counts against the plan's hours, so leave room for it
 in `max_hours`.
 
 ## Handoffs and the runner
@@ -102,11 +115,11 @@ built from this store.
 
 | Tool | Spends | What it does |
 |---|---|---|
-| `offrig_status` | no | Project, budget, balance and runway, open plans with lane and pod name, pods, handoff queue |
+| `offrig_status` | no | Project, budget, balance and runway, open plans with lane and pod name, pods (other projects' pods with their plan, note and deadline), handoff queue |
 | `offrig_offers` | no | Live GPU offers for a GPU count |
 | `offrig_plan` | no | Prices a session at its worst case and records a plan |
 | `offrig_launch` | **yes** | Commits the plan, rents the pod, starts the watchdog |
-| `offrig_job` | no | Launch progress, what was rented, minutes left, spend so far |
+| `offrig_job` | no | Launch progress, what was rented, minutes left, spend so far, and a failed launch's code and cost |
 | `offrig_ask` | pod time | One handoff turn on the pod's model |
 | `offrig_run` | pod time | A detached runner that works the queue |
 | `offrig_handoffs` | no | Queue, list, preview, show and record handoffs |
