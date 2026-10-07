@@ -11,8 +11,52 @@
       "externals": 0,
       "files": [
         {
-          "hash": "c722b05ee0534bb55a76143b2a29b9dac1dcd5df9ae9e27232c46d789b92fe64",
+          "hash": "a72bac87f38ea733b35a0676c34881287930844eea39d74e5dbb7d711c5e0470",
           "path": "crates/offrig-app/Cargo.toml"
+        },
+        {
+          "hash": "be08ce7b66fbc5aa37a39ca8c31642c419d0578bf47e2997fecb91b61d98850b",
+          "path": "crates/offrig-app/assets/icon/make_ico.py"
+        },
+        {
+          "hash": "a1e43f34f666fe9cfcf784eda90d7b1c6720c932b3642c5f2be9a035f7f7b56c",
+          "path": "crates/offrig-app/assets/icon/offrig.ico"
+        },
+        {
+          "hash": "3a27532d487ec4c3b94dee29b359957697275d474c2f81a15d43867831a99dab",
+          "path": "crates/offrig-app/assets/icon/offrig_128.png"
+        },
+        {
+          "hash": "6fa36b277716fd274bfa1c611057629dab5c3a9c3b309f2b44f5e08a8c9f278b",
+          "path": "crates/offrig-app/assets/icon/offrig_16.png"
+        },
+        {
+          "hash": "516647c83637a88c2dbee53fc59e51f5e4b11a94089e5d6cfea1758a01a66e28",
+          "path": "crates/offrig-app/assets/icon/offrig_256.png"
+        },
+        {
+          "hash": "421d3fd5d57bb7d45774051a998580ff53852a747e752bc834de941a0879fb2f",
+          "path": "crates/offrig-app/assets/icon/offrig_32.png"
+        },
+        {
+          "hash": "ffc22fad2c36b55a3cbb26a9efae9d3df1c7e19a10c76ce61a0d1f1d11064a8b",
+          "path": "crates/offrig-app/assets/icon/offrig_48.png"
+        },
+        {
+          "hash": "f1478cd85808c263bb3b9e3d2b08acd071bd027c6859187c4fee8e98604d7311",
+          "path": "crates/offrig-app/assets/icon/offrig_64.png"
+        },
+        {
+          "buildScript": true,
+          "failurePaths": [
+            {
+              "in": "embed_icon",
+              "kind": "match-err",
+              "line": 19
+            }
+          ],
+          "hash": "d82dbe98dda42559fd6b958e18e09aa5ba5ffa69bb2855f4f1e86045fdca8466",
+          "path": "crates/offrig-app/build.rs"
         },
         {
           "exports": [
@@ -53,10 +97,10 @@
             {
               "in": "main",
               "kind": "match-err",
-              "line": 32
+              "line": 45
             }
           ],
-          "hash": "f42270f1e8fa9a4d79cdb29100cd330559ef186530a63e60f02059d5654baa4b",
+          "hash": "46c5e3ede5b5cfef5360b575b7ebc6e9e4bfbe6c1ce9b431667868d11d8350fb",
           "importsFiles": [
             "crates/offrig-app/src/app.rs",
             "crates/offrig-app/src/worker.rs",
@@ -68,14 +112,14 @@
             {
               "calls": [
                 {
-                  "line": 26,
+                  "line": 39,
                   "name": "new",
                   "target": {
                     "file": "crates/offrig-app/src/worker.rs"
                   }
                 },
                 {
-                  "line": 27,
+                  "line": 40,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -83,7 +127,7 @@
                   }
                 },
                 {
-                  "line": 29,
+                  "line": 42,
                   "name": "new",
                   "target": {
                     "file": "crates/offrig-app/src/app.rs"
@@ -115,21 +159,21 @@
                       }
                     }
                   ],
-                  "line": 31,
+                  "line": 44,
                   "name": "spawn",
                   "target": {
                     "file": "crates/offrig-app/src/worker.rs"
                   }
                 },
                 {
-                  "line": 34,
+                  "line": 47,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
                   }
                 },
                 {
-                  "line": 32,
+                  "line": 45,
                   "name": "Error",
                   "target": {
                     "file": "crates/offrig-app/src/worker.rs"
@@ -141,7 +185,8 @@
               "isDefaultExport": false,
               "name": "main"
             }
-          ]
+          ],
+          "testsInside": true
         },
         {
           "entry": "zed_status",
@@ -335,12 +380,12 @@
       ],
       "importConfidence": "full",
       "name": "offrig-app",
-      "origin": "authored",
+      "origin": "mixed",
       "role": "code",
       "testRunners": [
         "cargo test"
       ],
-      "testedBy": 1,
+      "testedBy": 2,
       "testedInside": true,
       "unresolvedSites": 0
     },
@@ -4666,7 +4711,7 @@
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "312ba119a9694d06b7f291c00a6936b65898c0f05253f80d522a4a4796a5427a",
+          "hash": "b5135e182a61bd76d719d1fb097485cf2bd509109044cd912096283934812403",
           "path": "Cargo.lock"
         },
         {
@@ -4718,7 +4763,7 @@
   ],
   "doors": [
     {
-      "checksCount": 4,
+      "checksCount": 3,
       "commands": [
         {
           "dir": "",
@@ -4798,7 +4843,7 @@
         {
           "boundary": "offrig-app",
           "depth": 0,
-          "files": 3
+          "files": 4
         },
         {
           "boundary": "offrig-cli",
@@ -4821,6 +4866,13 @@
         {
           "job": "rust",
           "matched": true,
+          "path": "crates/offrig-app/build.rs",
+          "runKind": "executes",
+          "via": "cargo clippy"
+        },
+        {
+          "job": "rust",
+          "matched": true,
           "path": "crates/offrig-app/src/app.rs",
           "runKind": "executes",
           "via": "cargo test"
@@ -4829,7 +4881,7 @@
           "job": "rust",
           "matched": true,
           "path": "crates/offrig-app/src/main.rs",
-          "runKind": "checks",
+          "runKind": "executes",
           "via": "cargo clippy"
         },
         {
@@ -5078,7 +5130,7 @@
           "via": "cargo clippy"
         }
       ],
-      "runsCount": 37,
+      "runsCount": 38,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -5093,7 +5145,7 @@
       "stages": [],
       "tests": [
         {
-          "files": 33,
+          "files": 35,
           "job": "rust",
           "runner": "cargo test",
           "step": "Test"
@@ -5306,8 +5358,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "df690b7d1a3ee8f0c3ba4918ca673f0baf42bec4",
-    "tracked": 69
+    "commit": "44cae7567376c1ddaa26302c609ae7788c78f351",
+    "tracked": 78
   },
   "landings": [
     {
@@ -5319,6 +5371,27 @@
         }
       ],
       "target": "crates/offrig-app",
+      "writers": []
+    },
+    {
+      "readers": [],
+      "target": "crates/offrig-app/assets/icon/offrig.ico",
+      "writers": [
+        {
+          "by": "crates/offrig-app/assets/icon/make_ico.py",
+          "confidence": "ast"
+        }
+      ]
+    },
+    {
+      "readers": [
+        {
+          "by": "crates/offrig-app/src/main.rs",
+          "call": "include_bytes",
+          "confidence": "ast"
+        }
+      ],
+      "target": "crates/offrig-app/assets/icon/offrig_256.png",
       "writers": []
     },
     {
@@ -5479,6 +5552,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 34,
+  "testFiles": 35,
   "unassigned": []
 }

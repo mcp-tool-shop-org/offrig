@@ -16,6 +16,9 @@ path = "src/main.rs"
 eframe = "0.36.2"
 offrig-core.workspace = true
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1", default-features = false }
+
 [dev-dependencies]
 egui_kittest = "0.36.2"
 serde_json = "1.0.151"

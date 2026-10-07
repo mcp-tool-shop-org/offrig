@@ -9,12 +9,25 @@ use std::sync::mpsc;
 use eframe::egui;
 use offrig_core::config::Config;
 
+/// The 256 px window icon, embedded in the binary.
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/icon/offrig_256.png");
+
+/// Decode the embedded window icon.
+fn window_icon() -> Result<egui::IconData, String> {
+    eframe::icon_data::from_png_bytes(WINDOW_ICON_PNG).map_err(|e| e.to_string())
+}
+
 fn main() -> eframe::Result {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("offrig")
+        .with_inner_size([1180.0, 820.0])
+        .with_min_inner_size([860.0, 560.0]);
+    // A missing icon must never stop the app from starting.
+    if let Ok(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("offrig")
-            .with_inner_size([1180.0, 820.0])
-            .with_min_inner_size([860.0, 560.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -37,4 +50,16 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_icon_decodes_to_256_square() {
+        let icon = window_icon().expect("embedded icon decodes");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+    }
 }
