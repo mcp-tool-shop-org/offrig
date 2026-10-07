@@ -437,4 +437,158 @@ mod tests {
         assert!(r.contains("needs a heading containing") && r.contains("old body"));
         assert_eq!(r.matches("- ").count(), 1, "only failures are quoted");
     }
+
+    fn mem_store() -> Store {
+        Store::open_in_memory().expect("in-memory store")
+    }
+
+    fn note(s: &Store, kind: Kind, body: &str) -> i64 {
+        s.record(crate::store::NewRecord {
+            kind: Some(kind),
+            body: body.into(),
+            author: "test".into(),
+            ..Default::default()
+        })
+        .expect("record")
+    }
+
+    fn new_handoff(s: &Store, mission: &str, deps: Vec<i64>) -> i64 {
+        s.add_handoff(crate::store::NewHandoff {
+            role_id: "game-designer".into(),
+            mission: mission.into(),
+            acceptance: "has a Verbs heading".into(),
+            depends_on: deps,
+            ..Default::default()
+        })
+        .expect("handoff")
+    }
+
+    #[test]
+    fn a_prompt_carries_the_brief_constraints_retrieved_notes_and_the_instruction() {
+        let s = mem_store();
+        let brief = note(&s, Kind::Brief, "A frontier JRPG about relays.");
+        let rule = note(&s, Kind::Constraint, "Never touch the solver crate.");
+        let _decision = note(&s, Kind::Decision, "Combat speed uses initiative bands.");
+        let _unrelated = note(&s, Kind::Fact, "Completely unrelated fish trivia.");
+        let id = new_handoff(&s, "design combat initiative", vec![]);
+        let h = s.handoff(id).expect("read").expect("exists");
+
+        let p = prepare(&s, None, &h, "Write it now.", 200_000).expect("prepare");
+        assert_eq!(p.injected, vec![brief, rule]);
+        assert!(!p.role_block.is_empty());
+        let text = format!("{:?}", p.assembled);
+        for needle in [
+            "A frontier JRPG about relays.",
+            "Never touch the solver crate.",
+            "initiative bands",
+            "design combat initiative",
+            "Write it now.",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in {text}");
+        }
+        assert!(!text.contains("fish trivia"), "unrelated notes stay out");
+    }
+
+    #[test]
+    fn an_unknown_role_stops_the_prompt() {
+        let s = mem_store();
+        let id = new_handoff(&s, "m", vec![]);
+        let mut h = s.handoff(id).expect("read").expect("exists");
+        h.role_id = "no-such-role".into();
+        assert!(prepare(&s, None, &h, "go", 1000).is_err());
+    }
+
+    #[test]
+    fn a_handoff_is_fed_the_best_output_of_each_completed_dependency() {
+        let s = mem_store();
+        let done = new_handoff(&s, "write the verbs", vec![]);
+        let pending = new_handoff(&s, "not finished", vec![]);
+        let empty = new_handoff(&s, "complete but no output", vec![]);
+        for (id, turn, body, passes) in [
+            (done, 1, "weak draft", vec![false]),
+            (done, 2, "strong revision", vec![true]),
+            (pending, 1, "ignored: not complete", vec![true]),
+        ] {
+            let outcomes: Vec<Outcome> = passes.into_iter().map(outcome).collect();
+            s.add_output(crate::store::NewOutput {
+                handoff_id: id,
+                turn,
+                body,
+                outcomes: &outcomes,
+                model: "m",
+                tokens: Some(10),
+            })
+            .expect("output");
+        }
+        for id in [done, empty] {
+            s.transition(id, State::Dispatched, "go", None)
+                .expect("dispatch");
+            s.transition(id, State::Complete, "done", None)
+                .expect("complete");
+        }
+        let child = new_handoff(&s, "uses them", vec![done, pending, empty]);
+        let mut h = s.handoff(child).expect("read").expect("exists");
+        h.depends_on.push(9_999);
+        let ins = inputs(&s, &h).expect("inputs");
+        assert_eq!(
+            ins.len(),
+            1,
+            "pending, output-less and unknown deps are skipped"
+        );
+        assert_eq!(ins[0].handoff_id, done);
+        assert_eq!(ins[0].body, "strong revision");
+        assert_eq!(ins[0].mission, "write the verbs");
+    }
+
+    #[test]
+    fn every_check_is_described_in_words_before_the_model_writes() {
+        let words = |min, max| describe(&Check::Words { min, max });
+        assert_eq!(words(Some(5), Some(9)), "5 to 9 words");
+        assert_eq!(words(Some(5), None), "at least 5 words");
+        assert_eq!(words(None, Some(9)), "at most 9 words");
+        assert_eq!(words(None, None), "any length");
+        assert_eq!(
+            describe(&Check::Contains {
+                text: "x".into(),
+                min: 3
+            }),
+            "\"x\" at least 3 times"
+        );
+        assert_eq!(
+            describe(&Check::Contains {
+                text: "x".into(),
+                min: 1
+            }),
+            "the text \"x\""
+        );
+        assert_eq!(
+            describe(&Check::Absent {
+                text: "TODO".into()
+            }),
+            "no \"TODO\" anywhere"
+        );
+        assert_eq!(describe(&Check::NoRepeats), "no line repeated");
+        assert_eq!(
+            describe(&Check::Heading {
+                text: "Verbs".into()
+            }),
+            "a heading containing \"Verbs\""
+        );
+    }
+
+    #[test]
+    fn passing_checks_that_cover_acceptance_complete_it_and_otherwise_wait_for_review() {
+        let c = vec![Check::NoRepeats];
+        let covered = h(1, vec![], c.clone(), true);
+        assert_eq!(after_turn(&covered, 1, &[outcome(true)]), Next::Complete);
+        let partial = h(2, vec![], c, false);
+        match after_turn(&partial, 1, &[outcome(true)]) {
+            Next::Review { why } => assert!(why.contains("needs judgement"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        match after_turn(&covered, 3, &[outcome(false), outcome(true)]) {
+            Next::Review { why } => assert!(why.starts_with("1 check(s) still failing"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

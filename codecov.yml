@@ -1,0 +1,16 @@
+# Codecov reports and comments on coverage. The CI gate is `--fail-under-lines 90`
+# in .github/workflows/ci.yml; this file sets what the Codecov status checks expect.
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 1%
+    patch:
+      default:
+        target: 90%
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false

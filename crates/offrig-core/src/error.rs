@@ -220,4 +220,103 @@ mod tests {
         assert!(!Error::Budget("x".into()).retryable());
         assert!(!Error::Guard("x".into()).retryable());
     }
+
+    fn every_variant() -> Vec<(Error, &'static str, bool)> {
+        let decode = serde_json::from_str::<i32>("x").expect_err("not json");
+        let io = || std::io::Error::other("disk");
+        vec![
+            (Error::MissingApiKey, "missing_api_key", false),
+            (
+                Error::GraphQl {
+                    what: "w".into(),
+                    message: "m".into(),
+                },
+                "runpod_api",
+                false,
+            ),
+            (
+                Error::http("w", ureq::Error::ConnectionFailed),
+                "network",
+                true,
+            ),
+            (Error::decode("w", decode), "internal", false),
+            (Error::io("w", io()), "io", false),
+            (
+                Error::Jsonc {
+                    path: "a.json".into(),
+                    message: "m".into(),
+                },
+                "config",
+                false,
+            ),
+            (Error::NoSshEndpoint { name: "n".into() }, "ssh", true),
+            (Error::Ssh("x".into()), "ssh", true),
+            (Error::Ollama("x".into()), "model_server", true),
+            (Error::Engine("x".into()), "model_server", true),
+            (
+                Error::Db {
+                    what: "w".into(),
+                    source: rusqlite::Error::InvalidQuery,
+                },
+                "database",
+                false,
+            ),
+            (Error::Refused("x".into()), "refused", false),
+            (
+                Error::Transition {
+                    id: 1,
+                    from: "a".into(),
+                    to: "b".into(),
+                    hint: String::new(),
+                },
+                "invalid_transition",
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_variant_has_a_stable_code_and_a_retry_answer() {
+        for (e, code, retry) in every_variant() {
+            assert_eq!(e.code(), code, "{e}");
+            assert_eq!(e.retryable(), retry, "{e}");
+            assert!(!e.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn display_names_what_failed() {
+        let shown = |e: Error| e.to_string();
+        assert_eq!(shown(Error::MissingApiKey), "RUNPOD_API_KEY is not set");
+        assert_eq!(
+            shown(Error::Jsonc {
+                path: "s.json".into(),
+                message: "bad comma".into()
+            }),
+            "s.json is not valid JSONC: bad comma"
+        );
+        assert_eq!(
+            shown(Error::Transition {
+                id: 7,
+                from: "pending".into(),
+                to: "complete".into(),
+                hint: " (allowed: dispatched)".into()
+            }),
+            "illegal transition for handoff 7: pending -> complete (allowed: dispatched)"
+        );
+        assert!(shown(Error::NoSshEndpoint { name: "p".into() }).contains("pod p has no ssh"));
+    }
+
+    #[test]
+    fn chain_joins_the_whole_source_chain() {
+        let e = Error::io("reading x", std::io::Error::other("disk gone"));
+        assert_eq!(chain(&e), "io error while reading x: disk gone");
+        let leaf = Error::MissingApiKey;
+        assert_eq!(chain(&leaf), "RUNPOD_API_KEY is not set");
+        let db = Error::Db {
+            what: "saving".into(),
+            source: rusqlite::Error::InvalidQuery,
+        };
+        assert!(chain(&db).starts_with("database error while saving: "));
+    }
 }

@@ -138,4 +138,42 @@ mod tests {
         assert!(Level::Verbose > Level::Normal);
         assert!(Level::Normal > Level::Quiet);
     }
+
+    #[test]
+    fn the_level_round_trips_and_gates_what_is_enabled() {
+        // The level is process-wide; this is the only test that changes it.
+        let before = level();
+        for l in [Level::Quiet, Level::Normal, Level::Verbose, Level::Debug] {
+            set_level(l);
+            assert_eq!(level(), l);
+            assert!(enabled(l));
+            assert_eq!(enabled(Level::Verbose), l >= Level::Verbose);
+            assert_eq!(enabled(Level::Debug), l >= Level::Debug);
+        }
+        // Printing at every level is safe (output goes to stderr and is redacted first).
+        for l in [Level::Quiet, Level::Verbose, Level::Debug] {
+            set_level(l);
+            verbose("runpod: list pods -> 200");
+            debug("response body: {}");
+            api("list pods", 200, Instant::now());
+        }
+        set_level(before);
+    }
+
+    #[test]
+    fn redact_uses_the_live_key_variable() {
+        // With or without RUNPOD_API_KEY set, a bearer token never survives.
+        let out = redact("Authorization: Bearer live-token-123");
+        assert!(!out.contains("live-token-123"), "{out}");
+    }
+
+    #[test]
+    fn a_bare_bearer_word_masks_nothing() {
+        assert_eq!(redact_with("a Bearer ", &[]), "a Bearer ");
+        assert_eq!(redact_with("Bearer	x", &[]), "Bearer	x");
+        assert_eq!(
+            redact_with("x Bearer a Bearer b", &[]),
+            "x Bearer [redacted] Bearer [redacted]"
+        );
+    }
 }

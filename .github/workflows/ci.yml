@@ -60,8 +60,10 @@ jobs:
       - name: Test with coverage
         run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
 
-      - name: Coverage summary
-        run: cargo llvm-cov report --summary-only
+      # The bar: CI fails if line coverage drops under 90%. This is the gate; the
+      # Codecov upload below is reporting only.
+      - name: Coverage summary and gate (lines >= 90%)
+        run: cargo llvm-cov report --summary-only --fail-under-lines 90
 
       # Fork pull requests get no OIDC token; the upload is skipped for them.
       - name: Upload coverage to Codecov

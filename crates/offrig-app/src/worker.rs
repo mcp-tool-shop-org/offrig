@@ -99,6 +99,12 @@ pub struct Worker {
 const REFRESH_EVERY: Duration = Duration::from_secs(15);
 const GPU_EVERY: Duration = Duration::from_secs(60);
 
+/// When the next background refresh and GPU sample are due.
+struct Schedule {
+    refresh: Instant,
+    gpu: Instant,
+}
+
 pub fn spawn(cfg: Config, out: Outbox, rx: Receiver<Cmd>, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let session = match Session::new(cfg.clone()) {
@@ -151,24 +157,31 @@ impl Worker {
             .send(Update::Config(Box::new(self.session.cfg.clone())));
         self.do_cmd(Cmd::Refresh);
         self.do_cmd(Cmd::Offers(self.profile().map_or(1, |p| p.gpu_count)));
-        let mut next_refresh = Instant::now() + REFRESH_EVERY;
-        let mut next_gpu = Instant::now() + GPU_EVERY;
+        let mut due = Schedule {
+            refresh: Instant::now() + REFRESH_EVERY,
+            gpu: Instant::now() + GPU_EVERY,
+        };
         loop {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(cmd) => self.do_cmd(cmd),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            let now = Instant::now();
-            if now >= next_refresh {
-                next_refresh = now + REFRESH_EVERY;
-                self.quiet(Cmd::Refresh);
-            }
-            self.supervise_tunnel();
-            if now >= next_gpu {
-                next_gpu = now + GPU_EVERY;
-                self.sample_gpus();
-            }
+            self.tick(Instant::now(), &mut due);
+        }
+    }
+
+    /// The periodic work after each receive: a quiet refresh and a GPU sample when
+    /// they are due, and the tunnel supervisor every time.
+    fn tick(&mut self, now: Instant, due: &mut Schedule) {
+        if now >= due.refresh {
+            due.refresh = now + REFRESH_EVERY;
+            self.quiet(Cmd::Refresh);
+        }
+        self.supervise_tunnel();
+        if now >= due.gpu {
+            due.gpu = now + GPU_EVERY;
+            self.sample_gpus();
         }
     }
 
@@ -497,3 +510,6 @@ pub fn zed_status(cfg: &Config) -> Result<ZedStatus> {
         key_env: zed::api_key_env_present(&cfg.zed_provider),
     })
 }
+
+#[cfg(test)]
+pub(crate) mod tests;

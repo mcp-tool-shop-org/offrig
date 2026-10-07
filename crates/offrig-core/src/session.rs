@@ -699,6 +699,10 @@ mod tests {
     }
 
     impl Mock {
+        fn requests_seen(&self) -> usize {
+            self.hits.lock().expect("hits lock").len()
+        }
+
         fn count(&self, route: &str) -> usize {
             self.hits
                 .lock()
@@ -992,5 +996,202 @@ mod tests {
         for p in &cfg.profiles {
             local_conflicts(p, &local).unwrap_or_else(|e| panic!("{}: {e}", p.name));
         }
+    }
+
+    #[test]
+    fn plan_check_refuses_what_cannot_work_before_any_money_is_spent() {
+        let m = mock(|_, _| (404, "{}".into()));
+        let s = session_on(&m);
+        let mut small_volume = Config::default().profile("medium").expect("medium").clone();
+        small_volume.volume_gb = 10;
+        let err = s.plan_check(&small_volume).expect_err("weights do not fit");
+        assert!(
+            matches!(&err, Error::Config(m) if m.contains("its volume is 10 GB")),
+            "{err}"
+        );
+        // A network volume holds the weights instead of the pod's own disk.
+        let mut staged = small_volume.clone();
+        staged.network_volume_id = Some("vol1".into());
+        staged.data_center_id = Some("EUR-IS-1".into());
+        staged.models[0].name = "bad name;rm".into();
+        let err = s
+            .plan_check(&staged)
+            .expect_err("model names are validated");
+        assert!(matches!(err, Error::Ollama(_)), "{err}");
+        assert_eq!(m.requests_seen(), 0, "no RunPod call was needed");
+    }
+
+    #[test]
+    fn a_session_needs_a_valid_config() {
+        let cfg = Config {
+            tunnel_port: crate::config::LOCAL_OLLAMA_PORT,
+            ..Config::default()
+        };
+        let err = Session::new(cfg).err().expect("invalid config");
+        assert!(matches!(err, Error::Config(_)), "{err}");
+    }
+
+    #[test]
+    fn launch_refuses_a_lane_that_holds_another_profiles_pod() {
+        let m = mock(|route, _| match route {
+            "GET /pods" => (
+                200,
+                r#"[{"id":"p1","name":"offrig-job","desiredStatus":"RUNNING","costPerHr":1.0}]"#
+                    .into(),
+            ),
+            _ => (404, "{}".into()),
+        });
+        let s = session_on(&m);
+        let cfg = Config::default();
+        let mut events = Vec::new();
+        let err = s
+            .launch(cfg.profile("frontier").expect("frontier"), &mut |e| {
+                events.push(e);
+            })
+            .expect_err("the lane is taken");
+        assert!(matches!(err, Error::Refused(_)), "{err}");
+        assert_eq!(m.count("POST /pods"), 0, "nothing was rented");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn launch_with_no_free_gpus_and_no_wait_rents_nothing() {
+        let m = mock(|route, _| match route {
+            "GET /pods" => (200, "[]".into()),
+            "POST /graphql" => (200, offers(false)),
+            _ => (404, "{}".into()),
+        });
+        let s = session_on(&m);
+        let cfg = Config::default();
+        let err = s
+            .launch(cfg.profile("frontier").expect("frontier"), &mut |_| {})
+            .expect_err("full market");
+        assert!(matches!(err, Error::NoCapacity(_)), "{err}");
+        assert!(err.retryable());
+        assert_eq!(m.count("POST /pods"), 0);
+    }
+
+    #[test]
+    fn a_cancelled_launch_stops_before_it_rents() {
+        let m = mock(|route, _| match route {
+            "GET /pods" => (200, "[]".into()),
+            _ => (200, POD.into()),
+        });
+        let s = session_on(&m);
+        let cfg = Config::default();
+        let err = s
+            .launch_waiting(
+                cfg.profile("frontier").expect("frontier"),
+                Wait::minutes(5),
+                &AtomicBool::new(true),
+                &mut |_| {},
+            )
+            .expect_err("cancelled at once");
+        assert!(matches!(err, Error::Cancelled(_)), "{err}");
+        assert_eq!(m.count("POST /pods"), 0);
+    }
+
+    #[test]
+    fn the_sessions_pod_is_found_by_exact_name_and_never_when_terminated() {
+        let pods = r#"[
+            {"id":"p1","name":"offrig-frontier","desiredStatus":"TERMINATED","costPerHr":1.0},
+            {"id":"p2","name":"offrig-frontier-old","desiredStatus":"RUNNING","costPerHr":1.0},
+            {"id":"p3","name":"offrig-small","desiredStatus":"RUNNING","costPerHr":1.0}]"#;
+        let m = mock(move |_, _| (200, pods.into()));
+        let s = session_on(&m);
+        let cfg = Config::default();
+        assert!(
+            s.current_pod(cfg.profile("frontier").expect("frontier"))
+                .expect("list")
+                .is_none()
+        );
+        let small = s
+            .current_pod(cfg.profile("small").expect("small"))
+            .expect("list")
+            .expect("running");
+        assert_eq!(small.id, "p3");
+        assert_eq!(
+            s.lane_pods().expect("lane").len(),
+            1,
+            "only offrig-<profile> names are the plain lane's"
+        );
+    }
+
+    #[test]
+    fn shutdown_terminates_and_says_so() {
+        let m = mock(|route, _| match route {
+            "DELETE /pods/p1" => (200, "{}".into()),
+            _ => (404, "{}".into()),
+        });
+        let s = session_on(&m);
+        let pod: Pod = serde_json::from_str(POD).expect("pod");
+        let mut steps = Vec::new();
+        s.shutdown(&pod, &mut |e| steps.push(e)).expect("shutdown");
+        assert_eq!(m.count("DELETE /pods/p1"), 1);
+        assert_eq!(
+            steps,
+            [Event::Step("terminated offrig-frontier (p1)".into())]
+        );
+        // RunPod refusing the delete is an error the caller sees.
+        let bad = mock(|_, _| (500, "no".into()));
+        assert!(session_on(&bad).shutdown(&pod, &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn a_pod_without_an_endpoint_cannot_be_written_to_ssh_config() {
+        let m = mock(|_, _| (404, "{}".into()));
+        let s = session_on(&m);
+        let pod: Pod = serde_json::from_str(POD).expect("pod");
+        let err = s.write_ssh(&pod).expect_err("no public address yet");
+        assert!(
+            matches!(err, Error::NoSshEndpoint { ref name } if name == "offrig-frontier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_job_pod_has_no_tunnel_and_no_models_to_pull() {
+        let m = mock(|_, _| (404, "{}".into()));
+        let s = session_on(&m);
+        let cfg = Config::default();
+        let job = cfg.profile("job").expect("job");
+        let err = s
+            .open_tunnel(job, &mut |_| {})
+            .err()
+            .expect("no tunnel for a job");
+        assert!(
+            matches!(&err, Error::Refused(m) if m.contains("job pod")),
+            "{err}"
+        );
+        s.ensure_models(job, &mut |_| {}).expect("nothing to pull");
+        assert_eq!(job_serves_nothing(job).code(), "refused");
+    }
+
+    #[test]
+    fn a_recipe_engines_zed_entries_come_from_the_profile() {
+        let m = mock(|_, _| (404, "{}".into()));
+        let s = session_on(&m);
+        let cfg = Config::default();
+        let frontier = cfg.profile("frontier").expect("frontier");
+        let models = s
+            .zed_models(frontier)
+            .expect("no Ollama call for an engine");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].name, "qwen3-coder-480b");
+        assert_eq!(models[0].display_name, "RunPod \u{b7} qwen3-coder-480b");
+        assert_eq!(models[0].max_tokens, frontier.context_length);
+        assert_eq!(models[0].tools, frontier.models[0].tools);
+        assert_eq!(m.requests_seen(), 0);
+    }
+
+    #[test]
+    fn waits_and_long_log_lines_are_shaped() {
+        assert_eq!(Wait::none().limit, Duration::ZERO);
+        assert_eq!(Wait::none().poll, Duration::from_secs(60));
+        assert_eq!(Wait::minutes(3).limit, Duration::from_secs(180));
+        assert_eq!(clip_line("short", 10), "short");
+        assert_eq!(clip_line("abcdefghij", 10), "abcdefghij");
+        assert_eq!(clip_line("abcdefghijk", 10), "abcdefghij...");
+        assert_eq!(clip_line("\u{e9}\u{e9}\u{e9}", 2), "\u{e9}\u{e9}...");
     }
 }

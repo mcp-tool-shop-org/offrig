@@ -1,35 +1,33 @@
 # offrig: how it works
 
-Mapped at 2026-10-07 from commit 0f6fd05 by Atlas 1.24.0.
+Mapped at 2026-10-07 from commit 8a2c9b9 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-5 parts, mostly Rust (47 files), PowerShell (1), Python (1) and shell (1). Work enters through 5 doors; the busiest is release, which reaches 5 parts. People run offrig, offrig-app and offrig-mcp.
+5 parts, mostly Rust (65 files), PowerShell (1), Python (1) and shell (1). Work enters through 6 doors; the busiest is release, which reaches 5 parts. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-10-07 (44cae75)
+## What changed since 2026-10-07 (0f6fd05)
 
-- ci's push trigger now also names `osv-scanner.toml`.
-- ci now also runs crates/offrig-cli/tests/, crates/offrig-core/src/error.rs, crates/offrig-core/src/trace.rs and 1 more.
-- release (.github/workflows/release.yml) is a new door. It starts when a tag matching `v*` is pushed; or by hand. It runs crates/offrig-app/build.rs. It checks README.md, crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and 1 more.
-- CHANGELOG.md is now read by .github/workflows/release.yml.
-- LICENSE is now read by .github/workflows/release.yml.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `set_level`, before `enabled`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `enabled`, before `redact`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `redact`, before `open`.
-- And 5 more changes to the order of work.
-- scripts/verify.ps1 is new and belongs to no part, so atlas check fails on it against the previous map.
-- scripts/verify.sh is new and belongs to no part, so atlas check fails on it against the previous map.
-- 7 files added and 7 changed content, across 4 parts.
+- ci now also runs crates/offrig-app/src/app/, crates/offrig-app/src/worker/, crates/offrig-cli/tests/commands.rs and 13 more.
+- ci now also checks crates/offrig-core/examples/fake_ssh.rs.
+- ci no longer runs crates/offrig-cli/tests/.
+- And 1 more change to a door.
+- crates/offrig-app/tests/support/fake_tools.rs is now read by crates/offrig-app/src/worker/tests.rs.
+- In crates/offrig-app/src/main.rs, `main` gained a step, `load`, before `new`.
+- In crates/offrig-app/src/main.rs, `main` lost a step, `load`.
+- In crates/offrig-core/src/zed.rs, `settings_path` gained a step, `test_home`, before `Config`.
+- 19 files added and 12 changed content, across 5 parts.
 
 ## What comes in
 
 1. **release.** When a tag matching `v*` is pushed; or by hand. Runs crates/offrig-app/build.rs; checks README.md, crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and 1 more.
-2. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/main.rs and 36 more; checks crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and crates/offrig-mcp/src/main.rs.
+2. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 51 more; checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more.
 3. **offrig** (a command people run). Runs crates/offrig-cli/src/main.rs.
 4. **offrig-app** (a command people run). Runs crates/offrig-app/src/main.rs.
 5. **offrig-mcp** (a command people run). Runs crates/offrig-mcp/src/main.rs.
+6. **fake_ssh** (a command people run with `cargo run --example fake_ssh`). Runs crates/offrig-core/examples/fake_ssh.rs.
 
 ## What happens through release
 
@@ -43,7 +41,7 @@ release writes nothing this map can see.
 
 ## The other doors
 
-**ci** runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/main.rs and 36 more, checks crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and crates/offrig-mcp/src/main.rs, and uploads coverage to Codecov.
+**ci** runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 51 more, checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more, and uploads coverage to Codecov.
 
 **offrig** (a command people run) runs crates/offrig-cli/src/main.rs and reaches offrig-core.
 
@@ -51,24 +49,26 @@ release writes nothing this map can see.
 
 **offrig-mcp** (a command people run) runs crates/offrig-mcp/src/main.rs and reaches offrig-core.
 
+**fake_ssh** (a command people run with `cargo run --example fake_ssh`) runs crates/offrig-core/examples/fake_ssh.rs.
+
 ## What breaks what
 
-- **offrig-core** is imported by 3 parts (offrig-app, offrig-cli, offrig-mcp) and sits on the path of 5 doors.
+- **offrig-core** is imported by 3 parts (offrig-app, offrig-cli, offrig-mcp) and sits on the path of 6 doors.
 - **offrig-app** is imported by no other part and sits on the path of 3 doors.
 - **offrig-cli** is imported by no other part and sits on the path of 3 doors.
 - **offrig-mcp** is imported by no other part and sits on the path of 3 doors.
 
 ## What tends to change together
 
-- **crates/offrig-app/src/worker.rs** and **crates/offrig-cli/src/main.rs** changed together in 5 of 7 commits, though neither part imports the other.
-- **crates/offrig-cli/src/main.rs** and **crates/offrig-core/src/session.rs** changed together in 6 of 10 commits, and the offrig-cli part imports the offrig-core part.
-- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 9 of 16 commits, inside the offrig-mcp part.
-- **crates/offrig-app/src/worker.rs** and **crates/offrig-core/src/session.rs** changed together in 5 of 9 commits, and the offrig-app part imports the offrig-core part.
-- **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/session.rs** changed together in 7 of 14 commits, inside the offrig-core part.
+- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 10 of 18 commits, inside the offrig-mcp part.
+- **crates/offrig-app/src/worker.rs** and **crates/offrig-cli/src/main.rs** changed together in 6 of 11 commits, though neither part imports the other.
+- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 6 of 11 commits, inside the offrig-core part.
+- **crates/offrig-cli/src/main.rs** and **crates/offrig-core/src/session.rs** changed together in 7 of 13 commits, and the offrig-cli part imports the offrig-core part.
+- **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/session.rs** changed together in 8 of 16 commits, inside the offrig-core part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
-Window: 180 days; a pair counts from 3 shared commits, since 3 source files reach 10 revisions; the floor rises to 10 when 25 do.
+Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do.
 
 ## What no test touches
 
@@ -94,7 +94,7 @@ No two parts export a helper that looks alike.
 
 ## Hand-authored
 
-People write root; 6 writes with paths built at run time may land here.
+People write root; 7 writes with paths built at run time may land here.
 
 ## Where to start
 
@@ -104,8 +104,9 @@ Read those in order to follow one run of offrig end to end. This path follows of
 
 ## What this map cannot see
 
-- 6 writes and 2 reads use paths built at run time and are not named here.
-- 6 writes and 7 reads go to a path their caller passes, not to this repository.
+- 7 writes and 4 reads use paths built at run time and are not named here.
+- 9 writes and 9 reads go to a path their caller passes, not to this repository.
+- 4 writes go to a temporary directory, not to this repository.
 - 2 files belong to no part: scripts/verify.ps1 and scripts/verify.sh.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 

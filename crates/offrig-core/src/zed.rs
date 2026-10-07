@@ -27,6 +27,9 @@ pub struct DefaultModel {
 }
 
 pub fn settings_path() -> Result<PathBuf> {
+    if let Some(h) = fsutil::test_home() {
+        return Ok(h.join("zed").join("settings.json"));
+    }
     #[cfg(windows)]
     let base = dirs::config_dir().map(|d| d.join("Zed"));
     #[cfg(not(windows))]
