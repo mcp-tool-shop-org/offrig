@@ -16,7 +16,7 @@ use offrig_core::ollama::Ollama;
 use offrig_core::remote::PullState;
 use offrig_core::runpod::{Pod, RunPod};
 use offrig_core::session::{Event, Session, Wait};
-use offrig_core::store::{State, Store};
+use offrig_core::store::{Plan, State, Store};
 use offrig_core::tunnel::Tunnel;
 use offrig_core::{Error, Result, roles, runner, spec, watchdog};
 use serde_json::{Value, json};
@@ -277,7 +277,8 @@ fn ensure_tunnel(ctx: &LaneCtx, store: &Store, shared: &Shared) -> Result<(Strin
     let plan = store
         .open_plans()?
         .into_iter()
-        .find(|p| p.pod_id.is_some())
+        // A job pod serves no model, so it is never the pod a model turn goes to.
+        .find(|p| p.pod_id.is_some() && ctx.base.profile(&p.profile).is_ok_and(|x| !x.is_job()))
         .ok_or_else(|| Error::Refused("no launched session; launch a plan first".into()))?;
     let cfg = ctx.cfg_for_plan(store, &plan)?;
     if alive {
@@ -451,26 +452,165 @@ pub fn shutdown(
     }))
 }
 
-/// The open plan whose pod is a launched job pod, with the ssh alias pointed at it.
-fn job_pod(ctx: &LaneCtx, store: &Store) -> Result<(i64, String)> {
-    let plan = store
-        .open_plans()?
-        .into_iter()
-        .find(|p| p.pod_id.is_some() && ctx.base.profile(&p.profile).is_ok_and(|x| x.is_job()))
-        .ok_or_else(|| {
-            Error::Refused(
-                "no launched job pod; plan the job profile (offrig_plan profile=job) and launch it"
-                    .into(),
-            )
-        })?;
+/// What a job tool acts on: the plan, the lane config it runs under and its pod.
+pub struct JobTarget {
+    pub plan: Plan,
+    pub cfg: Config,
+    pub pod: Pod,
+}
+
+/// "plan 3 (job, pod offrig-aspire-si-job)": how an error names an open plan.
+fn describe_plan(ctx: &LaneCtx, store: &Store, plan: &Plan) -> String {
+    let pod = ctx
+        .cfg_for_plan(store, plan)
+        .ok()
+        .and_then(|c| c.profile(&plan.profile).ok().map(|p| c.pod_name(p)))
+        .unwrap_or_else(|| "unknown".into());
+    format!("plan {} ({}, pod {pod})", plan.id, plan.profile)
+}
+
+/// A pod is a plan's only if the lane owns it and its name is exactly the one this
+/// plan's profile gets in the plan's lane. Another plan's pod in the same lane (a job
+/// next to a jam) is refused here even though the lane owns both names.
+pub fn ensure_plan_pod(cfg: &Config, plan: &Plan, pod: &Pod) -> Result<()> {
+    ensure_owned(cfg, pod)?;
+    let expected = cfg.profile(&plan.profile).map(|p| cfg.pod_name(p))?;
+    if pod.name == expected {
+        return Ok(());
+    }
+    Err(Error::Refused(format!(
+        "pod {} ({}) is not the pod plan {} owns ({expected}); offrig leaves it alone",
+        pod.name, pod.id, plan.id
+    )))
+}
+
+/// Pick the job plan a job tool acts on and fetch its pod, with no ssh written.
+/// Without `plan_id` the one open job plan is used; several are refused and listed.
+/// With `plan_id` only that plan is used, and only if its pod is the one it owns.
+pub fn resolve_job_target(
+    ctx: &LaneCtx,
+    store: &Store,
+    plan_id: Option<i64>,
+    get_pod: &dyn Fn(&str) -> Result<Pod>,
+) -> Result<JobTarget> {
+    let is_job = |p: &Plan| ctx.base.profile(&p.profile).is_ok_and(|x| x.is_job());
+    let plan = match plan_id {
+        Some(id) => {
+            let plan = store
+                .plan(id)?
+                .ok_or_else(|| Error::Refused(format!("no plan {id}")))?;
+            if plan.state != "committed" {
+                return Err(Error::Refused(format!(
+                    "plan {id} is {}, not an open plan",
+                    plan.state
+                )));
+            }
+            if !is_job(&plan) {
+                return Err(Error::Refused(format!(
+                    "plan {id} is profile {}, not a job pod; offrig_put, offrig_exec and offrig_get work on job pods",
+                    plan.profile
+                )));
+            }
+            if plan.pod_id.is_none() {
+                return Err(Error::Refused(format!(
+                    "plan {id} has no pod yet; follow its launch with offrig_job"
+                )));
+            }
+            plan
+        }
+        None => {
+            let mut open: Vec<Plan> = store
+                .open_plans()?
+                .into_iter()
+                .filter(|p| p.pod_id.is_some() && is_job(p))
+                .collect();
+            match open.len() {
+                0 => {
+                    return Err(Error::Refused(
+                        "no launched job pod; plan the job profile (offrig_plan profile=job) and launch it"
+                            .into(),
+                    ));
+                }
+                1 => open.remove(0),
+                n => {
+                    let list: Vec<String> =
+                        open.iter().map(|p| describe_plan(ctx, store, p)).collect();
+                    return Err(Error::Refused(format!(
+                        "{n} open job plans, so which pod is meant is ambiguous; pass plan_id: {}",
+                        list.join("; ")
+                    )));
+                }
+            }
+        }
+    };
     let cfg = ctx.cfg_for_plan(store, &plan)?;
-    let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
-    let pod = session
-        .rp
-        .get_pod(plan.pod_id.as_deref().unwrap_or_default())?;
-    ensure_owned(&cfg, &pod)?;
-    session.write_ssh(&pod)?;
-    Ok((plan.id, cfg.ssh_alias.clone()))
+    let pod = get_pod(plan.pod_id.as_deref().unwrap_or_default())?;
+    ensure_plan_pod(&cfg, &plan, &pod)?;
+    Ok(JobTarget { plan, cfg, pod })
+}
+
+/// The job plan's pod, with the ssh alias pointed at it.
+fn job_pod(
+    ctx: &LaneCtx,
+    store: &Store,
+    plan_id: Option<i64>,
+) -> Result<(i64, String, Option<String>)> {
+    let rp = RunPod::from_env()?;
+    let t = resolve_job_target(ctx, store, plan_id, &|id| rp.get_pod(id))?;
+    Session::with_client(t.cfg.clone(), rp).write_ssh(&t.pod)?;
+    Ok((t.plan.id, t.cfg.ssh_alias.clone(), t.cfg.lane_tag.clone()))
+}
+
+/// Every job-tool reply says which project, lane and plan it acted on.
+fn acted_on(ctx: &LaneCtx, plan_id: i64, lane: Option<String>, mut v: Value) -> Value {
+    v["project"] = json!(ctx.project.display().to_string());
+    v["lane"] = json!(lane);
+    v["plan_id"] = json!(plan_id);
+    v
+}
+
+/// What a lane already holds that a second launch would collide with: an open
+/// (committed, not closed) plan of the lane, then any live pod the lane owns. A lane
+/// has one ssh alias, so a second pod would re-point it at itself and send the first
+/// plan's put, exec and get to the wrong machine. `pods` is the account's pod list as
+/// far as the caller has it (empty skips the pod check).
+pub fn lane_busy(
+    ctx: &LaneCtx,
+    store: &Store,
+    cfg: &Config,
+    launching: i64,
+    pods: &[Pod],
+) -> Result<()> {
+    let tag = cfg.lane_tag.as_deref().unwrap_or("plain");
+    let busy = |name: &str, plan: Option<i64>| {
+        Error::Refused(format!(
+            "lane {tag} has a live pod {name} ({}); shut it down first",
+            plan.map_or("no open plan".to_string(), |id| format!("plan {id}"))
+        ))
+    };
+    let open = store.open_plans()?;
+    for p in &open {
+        if p.id == launching {
+            continue;
+        }
+        let theirs = ctx.cfg_for_plan(store, p)?;
+        if theirs.lane_tag == cfg.lane_tag {
+            let name = theirs
+                .profile(&p.profile)
+                .map_or_else(|_| p.profile.clone(), |x| theirs.pod_name(x));
+            return Err(busy(&name, Some(p.id)));
+        }
+    }
+    for pod in pods {
+        if cfg.owns_pod(&pod.name) && pod.desired_status != "TERMINATED" {
+            let plan = open
+                .iter()
+                .find(|p| p.pod_id.as_deref() == Some(pod.id.as_str()))
+                .map(|p| p.id);
+            return Err(busy(&pod.name, plan));
+        }
+    }
+    Ok(())
 }
 
 /// offrig_exec: start, follow or stop a command on the job pod.
@@ -481,9 +621,11 @@ pub fn job_exec(
     name: &str,
     command: Option<&str>,
     tail_lines: u32,
+    plan_id: Option<i64>,
 ) -> Result<Value> {
     let store = Store::open(db)?;
-    let (plan_id, alias) = job_pod(ctx, &store)?;
+    let (plan_id, alias, lane) = job_pod(ctx, &store, plan_id)?;
+    let reply = |v: Value| acted_on(ctx, plan_id, lane.clone(), v);
     match action {
         "start" => {
             let command =
@@ -502,17 +644,17 @@ pub fn job_exec(
                     "already running"
                 },
             )?;
-            Ok(json!({ "plan_id": plan_id, "name": name, "started": started }))
+            Ok(reply(json!({ "name": name, "started": started })))
         }
         "status" => {
             let s = offrig_core::job::status(&alias, name, tail_lines)?;
-            Ok(json!({ "plan_id": plan_id, "name": name, "status": s }))
+            Ok(reply(json!({ "name": name, "status": s })))
         }
         "stop" => {
             let j = store.journal("job_stop", Some(plan_id), &json!({ "name": name }))?;
             offrig_core::job::stop(&alias, name)?;
             store.journal_outcome(j, "stop sent")?;
-            Ok(json!({ "plan_id": plan_id, "name": name, "stopped": true }))
+            Ok(reply(json!({ "name": name, "stopped": true })))
         }
         other => Err(Error::Refused(format!(
             "action {other:?}: use start, status or stop"
@@ -527,26 +669,32 @@ pub fn job_copy(
     upload: bool,
     local: &Path,
     remote: &str,
+    plan_id: Option<i64>,
 ) -> Result<Value> {
     let store = Store::open(db)?;
-    let (plan_id, alias) = job_pod(ctx, &store)?;
+    let (plan_id, alias, lane) = job_pod(ctx, &store, plan_id)?;
     let pod_path = if upload {
         offrig_core::job::put(&alias, local, remote)?
     } else {
         offrig_core::job::get(&alias, remote, local)?
     };
-    Ok(json!({
-        "plan_id": plan_id,
-        "direction": if upload { "up" } else { "down" },
-        "local": local.display().to_string(),
-        "pod": pod_path,
-    }))
+    Ok(acted_on(
+        ctx,
+        plan_id,
+        lane,
+        json!({
+            "direction": if upload { "up" } else { "down" },
+            "local": local.display().to_string(),
+            "pod": pod_path,
+        }),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use offrig_core::lanes::Lane;
+    use offrig_core::lanes::{Lane, Registry};
+    use offrig_core::store::NewPlan;
 
     fn pod(name: &str) -> Pod {
         serde_json::from_str(&format!(
@@ -589,5 +737,298 @@ mod tests {
         assert!(ensure_owned(&plain, &pod("offrig-small")).is_ok());
         assert!(ensure_owned(&plain, &pod("offrig-aspire-si-small")).is_err());
         assert!(ensure_owned(&plain, &pod("training-run")).is_err());
+    }
+
+    fn named_pod(id: &str, name: &str) -> Pod {
+        serde_json::from_str(&format!(
+            r#"{{"id":"{id}","name":"{name}","desiredStatus":"RUNNING","costPerHr":0.25}}"#
+        ))
+        .expect("pod")
+    }
+
+    /// A project folder with its own lane (in a temp registry), a store with a budget,
+    /// and a context to resolve plans against. Nothing outside the temp dir is touched.
+    struct Fixture {
+        dir: PathBuf,
+        ctx: LaneCtx,
+        store: Store,
+        tag: String,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("offrig-ops-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let project = dir.join("projects").join(name);
+            std::fs::create_dir_all(&project).expect("project dir");
+            let ctx = LaneCtx::new(Config::default(), &project, Registry::at(dir.join("cfg")));
+            let tag = ctx.own().expect("lane").tag.expect("tag");
+            let store = Store::open(&project.join(".offrig").join("offrig.db")).expect("store");
+            store.set_budget_cap(500.0).expect("cap");
+            Fixture {
+                dir,
+                ctx,
+                store,
+                tag,
+            }
+        }
+
+        /// A planned plan in this project's lane.
+        fn planned(&self, profile: &str) -> i64 {
+            let p = self
+                .store
+                .create_plan(NewPlan {
+                    profile: profile.into(),
+                    gpu_count: 1,
+                    gpu_types: vec![],
+                    max_hours: 1.0,
+                    max_price_hr: 0.5,
+                    note: None,
+                })
+                .expect("plan");
+            self.store.set_plan_lane(p.id, &self.tag).expect("lane");
+            p.id
+        }
+
+        /// An open plan holding `pod_id`.
+        fn open(&self, profile: &str, pod_id: &str) -> i64 {
+            let id = self.planned(profile);
+            self.store.commit_plan(id).expect("commit");
+            self.store.attach_pod(id, pod_id).expect("attach");
+            id
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A pod lookup that answers from a table and records every id it was asked for.
+    fn lookup<'a>(
+        pods: &'a [Pod],
+        asked: &'a Mutex<Vec<String>>,
+    ) -> impl Fn(&str) -> Result<Pod> + 'a {
+        move |id| {
+            asked.lock().expect("asked").push(id.to_string());
+            pods.iter()
+                .find(|p| p.id == id)
+                .cloned()
+                .ok_or_else(|| Error::Refused(format!("no pod {id}")))
+        }
+    }
+
+    #[test]
+    fn two_open_job_plans_and_no_plan_id_refuse_and_list_both() {
+        let f = Fixture::new("two-plans");
+        let job = f.open("job", "p-job");
+        let jam = f.open("jam", "p-jam");
+        let asked = Mutex::new(Vec::new());
+        let Err(err) = resolve_job_target(&f.ctx, &f.store, None, &lookup(&[], &asked)) else {
+            panic!("an ambiguous call must be refused");
+        };
+        let msg = err.to_string();
+        assert!(matches!(err, Error::Refused(_)), "{msg}");
+        assert!(
+            msg.contains("2 open job plans") && msg.contains("pass plan_id"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&format!("plan {job} (job, pod offrig-{}-job)", f.tag)),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&format!("plan {jam} (jam, pod offrig-{}-jam)", f.tag)),
+            "{msg}"
+        );
+        // Refused before any pod was looked up.
+        assert!(asked.lock().expect("asked").is_empty());
+    }
+
+    #[test]
+    fn plan_id_selects_that_plans_pod_and_no_other() {
+        let f = Fixture::new("select");
+        let job = f.open("job", "p-job");
+        let jam = f.open("jam", "p-jam");
+        let pods = [
+            named_pod("p-job", &format!("offrig-{}-job", f.tag)),
+            named_pod("p-jam", &format!("offrig-{}-jam", f.tag)),
+        ];
+        for (want, pod_id) in [(jam, "p-jam"), (job, "p-job")] {
+            let asked = Mutex::new(Vec::new());
+            let t = resolve_job_target(&f.ctx, &f.store, Some(want), &lookup(&pods, &asked))
+                .expect("the named plan's pod");
+            assert_eq!((t.plan.id, t.pod.id.as_str()), (want, pod_id));
+            assert_eq!(t.cfg.ssh_alias, format!("offrig-{}", f.tag));
+            assert_eq!(*asked.lock().expect("asked"), vec![pod_id.to_string()]);
+        }
+    }
+
+    #[test]
+    fn a_pod_the_plan_does_not_own_is_refused() {
+        let f = Fixture::new("not-owned");
+        let job = f.open("job", "p-job");
+        let jam_name = format!("offrig-{}-jam", f.tag);
+        let cases = [
+            // The lane's other pod: the lane owns the name, the plan does not.
+            ("p-job", jam_name.as_str(), "is not the pod plan"),
+            // Another lane's pod, the plain lane's, and a studio job.
+            (
+                "p-job",
+                "offrig-someone-else-job",
+                "not in this project's lane",
+            ),
+            ("p-job", "offrig-job", "not in this project's lane"),
+            ("p-job", "training-run", "not in this project's lane"),
+        ];
+        for (id, name, expect) in cases {
+            let pods = [named_pod(id, name)];
+            let asked = Mutex::new(Vec::new());
+            let Err(err) = resolve_job_target(&f.ctx, &f.store, Some(job), &lookup(&pods, &asked))
+            else {
+                panic!("{name} must be refused");
+            };
+            let msg = err.to_string();
+            assert!(
+                matches!(err, Error::Refused(_)) && msg.contains(expect),
+                "{name}: {msg}"
+            );
+        }
+        // The same check holds when the plan is picked implicitly (one open plan).
+        let pods = [named_pod("p-job", &jam_name)];
+        let asked = Mutex::new(Vec::new());
+        assert!(resolve_job_target(&f.ctx, &f.store, None, &lookup(&pods, &asked)).is_err());
+    }
+
+    #[test]
+    fn one_open_job_plan_and_no_plan_id_works_as_before() {
+        let f = Fixture::new("single");
+        let job = f.open("job", "p-job");
+        // A model plan open beside it is not a job plan and does not make it ambiguous.
+        f.open("small", "p-small");
+        let pods = [named_pod("p-job", &format!("offrig-{}-job", f.tag))];
+        let asked = Mutex::new(Vec::new());
+        let t = resolve_job_target(&f.ctx, &f.store, None, &lookup(&pods, &asked))
+            .expect("the only job plan");
+        assert_eq!((t.plan.id, t.pod.id.as_str()), (job, "p-job"));
+        // No job plan at all keeps its old refusal.
+        let empty = Fixture::new("none");
+        let Err(err) = resolve_job_target(&empty.ctx, &empty.store, None, &lookup(&pods, &asked))
+        else {
+            panic!("no job pod");
+        };
+        assert!(err.to_string().contains("no launched job pod"), "{err}");
+    }
+
+    #[test]
+    fn plan_id_must_name_an_open_job_plan_with_a_pod() {
+        let f = Fixture::new("bad-ids");
+        let model = f.open("small", "p-small");
+        let waiting = {
+            let id = f.planned("job");
+            f.store.commit_plan(id).expect("commit");
+            id
+        };
+        let closed = f.open("jam", "p-jam");
+        f.store.close_plan(closed, 0.0).expect("close");
+        let never = f.planned("job");
+        let asked = Mutex::new(Vec::new());
+        for (id, expect) in [
+            (9999, "no plan 9999"),
+            (model, "not a job pod"),
+            (waiting, "has no pod yet"),
+            (closed, "not an open plan"),
+            (never, "not an open plan"),
+        ] {
+            let Err(err) = resolve_job_target(&f.ctx, &f.store, Some(id), &lookup(&[], &asked))
+            else {
+                panic!("plan {id} must be refused");
+            };
+            assert!(err.to_string().contains(expect), "{id}: {err}");
+        }
+        assert!(asked.lock().expect("asked").is_empty());
+    }
+
+    #[test]
+    fn a_second_launch_on_a_lane_with_a_live_plan_is_refused() {
+        let f = Fixture::new("busy-plan");
+        let first = f.open("job", "p-job");
+        let second = f.planned("jam");
+        let cfg = f.ctx.own_cfg().expect("cfg");
+        let err = lane_busy(&f.ctx, &f.store, &cfg, second, &[]).expect_err("lane is busy");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "refused: lane {0} has a live pod offrig-{0}-job (plan {first}); shut it down first",
+                f.tag
+            )
+        );
+        // Once the first plan is closed the lane is free again.
+        f.store.close_plan(first, 0.0).expect("close");
+        lane_busy(&f.ctx, &f.store, &cfg, second, &[]).expect("free");
+        // The plan being launched never blocks itself.
+        let third = f.open("jam", "p-jam");
+        lane_busy(&f.ctx, &f.store, &cfg, third, &[]).expect("only itself");
+    }
+
+    #[test]
+    fn a_live_pod_of_the_lane_blocks_a_launch_even_with_no_plan() {
+        let f = Fixture::new("busy-pod");
+        let planned = f.planned("jam");
+        let cfg = f.ctx.own_cfg().expect("cfg");
+        let live = named_pod("p9", &format!("offrig-{}-job", f.tag));
+        let err = lane_busy(&f.ctx, &f.store, &cfg, planned, &[live]).expect_err("pod is live");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "refused: lane {0} has a live pod offrig-{0}-job (no open plan); shut it down first",
+                f.tag
+            )
+        );
+        // Pods that are not the lane's, or are gone, never block it.
+        let mut gone = named_pod("p8", &format!("offrig-{}-job", f.tag));
+        gone.desired_status = "TERMINATED".into();
+        let others = [
+            gone,
+            named_pod("p7", "offrig-someone-else-job"),
+            named_pod("p6", "offrig-job"),
+            named_pod("p5", "training-run"),
+        ];
+        lane_busy(&f.ctx, &f.store, &cfg, planned, &others).expect("none is this lane's");
+    }
+
+    #[test]
+    fn another_lanes_plan_does_not_block_this_lane() {
+        let f = Fixture::new("other-lane");
+        // A plan from before lanes holds a plain-lane pod: a different alias.
+        let id = f
+            .store
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 1.0,
+                max_price_hr: 0.5,
+                note: None,
+            })
+            .expect("plan")
+            .id;
+        f.store.commit_plan(id).expect("commit");
+        f.store.attach_pod(id, "p-old").expect("attach");
+        let planned = f.planned("jam");
+        let cfg = f.ctx.own_cfg().expect("cfg");
+        lane_busy(&f.ctx, &f.store, &cfg, planned, &[]).expect("plain lane is another alias");
+    }
+
+    #[test]
+    fn every_job_reply_states_the_project_lane_and_plan() {
+        let f = Fixture::new("reply");
+        let v = acted_on(&f.ctx, 7, Some(f.tag.clone()), json!({"name": "render"}));
+        assert_eq!(v["plan_id"], 7);
+        assert_eq!(v["lane"], f.tag.as_str());
+        assert_eq!(v["name"], "render");
+        assert_eq!(v["project"], f.ctx.project.display().to_string());
     }
 }

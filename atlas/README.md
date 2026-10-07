@@ -1,33 +1,28 @@
 # offrig: how it works
 
-Mapped at 2026-10-07 from commit 207a104 by Atlas 1.24.0.
+Mapped at 2026-10-07 from commit 23ee566 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-5 parts, mostly Rust (35 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
+5 parts, mostly Rust (36 files). Work enters through 4 doors; the busiest is ci, which reaches 4 parts. offrig, offrig-app and offrig-mcp are commands built from crates/offrig-app, crates/offrig-cli and crates/offrig-mcp (nothing ships them).
 
-## What changed since 2026-10-03 (e768dd7)
+## What changed since 2026-10-07 (207a104)
 
-- ci now also runs crates/offrig-core/src/checks.rs, crates/offrig-core/src/job.rs, crates/offrig-core/src/lanes.rs and 6 more.
-- ci no longer runs crates/offrig-mcp/tests/.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `job_serves_nothing`, before `chain`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `pod_models_json`, before `model_ids`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `model_ids`, before `port_open`.
-- And 12 more changes to the order of work.
-- 8 files added and 24 changed content, across 5 parts.
+- ci now also runs crates/offrig-mcp/tests/oneplan.rs.
+- 1 file added and 6 changed content, across 3 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/checks.rs, crates/offrig-core/src/config.rs and 22 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
+1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs crates/offrig-app/src/app.rs, crates/offrig-core/src/checks.rs, crates/offrig-core/src/config.rs and 23 more; checks crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs, crates/offrig-core/src/lib.rs and 1 more.
 2. **offrig** (a command built from crates/offrig-cli, which nothing ships). Runs crates/offrig-cli/src/main.rs.
 3. **offrig-app** (a command built from crates/offrig-app, which nothing ships). Runs crates/offrig-app/src/main.rs.
 4. **offrig-mcp** (a command built from crates/offrig-mcp, which nothing ships). Runs crates/offrig-mcp/src/main.rs.
 
 ## What happens through ci
 
-1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 20 files in offrig-core, and 4 files in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
+1. The workflow runs crates/offrig-app/src/app.rs in offrig-app, 20 files in offrig-core, and 5 files in offrig-mcp; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
 
 ## Who reads the results
 

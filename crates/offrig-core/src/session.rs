@@ -142,6 +142,38 @@ impl Session {
             .find(|p| p.name == name && p.desired_status != "TERMINATED"))
     }
 
+    /// Every live pod this session's lane owns, whatever its profile. A lane has one
+    /// ssh alias and one tunnel port, so it can serve one pod at a time.
+    pub fn lane_pods(&self) -> Result<Vec<Pod>> {
+        Ok(self
+            .rp
+            .list_pods()?
+            .into_iter()
+            .filter(|p| self.cfg.owns_pod(&p.name) && p.desired_status != "TERMINATED")
+            .collect())
+    }
+
+    /// Whether `profile` may launch in this lane: `Ok(Some(pod))` when the profile's own
+    /// pod is already up (launching again reuses it), `Ok(None)` when the lane is free,
+    /// and a refusal when the lane holds a pod of another profile. A second pod would
+    /// take the lane's one ssh alias and tunnel port from the first.
+    pub fn lane_guard(&self, profile: &Profile) -> Result<Option<Pod>> {
+        let live = self.lane_pods()?;
+        let mine = spec::pod_name(&self.cfg, profile);
+        if let Some(p) = live.iter().find(|p| p.name == mine) {
+            return Ok(Some(p.clone()));
+        }
+        if let Some(p) = live.first() {
+            return Err(Error::Refused(format!(
+                "lane {} has a live pod {} ({}); shut it down first",
+                self.cfg.lane_tag.as_deref().unwrap_or("plain"),
+                p.name,
+                p.id
+            )));
+        }
+        Ok(None)
+    }
+
     /// Refuse plans that cannot work before any money is spent.
     pub fn plan_check(&self, profile: &Profile) -> Result<()> {
         let need = profile.total_model_gb();
@@ -187,7 +219,7 @@ impl Session {
         on: &mut dyn FnMut(Event),
     ) -> Result<Pod> {
         self.plan_check(profile)?;
-        if let Some(p) = self.current_pod(profile)? {
+        if let Some(p) = self.lane_guard(profile)? {
             on(Event::Step(format!("{} is already up ({})", p.name, p.id)));
             return self.wait_ready(&p.id, on);
         }
@@ -716,6 +748,49 @@ mod tests {
             limit: Duration::from_millis(limit_ms),
             poll: Duration::from_millis(20),
         }
+    }
+
+    #[test]
+    fn a_lane_serves_one_pod_at_a_time() {
+        let pods = r#"[
+            {"id":"p1","name":"offrig-job","desiredStatus":"RUNNING","costPerHr":1.0},
+            {"id":"p2","name":"offrig-old-small","desiredStatus":"RUNNING","costPerHr":1.0},
+            {"id":"p3","name":"offrig-frontier","desiredStatus":"TERMINATED","costPerHr":1.0},
+            {"id":"p4","name":"training-run","desiredStatus":"RUNNING","costPerHr":1.0}]"#;
+        let m = mock(move |route, _| match route {
+            "GET /pods" => (200, pods.into()),
+            _ => (404, "{}".into()),
+        });
+        let s = session_on(&m);
+        let cfg = Config::default();
+        // The plain lane's job pod is up: its own profile reuses it, any other is refused.
+        let job = s
+            .lane_guard(cfg.profile("job").expect("job"))
+            .expect("allowed")
+            .expect("reuses the live job pod");
+        assert_eq!(job.id, "p1");
+        let err = s
+            .lane_guard(cfg.profile("jam").expect("jam"))
+            .expect_err("a second pod in the lane");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("lane plain has a live pod offrig-job")
+                && msg.contains("shut it down first"),
+            "{msg}"
+        );
+        // A terminated pod, another lane's pod and a studio job are not the lane's.
+        let only_others = r#"[
+            {"id":"p3","name":"offrig-frontier","desiredStatus":"TERMINATED","costPerHr":1.0},
+            {"id":"p2","name":"offrig-old-small","desiredStatus":"RUNNING","costPerHr":1.0},
+            {"id":"p4","name":"training-run","desiredStatus":"RUNNING","costPerHr":1.0}]"#;
+        let m2 = mock(move |route, _| match route {
+            "GET /pods" => (200, only_others.into()),
+            _ => (404, "{}".into()),
+        });
+        let free = session_on(&m2)
+            .lane_guard(cfg.profile("frontier").expect("frontier"))
+            .expect("allowed");
+        assert!(free.is_none());
     }
 
     #[test]

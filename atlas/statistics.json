@@ -96,8 +96,8 @@
     "definition": "commits is how many commits in the window touch the file, including merges and commits dropped from coupling. lines is added plus deleted in those commits.",
     "files": [
       {
-        "commits": 1,
-        "lines": 38,
+        "commits": 3,
+        "lines": 58,
         "path": ".claude/CLAUDE.md"
       },
       {
@@ -116,8 +116,8 @@
         "path": ".gitignore"
       },
       {
-        "commits": 16,
-        "lines": 55,
+        "commits": 18,
+        "lines": 83,
         "path": "CHANGELOG.md"
       },
       {
@@ -136,8 +136,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 19,
-        "lines": 557,
+        "commits": 21,
+        "lines": 647,
         "path": "README.md"
       },
       {
@@ -146,8 +146,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 12,
-        "lines": 308,
+        "commits": 14,
+        "lines": 390,
         "path": "atlas/README.md"
       },
       {
@@ -156,23 +156,23 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 12,
-        "lines": 1493,
+        "commits": 14,
+        "lines": 1799,
         "path": "atlas/page.json"
       },
       {
-        "commits": 12,
-        "lines": 1156,
+        "commits": 14,
+        "lines": 1660,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 12,
-        "lines": 4979,
+        "commits": 14,
+        "lines": 9083,
         "path": "atlas/structure.json"
       },
       {
-        "commits": 1,
-        "lines": 48,
+        "commits": 3,
+        "lines": 52,
         "path": "crates/offrig-app/src/app.rs"
       },
       {
@@ -181,13 +181,13 @@
         "path": "crates/offrig-app/src/main.rs"
       },
       {
-        "commits": 5,
-        "lines": 34,
+        "commits": 7,
+        "lines": 38,
         "path": "crates/offrig-app/src/worker.rs"
       },
       {
-        "commits": 7,
-        "lines": 229,
+        "commits": 9,
+        "lines": 241,
         "path": "crates/offrig-cli/src/main.rs"
       },
       {
@@ -241,8 +241,8 @@
         "path": "crates/offrig-core/src/checks.rs"
       },
       {
-        "commits": 12,
-        "lines": 712,
+        "commits": 14,
+        "lines": 808,
         "path": "crates/offrig-core/src/config.rs"
       },
       {
@@ -271,8 +271,13 @@
         "path": "crates/offrig-core/src/job.rs"
       },
       {
-        "commits": 6,
-        "lines": 9,
+        "commits": 2,
+        "lines": 1888,
+        "path": "crates/offrig-core/src/lanes.rs"
+      },
+      {
+        "commits": 8,
+        "lines": 11,
         "path": "crates/offrig-core/src/lib.rs"
       },
       {
@@ -301,14 +306,19 @@
         "path": "crates/offrig-core/src/runpod.rs"
       },
       {
-        "commits": 8,
-        "lines": 620,
+        "commits": 10,
+        "lines": 632,
         "path": "crates/offrig-core/src/session.rs"
       },
       {
-        "commits": 7,
-        "lines": 432,
+        "commits": 9,
+        "lines": 494,
         "path": "crates/offrig-core/src/spec.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 68,
+        "path": "crates/offrig-core/src/sshconfig.rs"
       },
       {
         "commits": 3,
@@ -316,9 +326,14 @@
         "path": "crates/offrig-core/src/stage.rs"
       },
       {
-        "commits": 3,
-        "lines": 1930,
+        "commits": 5,
+        "lines": 1958,
         "path": "crates/offrig-core/src/store.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 460,
+        "path": "crates/offrig-core/src/tunnel.rs"
       },
       {
         "commits": 1,
@@ -336,18 +351,18 @@
         "path": "crates/offrig-mcp/Cargo.toml"
       },
       {
-        "commits": 11,
-        "lines": 1676,
+        "commits": 13,
+        "lines": 1932,
         "path": "crates/offrig-mcp/src/main.rs"
       },
       {
-        "commits": 6,
-        "lines": 683,
+        "commits": 8,
+        "lines": 985,
         "path": "crates/offrig-mcp/src/ops.rs"
       },
       {
-        "commits": 4,
-        "lines": 482,
+        "commits": 6,
+        "lines": 504,
         "path": "crates/offrig-mcp/src/runner.rs"
       },
       {
@@ -356,18 +371,18 @@
         "path": "crates/offrig-mcp/tests/common/mod.rs"
       },
       {
-        "commits": 3,
-        "lines": 415,
+        "commits": 5,
+        "lines": 705,
         "path": "crates/offrig-mcp/tests/phase2.rs"
       },
       {
-        "commits": 2,
-        "lines": 258,
+        "commits": 4,
+        "lines": 260,
         "path": "crates/offrig-mcp/tests/runner.rs"
       },
       {
-        "commits": 2,
-        "lines": 202,
+        "commits": 4,
+        "lines": 216,
         "path": "crates/offrig-mcp/tests/stdio.rs"
       },
       {
@@ -641,9 +656,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-07T02:43:10.390Z",
+  "generatedAt": "2026-10-07T04:42:11.123Z",
   "generatedFrom": {
-    "commit": "207a1048acf5394cd50b1535bb5a00c72d9f8f17"
+    "commit": "23ee566ea4510fdf4ce1c359f294e0a2cb142f78"
   },
   "pairs": [
     {
@@ -746,7 +761,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 16.5,
+    "appliedChangesetLimit": 16.75,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -755,8 +770,8 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-06T19:07:05-07:00",
-    "inScopeFiles": 66,
+    "headDate": "2026-10-06T19:51:42-07:00",
+    "inScopeFiles": 67,
     "pinnedStart": null,
     "priorFloor": "fallen",
     "qualifyingCommits": 28,
@@ -764,7 +779,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-10T02:07:05.000Z",
+    "since": "2026-04-10T02:51:42.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

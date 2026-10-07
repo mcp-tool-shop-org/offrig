@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- One lane, one live plan (issue #7). A lane has one SSH alias, so a second pod in it
+  re-pointed the alias and sent the first plan's `offrig_put`, `offrig_exec` and
+  `offrig_get` to the wrong pod. `offrig_launch` now refuses while the lane has an open
+  plan or any live pod it owns (`lane <tag> has a live pod <name> (plan <id>); shut it down
+  first`), checked again under the store lock at the commit so two launches cannot both
+  pass. `offrig up` and the app (plain lane) refuse a pod of another profile in the lane
+  the same way; the same profile's pod is still reused.
+- `offrig_put`, `offrig_exec` and `offrig_get` take an optional `plan_id` instead of
+  silently using the first open job plan. With several open job plans and no `plan_id` they
+  refuse and list the plans (id, profile, pod name). With a `plan_id` they act only on that
+  plan's pod, after checking its name is the one the plan owns, which a lane's other pod
+  fails. One open job plan and no `plan_id` works as before.
+- `offrig_status` lists each open plan with its lane and pod name beside the project, and
+  every job-tool reply (and `offrig_job`) states the `project` and `plan_id` it acted on.
+  A model turn (`offrig_ask`) no longer picks an open job plan's pod for its tunnel.
+
 - Per-project lanes (issue #2): concurrent side-cars from two projects no longer collide.
   Each project gets its own SSH alias (`offrig-<tag>`), tunnel port (from `11500`, never
   `11434`, `11435` or `11436`) and pod names (`offrig-<tag>-<profile>`), recorded in

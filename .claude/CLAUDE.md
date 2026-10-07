@@ -32,6 +32,9 @@ npx --yes @dogfood-lab/atlas@1.24.0 check      # regenerate with `map` after str
   `offrig-<tag>-<profile>`). A lane matches, lists and stops only its own pod names.
   Never stop, edit or delete another lane's pod, the plain lane's from a project lane,
   or any other pod on the account (other studio work runs there). No lane may use 11434.
+  A lane serves one live plan and pod at a time (one alias): launch refuses a second, and
+  the job tools (`offrig_put`, `offrig_exec`, `offrig_get`) never pick among several open
+  job plans without a `plan_id`.
 - Tests never touch the real config dir, `~/.ssh/config`, RunPod or a real process: set
   `OFFRIG_CONFIG_DIR` to a temp dir, use the mock RunPod, and inject `tunnel::Processes`.
 - A live test spends money. Budget the first run of a changed pod path as a bug-finding
