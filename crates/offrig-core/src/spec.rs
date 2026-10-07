@@ -62,6 +62,35 @@ echo "[offrig] engine exited with status $?" | tee -a /workspace/offrig/engine.l
 sleep infinity
 "#;
 
+/// Where a job's files and logs live on the pod (on the volume).
+pub const JOB_DIR: &str = "/workspace/job";
+
+/// Runs as `bash -c` in place of a job image's entrypoint: sshd and nothing else. The
+/// work arrives over ssh (`offrig exec`), so the pod serves nothing and nothing is
+/// tunnelled; the container sleeps until it is terminated.
+pub const BOOTSTRAP_JOB: &str = r#"set -u
+mkdir -p /workspace/offrig /workspace/job /workspace/hf
+exec > >(tee -a /workspace/offrig/bootstrap.log) 2>&1
+echo "[offrig] bootstrap start $(date -u +%FT%TZ)"
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v sshd >/dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-server >/dev/null
+fi
+mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh
+printf '%s\n' "${PUBLIC_KEY:-}" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+ssh-keygen -A >/dev/null
+/usr/sbin/sshd -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AllowTcpForwarding=no
+echo "[offrig] sshd up; job pod waiting for work"
+sleep infinity
+"#;
+
+pub fn job_env() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert("HF_HOME".into(), HF_DIR.into());
+    env.insert("OFFRIG_JOB_DIR".into(), JOB_DIR.into());
+    env
+}
+
 pub fn pod_name(profile: &Profile) -> String {
     format!("offrig-{}", profile.name)
 }
@@ -124,11 +153,12 @@ pub fn engine_env(profile: &Profile, r: &Recipe) -> BTreeMap<String, String> {
 
 pub fn pod_create(_cfg: &Config, profile: &Profile) -> PodCreate {
     let on_volume = profile.network_volume_id.is_some();
-    let (image, start, env) = match &profile.recipe {
-        Some(r) => match r.engine {
+    let (image, start, env) = match (&profile.job, &profile.recipe) {
+        (Some(j), _) => (j.image.clone(), BOOTSTRAP_JOB, job_env()),
+        (None, Some(r)) => match r.engine {
             Engine::Sglang => (r.image.clone(), BOOTSTRAP_SGLANG, engine_env(profile, r)),
         },
-        None => (OLLAMA_IMAGE.to_string(), BOOTSTRAP, ollama_env(profile)),
+        (None, None) => (OLLAMA_IMAGE.to_string(), BOOTSTRAP, ollama_env(profile)),
     };
     PodCreate {
         name: pod_name(profile),
@@ -295,6 +325,29 @@ mod tests {
         let body = pod_create(&cfg, &p);
         assert_eq!(body.network_volume_id.as_deref(), Some("vol123"));
         assert_eq!(body.volume_in_gb, None);
+    }
+
+    #[test]
+    fn a_job_pod_runs_only_sshd_on_its_pinned_image_and_forwards_nothing() {
+        let cfg = Config::default();
+        let p = cfg.profile("job").expect("job profile");
+        assert!(p.models.is_empty(), "a job pod serves nothing");
+        let body = pod_create(&cfg, p);
+        assert_eq!(body.ports, ["22/tcp"], "only ssh is exposed");
+        assert_eq!(body.image_name, crate::config::JOB_IMAGE);
+        assert!(!body.image_name.ends_with(":latest"));
+        assert_eq!(body.docker_start_cmd, [BOOTSTRAP_JOB]);
+        assert_eq!(body.env["HF_HOME"], HF_DIR);
+        assert!(
+            !body.env.keys().any(|k| k.starts_with("OLLAMA")),
+            "no model server"
+        );
+        assert!(
+            BOOTSTRAP_JOB.contains("AllowTcpForwarding=no"),
+            "no tunnel of any kind"
+        );
+        assert!(!BOOTSTRAP_JOB.contains("ollama") && !BOOTSTRAP_JOB.contains("sglang"));
+        assert!(BOOTSTRAP_JOB.contains("PasswordAuthentication=no"));
     }
 
     #[test]

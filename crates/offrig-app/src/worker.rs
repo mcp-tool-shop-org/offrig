@@ -252,6 +252,10 @@ impl Worker {
             }
             Cmd::Launch => {
                 let p = self.profile()?;
+                if p.is_job() {
+                    // Refused before anything is rented: a job pod is driven by the side-car.
+                    return Err(offrig_core::session::job_serves_nothing(&p));
+                }
                 self.cancel.store(false, Ordering::SeqCst);
                 let wait = Wait::minutes(p.wait_for_gpu_minutes);
                 let cancel = Arc::clone(&self.cancel);

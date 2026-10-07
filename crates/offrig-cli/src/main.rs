@@ -327,6 +327,9 @@ fn run(cli: Cli) -> Result<()> {
             wait,
         } => {
             let (s, p) = session_for(&profile)?;
+            if p.is_job() {
+                return Err(offrig_core::session::job_serves_nothing(&p).into());
+            }
             preflight(&s, &p, yes)?;
             let stop = ctrl_c_flag()?;
             let minutes = wait.unwrap_or(p.wait_for_gpu_minutes);

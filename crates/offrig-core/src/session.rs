@@ -70,6 +70,14 @@ pub fn local_conflicts(profile: &Profile, local_models: &[String]) -> Result<()>
 }
 
 /// RunPod answers an exhausted GPU list with a 500 whose body says so.
+/// A job pod has no model server: no tunnel, nothing for Zed. Its work goes over ssh.
+pub fn job_serves_nothing(profile: &Profile) -> Error {
+    Error::Refused(format!(
+        "profile {} is a job pod: it serves no model, so there is no tunnel; launch it with          offrig_plan + offrig_launch and run work with offrig_exec",
+        profile.name
+    ))
+}
+
 pub fn is_no_capacity(e: &Error) -> bool {
     matches!(e, Error::Api { body, .. } if body.contains("no instances currently available"))
 }
@@ -308,6 +316,9 @@ impl Session {
     /// Open the tunnel. For Ollama, wait for it to answer through the tunnel; a recipe
     /// engine answers only once its weights load, which `ensure_models` waits for.
     pub fn open_tunnel(&self, profile: &Profile, on: &mut dyn FnMut(Event)) -> Result<Tunnel> {
+        if profile.is_job() {
+            return Err(job_serves_nothing(profile));
+        }
         let mut tunnel = Tunnel::start(
             &self.cfg.ssh_alias,
             self.cfg.tunnel_port,
@@ -348,6 +359,9 @@ impl Session {
     /// Pull every profile model that is missing, on the pod, and wait for them. A
     /// recipe engine fetches its own weights; this waits until it serves them.
     pub fn ensure_models(&self, profile: &Profile, on: &mut dyn FnMut(Event)) -> Result<()> {
+        if profile.is_job() {
+            return Ok(());
+        }
         if profile.recipe.is_some() {
             return self.wait_engine(profile, ENGINE_READY_TIMEOUT, on);
         }
