@@ -5403,7 +5403,7 @@
           "path": ".github/workflows/pages.yml"
         },
         {
-          "hash": "f8ad9ad5f44fe6a68e56c38af9a2e543d869b3da7b29405d18689b656396551b",
+          "hash": "182f6533ee8ecfb977a672f38a091baf3b90c2a2b96b9f6520a69caff4df243c",
           "path": ".github/workflows/release.yml"
         },
         {
@@ -5411,7 +5411,7 @@
           "path": ".gitignore"
         },
         {
-          "hash": "982a26adb766a50cf635650d2076d304d7b6a6a3089aa67c97cda3287ed0d096",
+          "hash": "65feed9b747bbf1dc0a56e0072954117c19761edd10e4d797a4ceda729ae954b",
           "path": "CHANGELOG.md"
         },
         {
@@ -6287,6 +6287,16 @@
           "dir": "",
           "job": "build",
           "programs": [
+            "2",
+            "echo",
+            "grep"
+          ],
+          "step": "No build-machine paths in the binaries"
+        },
+        {
+          "dir": "",
+          "job": "build",
+          "programs": [
             "target/release/offrig-mcp.exe",
             "target/release/offrig.exe"
           ],
@@ -6692,7 +6702,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "a9c3d65d6b1090573cfa63381bc0d40a532a48d3",
+    "commit": "ab31154662ad9d774d890b0f5b581f7b466708fc",
     "tracked": 136
   },
   "landings": [
@@ -6987,11 +6997,11 @@
       "path": "site/src/content/docs/handbook/index.md"
     },
     {
-      "hash": "0f7cf8db498fcde1d866b9e79aafa02b01ab0aea601beb56128d8d5865af1a56",
+      "hash": "e989e5b29c561e8d2f5b252779b728e1696619dc81b5c48cafab35d75cd1a1b1",
       "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
     },
     {
-      "hash": "6f56a7dc289c6aa8023b9e6cf7485989841c17534a92ebc72e3ef02cd969000e",
+      "hash": "f16e9a3ea2501cf02b2ccfd6922bd1e43784156cd1bbe0328553a653d82cf787",
       "path": "site/src/content/docs/handbook/reference.md"
     },
     {
@@ -6999,7 +7009,7 @@
       "path": "site/src/content/docs/handbook/security.md"
     },
     {
-      "hash": "8873f130fad1bd62eb2041adebb7157c8b3b2b4dfbb2d89b2430a8eb74393c7b",
+      "hash": "54787583cebcc668ae9efb0254670c1a48d3642afe5edab4130429beb2a1e2d4",
       "path": "site/src/content/docs/handbook/side-car.md"
     },
     {
