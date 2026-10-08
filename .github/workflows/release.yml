@@ -59,8 +59,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Strip build-machine paths from the binaries (dependency panic messages embed the
+      # cargo registry path under the runner's home), and link the C runtime statically
+      # so the exes run without the Visual C++ redistributable.
       - name: Build release binaries
-        run: cargo build --release --locked -p offrig-cli -p offrig-mcp -p offrig-app
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=${USERPROFILE}=. --remap-path-prefix=${GITHUB_WORKSPACE}=. -C target-feature=+crt-static"
+          cargo build --release --locked -p offrig-cli -p offrig-mcp -p offrig-app
+
+      - name: No build-machine paths in the binaries
+        run: |
+          if grep -a -l -i -E 'C:[\/]+Users[\/]' target/release/offrig.exe target/release/offrig-mcp.exe target/release/offrig-app.exe; then
+            echo "a binary still embeds a C:\Users path; refusing to package" >&2
+            exit 1
+          fi
 
       - name: Smoke-run the command line binaries
         run: |
