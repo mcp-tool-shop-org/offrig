@@ -109,8 +109,36 @@ fn start_line(base: &str) -> String {
 
 /// Embed through the CPU-only endpoint. A server that is not there is reported with
 /// the line that starts it; offrig never falls back to the shared Ollama.
-pub fn embed_call(ollama: &Ollama, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
-    ollama.embed(model, inputs, true).map_err(|e| match e {
+/// What a text is embedded as. Some models were trained with a task prefix and lose
+/// retrieval quality without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Task {
+    Document,
+    Query,
+}
+
+/// The task prefix `model` expects: nomic-embed-text was trained with
+/// `search_document: ` and `search_query: ` and its model card says to always use them.
+/// Other models get none.
+pub fn task_prefix(model: &str, task: Task) -> &'static str {
+    if !model.starts_with("nomic-embed-text") {
+        return "";
+    }
+    match task {
+        Task::Document => "search_document: ",
+        Task::Query => "search_query: ",
+    }
+}
+
+pub fn embed_call(
+    ollama: &Ollama,
+    model: &str,
+    task: Task,
+    inputs: &[String],
+) -> Result<Vec<Vec<f32>>> {
+    let prefix = task_prefix(model, task);
+    let inputs: Vec<String> = inputs.iter().map(|t| format!("{prefix}{t}")).collect();
+    ollama.embed(model, &inputs, true).map_err(|e| match e {
         Error::Http { .. } => Error::Refused(format!(
             "no embedding server answers at {}; {}",
             ollama.base(),
@@ -411,7 +439,7 @@ pub fn embed_pending(store: &Store, ollama: &Ollama, model: &str) -> Result<usiz
             return Ok(done);
         }
         let texts: Vec<String> = todo.iter().map(|(_, t)| t.clone()).collect();
-        let vecs = embed_call(ollama, model, &texts)?;
+        let vecs = embed_call(ollama, model, Task::Document, &texts)?;
         let dim = vecs.first().map_or(0, Vec::len);
         check_dim(store, dim)?;
         let rows: Vec<(i64, Vec<i8>, f32)> = todo
@@ -438,7 +466,7 @@ pub fn index_model(store: &Store) -> Result<String> {
 
 /// Embed one query. Needs no store, so a caller can do it outside any lock.
 pub fn embed_query(ollama: &Ollama, model: &str, text: &str) -> Result<Vec<f32>> {
-    Ok(embed_call(ollama, model, &[text.to_string()])?
+    Ok(embed_call(ollama, model, Task::Query, &[text.to_string()])?
         .into_iter()
         .next()
         .unwrap_or_default())
@@ -768,6 +796,19 @@ mod tests {
         assert!(cosine(&v, &back) > 0.9999);
         assert!((cosine_q(&v, &q, scale) - cosine(&v, &back)).abs() < 1e-6);
         assert_eq!(quantize(&[0.0, 0.0]), (vec![0, 0], 0.0));
+    }
+
+    #[test]
+    fn nomic_gets_its_task_prefixes_and_other_models_none() {
+        assert_eq!(
+            task_prefix("nomic-embed-text", Task::Document),
+            "search_document: "
+        );
+        assert_eq!(
+            task_prefix("nomic-embed-text:v1.5", Task::Query),
+            "search_query: "
+        );
+        assert_eq!(task_prefix("bge-m3", Task::Query), "");
     }
 
     #[test]

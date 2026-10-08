@@ -149,10 +149,23 @@ Embeddings come from a dedicated, CPU-only Ollama, never the shared one on `1143
 a GPU: loading an embedding model into the shared server can evict a GPU model mid-run, and
 a zero-GPU request can still open a CUDA context. Start it once, on its own port:
 
-```text
+```bash
 OLLAMA_HOST=127.0.0.1:11490 CUDA_VISIBLE_DEVICES=-1 ollama serve
 OLLAMA_HOST=127.0.0.1:11490 ollama pull nomic-embed-text
 ```
+
+In PowerShell, set the variables first, then run the same two commands, each in its own
+window or job:
+
+```powershell
+$env:OLLAMA_HOST = '127.0.0.1:11490'; $env:CUDA_VISIBLE_DEVICES = '-1'
+ollama serve
+```
+
+Check it with `nvidia-smi`: no process from this server should appear.
+
+offrig sends documents and queries to nomic-embed-text with the `search_document: ` and
+`search_query: ` prefixes the model was trained with; other models get none.
 
 The URL is `embed_url` in `config.toml` (default `http://127.0.0.1:11490`), and
 `OFFRIG_EMBED_URL` overrides it. offrig refuses a port that belongs to something else it

@@ -570,7 +570,12 @@ impl Sidecar {
         }
         let texts: Vec<String> = todo.iter().map(|(_, t)| t.clone()).collect();
         let vecs = tokio::task::spawn_blocking(move || {
-            index::embed_call(&index::embed_client()?, &model, &texts)
+            index::embed_call(
+                &index::embed_client()?,
+                &model,
+                index::Task::Document,
+                &texts,
+            )
         })
         .await;
         let Ok(Ok(vecs)) = vecs else { return false };

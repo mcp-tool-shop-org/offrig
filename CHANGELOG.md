@@ -19,6 +19,8 @@ All notable changes to offrig are documented here. The format is based on
     never a GPU. A port that collides with another offrig port is refused. A missing model
     or server is an error with the command that fixes it, and a different model or
     dimension needs `offrig index --rebuild`.
+  - nomic-embed-text gets the `search_document: ` and `search_query: ` prefixes it was
+    trained with.
 
 - **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget and
   any running plans, then offers to set a new cap (confirmed first) or stop new spending.
