@@ -6,6 +6,16 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **`cuda_runtime` on a profile: software built for a newer CUDA than any RunPod host.**
+  RunPod's newest host is CUDA 13.0 (its pod-create API, read 2026-10-08), and the studio
+  trains on a PyTorch cu134 nightly. A profile names `cuda_runtime = "13.4"`, and the plan
+  rents only CUDA 13 hosts (`allowedCudaVersions: ["13.0"]`). CUDA's minor-version
+  compatibility runs a 13.x build on any 13 driver. The floor is the newest of `min_cuda`,
+  the job image's floor, and the runtime's, so a 12.8 image floor never puts a 13.4 build on
+  a 12.8 host. A runtime whose major RunPod lacks (`14.x` today) is refused when the config
+  loads. The plan reply carries `cuda_runtime` and a `cuda_note`: prebuilt kernels work;
+  JIT of newer PTX, and features that need a newer driver, do not. Prove the env on the pod
+  before trusting a run. (2026-10-08: a cu134 env could otherwise only run locally.)
 - **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget and
   any running plans, then offers to set a new cap (confirmed first) or stop new spending.
   `--show` prints the one-line budget, and so does any run where stdout isn't a terminal.

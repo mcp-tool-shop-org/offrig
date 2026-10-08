@@ -529,6 +529,24 @@ mod tests {
     }
 
     #[test]
+    fn a_cuda_runtime_rents_only_hosts_of_its_major() {
+        let mut cfg = Config::default();
+        for p in &mut cfg.profiles {
+            if p.name == "jam" {
+                p.cuda_runtime = Some("13.4".into()); // newer than any RunPod host
+            }
+        }
+        let jam = pod_create(&cfg, cfg.profile("jam").expect("jam"));
+        assert_eq!(
+            jam.allowed_cuda_versions,
+            ["13.0"],
+            "a 13.4 build runs on a CUDA 13 driver, never on the image's 12.8 floor"
+        );
+        let v = serde_json::to_value(&jam).expect("json");
+        assert_eq!(v["allowedCudaVersions"], serde_json::json!(["13.0"]));
+    }
+
+    #[test]
     fn a_plan_rents_from_its_own_gpu_list_and_cuda_floor() {
         let cfg = Config::default();
         let job = cfg.profile("job").expect("job profile");

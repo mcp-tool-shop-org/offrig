@@ -68,6 +68,7 @@ different price. Four limits keep a plan to hardware its work can use:
 | Limit | Where | Effect |
 |---|---|---|
 | `min_cuda` | profile | The oldest host CUDA (driver) version, from RunPod's list (`13.0` down to `11.8`). The pod is created only on hosts at that version or newer. The `job` profile sets `13.0`. |
+| `cuda_runtime` | profile | The CUDA version the pod's software is built for, such as `13.4` for a PyTorch cu134 wheel. It can be newer than any RunPod host. CUDA's minor-version compatibility runs a 13.x build on any CUDA 13 driver, so the floor becomes the oldest RunPod host of that major (`13.0`). A major RunPod has no host for is refused when the config loads. The plan reply names the runtime and the limits of that compatibility. |
 | `min_vram_gb` | profile | The least total VRAM a plan accepts. Smaller offers are dropped. |
 | `max_price_hr` | `offrig_plan` | The most the pod may cost, in total $/hr. Dearer offers are dropped, and so is a type with no price listed now. |
 | `no_fallback` | `offrig_plan` | Only the profile's first GPU family. The two RTX PRO 6000 Blackwell editions count as one family. |

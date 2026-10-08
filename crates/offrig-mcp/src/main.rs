@@ -928,6 +928,8 @@ impl Sidecar {
             "no_fallback": limits.no_fallback,
             "min_vram_gb": profile.min_vram_gb,
             "min_cuda": min_cuda,
+            "cuda_runtime": profile.cuda_runtime,
+            "cuda_note": profile.cuda_runtime.as_deref().and_then(offrig_core::config::runtime_note),
             "wait_minutes": wait_minutes,
             "left_out": choice.dropped.iter().map(|(t, w)| json!({"gpu": t, "why": w})).collect::<Vec<_>>(),
             "max_hours": plan.max_hours,
