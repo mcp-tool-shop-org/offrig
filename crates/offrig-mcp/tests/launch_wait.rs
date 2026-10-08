@@ -28,17 +28,13 @@ fn graphql(body: &str, free: bool) -> String {
         return r#"{"data":{"myself":{"clientBalance":50.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#
             .into();
     }
-    let price = if free { "2.09" } else { "null" };
+    let availability = if free { "HIGH" } else { "NONE" };
     let t = |id: &str, gb: u32| {
         format!(
-            r#"{{"id":"{id}","displayName":"{id}","memoryInGb":{gb},"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":{price},"stockStatus":null}}}}"#
+            r#"{{"id":"{id}","name":"{id}","memory":{gb},"secure":true,"price":{{"secure":2.09}},"maxCount":{{"secure":8}},"availability":"{availability}"}}"#
         )
     };
-    format!(
-        r#"{{"data":{{"gpuTypes":[{},{}]}}}}"#,
-        t(RTX_S, 96),
-        t(RTX_W, 96)
-    )
+    format!(r#"{{"gpus":[{},{}]}}"#, t(RTX_S, 96), t(RTX_W, 96))
 }
 
 fn body(r: &CallToolResult) -> Value {
@@ -91,6 +87,7 @@ async fn until<F: FnMut() -> bool>(what: &str, mut f: F) {
 #[tokio::test]
 async fn a_plan_stores_its_wait_and_the_job_profile_waits_by_default() {
     let (url, _hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", true)),
         "POST /graphql" => (200, graphql(b, true)),
         _ => (404, "{}".into()),
     });
@@ -139,6 +136,7 @@ async fn a_narrowed_plan_retries_quietly_and_each_retry_shows_in_offrig_job() {
     let full = Arc::new(AtomicBool::new(false));
     let market = Arc::clone(&full);
     let (url, hits) = mock(move |route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", !market.load(Ordering::SeqCst))),
         "POST /graphql" => (200, graphql(b, !market.load(Ordering::SeqCst))),
         "GET /pods" => (200, "[]".into()),
         // No ssh endpoint: the launch waits for an address, touching no ssh config.
@@ -223,6 +221,7 @@ async fn a_narrowed_plan_retries_quietly_and_each_retry_shows_in_offrig_job() {
 #[tokio::test]
 async fn a_plan_with_no_wait_still_fails_at_once_naming_how_to_set_one() {
     let (url, hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", false)),
         "POST /graphql" => (200, graphql(b, false)),
         "GET /pods" => (200, "[]".into()),
         _ => (404, "{}".into()),

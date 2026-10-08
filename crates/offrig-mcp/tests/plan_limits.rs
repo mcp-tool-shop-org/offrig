@@ -29,7 +29,7 @@ fn graphql(body: &str) -> String {
     }
     let t = |id: &str, name: &str, gb: u32, price: f64| {
         format!(
-            r#"{{"id":"{id}","displayName":"{name}","memoryInGb":{gb},"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":{price},"stockStatus":"High"}}}}"#
+            r#"{{"id":"{id}","name":"{name}","memory":{gb},"secure":true,"price":{{"secure":{price}}},"maxCount":{{"secure":8}},"availability":"HIGH"}}"#
         )
     };
     let all = [
@@ -40,7 +40,7 @@ fn graphql(body: &str) -> String {
         t("NVIDIA H100 NVL", "H100 NVL", 94, 3.07),
         t("NVIDIA H100 80GB HBM3", "H100", 80, 3.49),
     ];
-    format!(r#"{{"data":{{"gpuTypes":[{}]}}}}"#, all.join(","))
+    format!(r#"{{"gpus":[{}]}}"#, all.join(","))
 }
 
 fn body(r: &CallToolResult) -> Value {
@@ -81,6 +81,7 @@ fn project(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn plan_limits_narrow_the_gpu_list_and_the_worst_case() {
     let (url, _hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(b)),
         _ => (404, "{}".into()),
     });
@@ -166,6 +167,7 @@ async fn plan_limits_narrow_the_gpu_list_and_the_worst_case() {
 #[tokio::test]
 async fn the_profiles_min_vram_gb_drops_the_smaller_cards() {
     let (url, _hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(b)),
         _ => (404, "{}".into()),
     });
@@ -226,6 +228,7 @@ async fn the_launch_rents_only_from_the_plans_stored_gpu_list_and_cuda_floor() {
     let created: Arc<Mutex<Vec<String>>> = Arc::default();
     let log = Arc::clone(&created);
     let (url, _hits) = mock(move |route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(b)),
         "GET /pods" => (200, "[]".into()),
         "POST /pods" => {

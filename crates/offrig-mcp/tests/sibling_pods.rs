@@ -59,7 +59,7 @@ fn graphql(body: &str) -> String {
             .into();
     }
     format!(
-        r#"{{"data":{{"gpuTypes":[{{"id":"{RTX_S}","displayName":"RTX PRO 6000","memoryInGb":96,"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":2.09,"stockStatus":"High"}}}}]}}}}"#
+        r#"{{"gpus":[{{"id":"{RTX_S}","name":"RTX PRO 6000","memory":96,"secure":true,"price":{{"secure":2.09}},"maxCount":{{"secure":8}},"availability":"HIGH"}}]}}"#
     )
 }
 
@@ -136,6 +136,7 @@ async fn a_sibling_lanes_pod_appears_with_its_plan_and_foreign_pods_are_only_cou
         pod("not-ours", "somebody-elses", 1.5),
     );
     let (url, _h) = mock(move |route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(b)),
         "GET /pods" => (200, pods.clone()),
         _ => (404, "{}".into()),
@@ -234,6 +235,7 @@ async fn an_unreadable_sibling_store_degrades_to_a_note_and_status_still_answers
         pod("p3", &format!("offrig-{idle_tag}-job"), 1.0),
     );
     let (url, _h) = mock(move |route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(b)),
         "GET /pods" => (200, pods.clone()),
         _ => (404, "{}".into()),
@@ -278,6 +280,7 @@ async fn a_plans_pod_is_created_with_lane_plan_and_deadline_in_its_env() {
             )
         };
         match route {
+            "GET /catalog/gpus" => (200, graphql("")),
             "POST /graphql" => (200, graphql(b)),
             "GET /pods" => (200, "[]".into()),
             "POST /pods" => {

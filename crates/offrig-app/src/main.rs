@@ -96,7 +96,8 @@ mod tests {
                 r#"{"data":{"myself":{"clientBalance":20.0,"currentSpendPerHr":0.0,"spendLimit":null}}}"#
                     .into(),
             ),
-            _ => (200, r#"{"data":{"gpuTypes":[]}}"#.into()),
+            "GET /catalog/gpus" => (200, r#"{"gpus":[]}"#.into()),
+            _ => (200, r#"{"gpus":[]}"#.into()),
         });
         let mut app = build_app(egui::Context::default(), Ok(Config::default()));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);

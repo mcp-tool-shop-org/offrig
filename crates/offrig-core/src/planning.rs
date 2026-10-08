@@ -96,6 +96,17 @@ pub fn choose(profile: &Profile, offers: &[GpuOffer], limits: &Limits) -> Result
             Some(_) => None,
         });
     }
+    // An empty catalog CUDA list is the copied-list fallback, so those types stay.
+    // A type the catalog did not return is not dropped here: there is no list to
+    // hold it to. A non-empty list that cannot meet the floor is dropped.
+    if let Some(floor) = profile.effective_min_cuda() {
+        narrow(&mut types, &mut dropped, |t| match offer(t) {
+            Some(o) if !o.cuda.is_empty() && !o.meets_cuda_floor(&floor) => Some(format!(
+                "no available catalog CUDA version is at or above the floor {floor}"
+            )),
+            _ => None,
+        });
+    }
     if let Some(cap) = limits.max_price_hr {
         narrow(&mut types, &mut dropped, |t| {
             match offer(t).and_then(|o| o.price_per_hr) {
@@ -303,7 +314,7 @@ pub fn audit_rental_with_host(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::runpod::{Machine, Pod};
+    use crate::runpod::{CatalogCuda, Machine, Pod};
 
     const RTX_S: &str = "NVIDIA RTX PRO 6000 Blackwell Server Edition";
     const RTX_W: &str = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition";
@@ -319,6 +330,7 @@ mod tests {
             gpu_count: 1,
             price_per_hr: price,
             stock: None,
+            cuda: Vec::new(),
         }
     }
 
@@ -465,6 +477,50 @@ mod tests {
         assert_eq!(c.gpu_types, [RTX_S], "only 2 x 96 = 192 clears 161");
         p.min_vram_gb = Some(193);
         assert!(choose(&p, &m, &Limits::default()).is_err());
+    }
+
+    #[test]
+    fn a_catalog_cuda_list_below_the_floor_is_dropped_and_an_omitted_list_is_kept() {
+        let mut m = market();
+        m[0].cuda = vec![CatalogCuda {
+            version: "12.8".into(),
+            available: true,
+        }];
+        m[1].cuda = vec![
+            CatalogCuda {
+                version: "13.0".into(),
+                available: false,
+            },
+            CatalogCuda {
+                version: "12.9".into(),
+                available: true,
+            },
+        ];
+        m[3].cuda = vec![CatalogCuda {
+            version: "13.1".into(),
+            available: true,
+        }];
+        let c = choose(&job(), &m, &Limits::default()).expect("choice");
+        assert!(!c.gpu_types.iter().any(|t| t == RTX_S));
+        assert!(!c.gpu_types.iter().any(|t| t == RTX_W));
+        assert!(
+            c.gpu_types.iter().any(|t| t == A100),
+            "omitted list falls back"
+        );
+        assert!(
+            c.gpu_types.iter().any(|t| t == A100_PCIE),
+            "13.1 is newer than the floor"
+        );
+        assert!(
+            c.dropped
+                .iter()
+                .any(|(t, w)| t == RTX_S && w.contains("13.0"))
+        );
+        // A type the catalog did not return is not dropped for CUDA.
+        let no_rtx: Vec<GpuOffer> = market().into_iter().skip(2).collect();
+        let c = choose(&job(), &no_rtx, &Limits::default()).expect("choice");
+        assert!(c.gpu_types.iter().any(|t| t == RTX_S));
+        assert!(c.dropped.iter().all(|(_, w)| !w.contains("CUDA")));
     }
 
     #[test]

@@ -24,7 +24,7 @@ fn graphql(body: &str) -> String {
             .into();
     }
     format!(
-        r#"{{"data":{{"gpuTypes":[{{"id":"{RTX_S}","displayName":"RTX PRO 6000","memoryInGb":96,"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":2.09,"stockStatus":"High"}}}}]}}}}"#
+        r#"{{"gpus":[{{"id":"{RTX_S}","name":"RTX PRO 6000","memory":96,"secure":true,"price":{{"secure":2.09}},"maxCount":{{"secure":8}},"availability":"HIGH"}}]}}"#
     )
 }
 
@@ -66,6 +66,7 @@ fn project(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn offrig_plan_names_the_alias_and_the_pod_and_status_agrees() {
     let (url, _hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(b)),
         "GET /pods" => (200, "[]".into()),
         _ => (404, "{}".into()),
@@ -133,6 +134,7 @@ async fn a_plans_container_disk_reaches_the_create_body() {
             )
         };
         match route {
+            "GET /catalog/gpus" => (200, graphql("")),
             "POST /graphql" => (200, graphql(b)),
             "GET /pods" => (200, "[]".into()),
             "POST /pods" => {
@@ -231,6 +233,7 @@ async fn a_plans_container_disk_reaches_the_create_body() {
             )
         };
         match route {
+            "GET /catalog/gpus" => (200, graphql("")),
             "POST /graphql" => (200, graphql(b)),
             "GET /pods" => (200, "[]".into()),
             "POST /pods" => {

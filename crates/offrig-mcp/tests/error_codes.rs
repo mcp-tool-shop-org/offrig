@@ -76,12 +76,17 @@ fn assert_failure(r: &CallToolResult, code: &str, retryable: bool) {
     );
 }
 
-const GRAPHQL_GPUS: &str = r#"{"data":{"gpuTypes":[{"id":"NVIDIA RTX PRO 6000 Blackwell Server Edition","displayName":"RTX PRO 6000","memoryInGb":96,"secureCloud":true,"lowestPrice":{"uninterruptablePrice":2.09,"stockStatus":"High"}}]}}"#;
+const CATALOG_GPUS: &str = r#"{"gpus":[{"id":"NVIDIA RTX PRO 6000 Blackwell Server Edition","name":"RTX PRO 6000","memory":96,"secure":true,"price":{"secure":2.09},"maxCount":{"secure":8},"availability":"HIGH"}]}"#;
 
 #[tokio::test]
 async fn failures_carry_a_stable_code_and_retryability() {
     let (url, _hits) = mock(|route, _b, _| match route {
-        "POST /graphql" => (200, GRAPHQL_GPUS.into()),
+        "GET /catalog/gpus" => (200, CATALOG_GPUS.into()),
+        "POST /graphql" => (
+            200,
+            r#"{"data":{"myself":{"clientBalance":50.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#
+                .into(),
+        ),
         _ => (404, "{}".into()),
     });
     let dir = project("error-codes", 5.0);

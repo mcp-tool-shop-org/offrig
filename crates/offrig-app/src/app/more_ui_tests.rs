@@ -42,6 +42,7 @@ fn offer(id: &str, mem: u32, price: Option<f64>) -> GpuOffer {
         gpu_count: 1,
         price_per_hr: price,
         stock: None,
+        cuda: Vec::new(),
     }
 }
 

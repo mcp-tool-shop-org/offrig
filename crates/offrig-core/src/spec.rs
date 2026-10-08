@@ -218,6 +218,7 @@ pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
         docker_start_cmd: vec![start.into()],
         env,
         max_price_hr: None,
+        try_first: None,
     }
 }
 

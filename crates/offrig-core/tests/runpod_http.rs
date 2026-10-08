@@ -364,17 +364,18 @@ fn a_500_that_says_no_instances_does_not_try_the_next_gpu() {
     );
 }
 
-const PRICED: &str = r#"{"data":{"gpuTypes":[
-  {"id":"NVIDIA H200","displayName":"H200","memoryInGb":141,"secureCloud":true,
-   "lowestPrice":{"uninterruptablePrice":1.0,"stockStatus":"High"}},
-  {"id":"NVIDIA L4","displayName":"L4","memoryInGb":24,"secureCloud":true,
-   "lowestPrice":{"uninterruptablePrice":0.4,"stockStatus":"Low"}}
-]}}"#;
+/// Per-GPU secure prices. The small profile asks for one GPU, so the totals match.
+const PRICED: &str = r#"{"gpus":[
+  {"id":"NVIDIA H200","name":"H200","memory":141,"secure":true,
+   "price":{"secure":1.0},"maxCount":{"secure":8},"availability":"HIGH"},
+  {"id":"NVIDIA L4","name":"L4","memory":24,"secure":true,
+   "price":{"secure":0.4},"maxCount":{"secure":8},"availability":"LOW"}
+]}"#;
 
 #[test]
 fn the_plan_price_skips_a_dearer_gpu_and_posts_the_next() {
     let m = serve(|req, _| match req.route().as_str() {
-        "POST /graphql" => (200, PRICED.to_string()),
+        "GET /catalog/gpus" => (200, PRICED.to_string()),
         "POST /pods" => (201, V2_POD.to_string()),
         _ => (404, "{}".to_string()),
     });
@@ -405,12 +406,12 @@ fn the_plan_price_skips_a_dearer_gpu_and_posts_the_next() {
 
 #[test]
 fn a_gpu_with_no_listed_price_is_still_tried() {
-    let offers = r#"{"data":{"gpuTypes":[
-      {"id":"NVIDIA L4","displayName":"L4","memoryInGb":24,"secureCloud":true,
-       "lowestPrice":{"uninterruptablePrice":0.4,"stockStatus":"Low"}}
-    ]}}"#;
+    let offers = r#"{"gpus":[
+      {"id":"NVIDIA L4","name":"L4","memory":24,"secure":true,
+       "price":{"secure":0.4},"maxCount":{"secure":8},"availability":"LOW"}
+    ]}"#;
     let m = serve(move |req, nth| match req.route().as_str() {
-        "POST /graphql" => (200, offers.to_string()),
+        "GET /catalog/gpus" => (200, offers.to_string()),
         "POST /pods" if nth == 0 => (
             400,
             r#"{"title":"Bad Request","status":400,"detail":"could not place NVIDIA H200"}"#.into(),
@@ -428,7 +429,7 @@ fn a_gpu_with_no_listed_price_is_still_tried() {
 #[test]
 fn a_failed_price_read_still_tries_every_listed_gpu() {
     let m = serve(|req, nth| match req.route().as_str() {
-        "POST /graphql" => (500, "down".into()),
+        "GET /catalog/gpus" => (500, "down".into()),
         "POST /pods" if nth == 0 => (
             400,
             r#"{"title":"Bad Request","status":400,"detail":"could not place this GPU type"}"#
@@ -568,17 +569,26 @@ fn graphql_errors_and_empty_answers_are_reported() {
     }
 }
 
-const GPU_TYPES: &str = r#"{"data":{"gpuTypes":[
-  {"id":"NVIDIA H200","displayName":"H200","memoryInGb":141,"secureCloud":true,
-   "lowestPrice":{"uninterruptablePrice":3.5,"stockStatus":"High"}},
-  {"id":"NVIDIA L4","displayName":"L4","memoryInGb":24,"secureCloud":true,
-   "lowestPrice":{"uninterruptablePrice":0.4,"stockStatus":"Low"}},
-  {"id":"NVIDIA A100","displayName":"A100","memoryInGb":80,"secureCloud":true,"lowestPrice":null},
-  {"id":"NVIDIA B200 MIG 1g","displayName":"MIG","memoryInGb":10,"secureCloud":true,"lowestPrice":null},
-  {"id":"AMD MI300X","displayName":"AMD","memoryInGb":192,"secureCloud":true,"lowestPrice":null},
-  {"id":"NVIDIA T4","displayName":"T4","memoryInGb":16,"secureCloud":false,"lowestPrice":null},
-  {"id":"NVIDIA Ghost","displayName":"Ghost","memoryInGb":0,"secureCloud":true,"lowestPrice":null}
-]}}"#;
+/// `price.secure` is per GPU. Count 2 makes the multiply obvious: 0.4 → 0.8,
+/// 3.5 → 7.0. NONE keeps the listed price off the offer.
+const GPU_TYPES: &str = r#"{"gpus":[
+  {"id":"NVIDIA H200","name":"H200","memory":141,"secure":true,
+   "price":{"secure":3.5},"maxCount":{"secure":8},"availability":"HIGH",
+   "cudaVersions":[{"version":"13.0","available":true}]},
+  {"id":"NVIDIA L4","name":"L4","memory":24,"secure":true,
+   "price":{"secure":0.4},"maxCount":{"secure":8},"availability":"LOW",
+   "cudaVersions":[{"version":"12.4","available":true},{"version":"12.2","available":false}]},
+  {"id":"NVIDIA A100","name":"A100","memory":80,"secure":true,
+   "price":{"secure":1.0},"maxCount":{"secure":8},"availability":"NONE"},
+  {"id":"NVIDIA B200 MIG 1g","name":"MIG","memory":10,"secure":true,
+   "price":{"secure":1.0},"availability":"HIGH"},
+  {"id":"AMD MI300X","name":"AMD","memory":192,"secure":true,
+   "price":{"secure":1.0},"availability":"HIGH"},
+  {"id":"NVIDIA T4","name":"T4","memory":16,"secure":false,
+   "price":{"secure":0.1},"availability":"HIGH"},
+  {"id":"NVIDIA Ghost","name":"Ghost","memory":0,"secure":true,
+   "price":{"secure":0.1},"availability":"HIGH"}
+]}"#;
 
 #[test]
 fn gpu_offers_are_filtered_and_sorted_cheapest_first() {
@@ -587,29 +597,160 @@ fn gpu_offers_are_filtered_and_sorted_cheapest_first() {
     let offers = rp.gpu_offers(2).expect("offers");
     let ids: Vec<&str> = offers.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(ids, ["NVIDIA L4", "NVIDIA H200", "NVIDIA A100"]);
-    assert_eq!(offers[0].price_per_hr, Some(0.4));
-    assert_eq!(offers[0].stock.as_deref(), Some("Low"));
+    assert_eq!(offers[0].price_per_hr, Some(0.8));
+    assert_eq!(offers[0].stock.as_deref(), Some("LOW"));
     assert_eq!(offers[0].gpu_count, 2);
+    assert_eq!(offers[1].price_per_hr, Some(7.0));
     assert_eq!(offers[1].total_vram_gb(), 282);
-    assert_eq!(offers[2].price_per_hr, None);
-    assert!(m.last().body.contains("gpuCount: 2"));
-    assert!(!m.last().body.contains("dataCenterId"));
+    assert_eq!(offers[2].price_per_hr, None, "NONE is not free");
+    assert_eq!(offers[2].stock.as_deref(), Some("NONE"));
+    assert_eq!(offers[0].cuda.len(), 2);
+    assert!(
+        offers[1]
+            .cuda
+            .iter()
+            .any(|c| c.version == "13.0" && c.available)
+    );
+    let q = &m.last().target;
+    assert!(q.contains("include=AVAILABILITY"), "{q}");
+    assert!(q.contains("product=POD"), "{q}");
+    assert!(q.contains("count=2"), "{q}");
+    assert!(q.contains("cloud=SECURE"), "{q}");
+    assert!(!q.contains("dataCenter"), "{q}");
+    assert_eq!(m.last().header("authorization"), Some("Bearer sekret-key"));
+}
+
+/// One type whose availability depends on the data center, plus one the pinned
+/// center does not list. `maxCount` and a missing level are covered here too.
+const CATALOG_DC: &str = r#"{"gpus":[
+  {"id":"NVIDIA L4","name":"L4","memory":24,"secure":true,
+   "price":{"secure":0.4},"maxCount":{"secure":4},"availability":"HIGH",
+   "dataCenters":[
+     {"id":"EU-RO-1","name":"Romania","availability":"NONE"},
+     {"id":"US-TX-3","name":"Texas","availability":"LOW"}
+   ]},
+  {"id":"NVIDIA H200","name":"H200","memory":141,"secure":true,
+   "price":{"secure":1.0},"availability":"MEDIUM",
+   "dataCenters":[{"id":"US-TX-3","availability":"HIGH"}]},
+  {"id":"NVIDIA A100","name":"A100","memory":80,"secure":true,
+   "price":{"secure":2.0},"maxCount":{"secure":8}},
+  {"id":"NVIDIA L40","name":"L40","memory":48,"secure":true,
+   "price":{"secure":0.9},"maxCount":{"secure":8},"availability":"PLENTY"}
+]}"#;
+
+#[test]
+fn a_pinned_data_center_is_not_on_the_query_and_its_availability_wins() {
+    let m = serve(|_, _| (200, CATALOG_DC.to_string()));
+    let rp = client(&m.url);
+
+    let open = rp.gpu_offers_in(1, None).expect("offers");
+    let l4 = open.iter().find(|o| o.id == "NVIDIA L4").expect("L4");
+    assert_eq!(l4.stock.as_deref(), Some("HIGH"));
+    assert_eq!(l4.price_per_hr, Some(0.4));
+    let h200 = open.iter().find(|o| o.id == "NVIDIA H200").expect("H200");
+    assert_eq!(h200.stock.as_deref(), Some("MEDIUM"));
+    assert_eq!(h200.price_per_hr, Some(1.0));
+    let a100 = open.iter().find(|o| o.id == "NVIDIA A100").expect("A100");
+    assert_eq!(a100.stock, None, "a missing level is not invented as free");
+    assert_eq!(a100.price_per_hr, None);
+    let l40 = open.iter().find(|o| o.id == "NVIDIA L40").expect("L40");
+    assert_eq!(l40.stock.as_deref(), Some("PLENTY"));
+    assert_eq!(l40.price_per_hr, None, "an unknown level is not free");
+
+    let pinned = rp.gpu_offers_in(1, Some("EU-RO-1")).expect("pinned");
+    let l4 = pinned.iter().find(|o| o.id == "NVIDIA L4").expect("L4");
+    assert_eq!(l4.stock.as_deref(), Some("NONE"));
+    assert_eq!(
+        l4.price_per_hr, None,
+        "that center is full; the overall HIGH is ignored"
+    );
+    let h200 = pinned.iter().find(|o| o.id == "NVIDIA H200").expect("H200");
+    assert_eq!(h200.stock.as_deref(), Some("NONE"));
+    assert_eq!(
+        h200.price_per_hr, None,
+        "the type is not listed in that center"
+    );
+
+    let texas = rp.gpu_offers_in(2, Some("US-TX-3")).expect("texas");
+    let l4 = texas.iter().find(|o| o.id == "NVIDIA L4").expect("L4");
+    assert_eq!(l4.stock.as_deref(), Some("LOW"));
+    assert_eq!(l4.price_per_hr, Some(0.8));
+    let h200 = texas.iter().find(|o| o.id == "NVIDIA H200").expect("H200");
+    assert_eq!(h200.price_per_hr, Some(2.0), "no maxCount means no ceiling");
+
+    let capped = rp.gpu_offers(8).expect("eight");
+    let l4 = capped.iter().find(|o| o.id == "NVIDIA L4").expect("L4");
+    assert_eq!(l4.stock.as_deref(), Some("HIGH"));
+    assert_eq!(l4.price_per_hr, None, "maxCount 4 cannot hold 8");
+
+    rp.gpu_offers_in(1, Some("EU\" } evil")).expect("evil id");
+    for req in m.requests() {
+        assert!(req.target.starts_with("/catalog/gpus?"), "{}", req.target);
+        assert!(!req.target.contains("dataCenter"), "{}", req.target);
+        assert!(!req.target.contains("evil"), "{}", req.target);
+        assert!(!req.body.contains("evil"), "{}", req.body);
+    }
 }
 
 #[test]
-fn a_data_center_filter_is_sent_only_when_it_is_a_plain_id() {
-    let m = serve(|_, _| (200, GPU_TYPES.to_string()));
-    let rp = client(&m.url);
-    rp.gpu_offers_in(1, Some("EU-RO-1")).expect("offers");
-    assert!(
-        m.last().body.contains(r#"dataCenterId: \"EU-RO-1\""#),
-        "{}",
-        m.last().body
+fn an_unplaceable_type_is_tried_first_even_above_the_cap() {
+    let m = serve(|req, nth| match req.route().as_str() {
+        "GET /catalog/gpus" => (200, PRICED.to_string()),
+        "POST /pods" if nth == 0 => (
+            400,
+            r#"{"title":"Bad Request","status":400,"detail":"could not place NVIDIA H200"}"#.into(),
+        ),
+        "POST /pods" => (201, V2_POD.to_string()),
+        _ => (404, "{}".to_string()),
+    });
+    let mut spec = listed(&["NVIDIA L4"], Some(0.5));
+    spec.try_first = Some("NVIDIA H200".into());
+    client(&m.url)
+        .create_pod(&spec)
+        .expect("the next type places");
+    let ids: Vec<_> = posts(&m).iter().map(|r| gpu_id(&r.body)).collect();
+    assert_eq!(ids, ["NVIDIA H200", "NVIDIA L4"]);
+}
+
+#[test]
+fn an_empty_gpu_list_is_still_an_error_when_the_hook_is_set() {
+    let m = serve(|_, _| (500, "should not be called".into()));
+    let mut spec = listed(&[], None);
+    spec.try_first = Some("NVIDIA H200".into());
+    let err = client(&m.url).create_pod(&spec).expect_err("no list");
+    assert!(err.to_string().contains("no GPU types listed"), "{err}");
+    assert_eq!(m.requests().len(), 0);
+}
+
+#[test]
+fn the_debug_env_tries_an_unplaceable_gpu_before_the_plan() {
+    if std::env::var_os("OFFRIG_CHILD").is_some() {
+        let base = std::env::var("OFFRIG_CATALOG_MOCK").expect("mock url");
+        let spec = listed(&["NVIDIA L4"], Some(0.5));
+        client(&base)
+            .create_pod(&spec)
+            .expect("the next type places");
+        return;
+    }
+    let m = serve(|req, nth| match req.route().as_str() {
+        "GET /catalog/gpus" => (200, PRICED.to_string()),
+        "POST /pods" if nth == 0 => (
+            400,
+            r#"{"title":"Bad Request","status":400,"detail":"could not place NVIDIA H200"}"#.into(),
+        ),
+        "POST /pods" => (201, V2_POD.to_string()),
+        _ => (404, "{}".to_string()),
+    });
+    child(
+        "the_debug_env_tries_an_unplaceable_gpu_before_the_plan",
+        &[
+            ("OFFRIG_UNPLACEABLE_GPU", "NVIDIA H200"),
+            ("OFFRIG_CATALOG_MOCK", &m.url),
+        ],
+        &[],
     );
-    // Anything that could break out of the query is dropped, not sent.
-    rp.gpu_offers_in(1, Some("EU\" } evil")).expect("offers");
-    assert!(!m.last().body.contains("evil"));
-    assert!(!m.last().body.contains("dataCenterId"));
+    let ids: Vec<_> = posts(&m).iter().map(|r| gpu_id(&r.body)).collect();
+    assert_eq!(ids, ["NVIDIA H200", "NVIDIA L4"]);
 }
 
 #[test]

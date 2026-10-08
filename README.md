@@ -279,12 +279,15 @@ override those. For a gated repo, `hf_token_secret` names a RunPod secret, refer
 for the engine's `/health` and model list, reports weights on disk while it downloads,
 and stops at once (with the engine's log) if the engine exits.
 
-Each profile lists GPU types in priority order; RunPod takes the first with capacity.
-When none is free, a profile can wait (`wait_for_gpu_minutes`; frontier waits up to 120 minutes):
-offrig checks every minute and creates the pod the moment the GPUs free up. Nothing is rented
-while it waits, Ctrl+C or the app's Cancel launch stops it, and if RunPod's price API is down it
+Each profile lists GPU types in priority order. v2 places one type and does not fall back,
+so offrig tries that list itself, in order, and never past the plan's price. When none is
+free, a profile can wait (`wait_for_gpu_minutes`; frontier waits up to 120 minutes): offrig
+checks every minute and creates the pod the moment the GPUs free up. Nothing is rented while
+it waits, Ctrl+C or the app's Cancel launch stops it, and if the live catalog is down it
 simply retries the create each minute. Large multi-GPU setups come and go within minutes.
-Prices are secure-cloud prices, read live; the pricing page is not the available price.
+Prices are the v2 catalog's secure-cloud list prices (`GET /catalog/gpus`), per GPU, times
+the GPU count. A listing of NONE is not free. The public pricing page is not the available
+price. `CUDA_VERSIONS` is only the fallback when a GPU's `cudaVersions` list is omitted.
 
 ### Waiting for capacity
 
@@ -308,7 +311,7 @@ free; the limits only narrow what the plan may rent.
 
 | Limit | Where | Effect |
 |---|---|---|
-| `min_cuda` | profile (`config.toml`) | The oldest host CUDA (driver) version, from RunPod's list (`13.0`, `12.9`, ... `11.8`). The pod create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. For a job profile the newer of this and the image's own `[profiles.job] min_cuda` applies. |
+| `min_cuda` | profile (`config.toml`) | The oldest host CUDA (driver) version, from RunPod's list (`13.0`, `12.9`, ... `11.8`). The pod create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. When the catalog returns `cudaVersions` for a GPU, a plan keeps that type only if some version is available at or above this floor. When the catalog omits the list, the copied list is the fallback. For a job profile the newer of this and the image's own `[profiles.job] min_cuda` applies. |
 | `min_vram_gb` | profile | The least total VRAM (all of the profile's GPUs together) a plan accepts. Offers below it are dropped; a type RunPod lists no memory for is dropped too. |
 | `max_price_hr` | `offrig_plan` argument | The most the pod may cost, in total $/hr for all its GPUs (the figure `offrig_offers` shows). Offers above it are dropped, as is a type with no price listed now (it cannot be held to a cap). |
 | `no_fallback` | `offrig_plan` argument | Only the profile's first GPU family is allowed. The two RTX PRO 6000 Blackwell editions (Server and Workstation) are one family; every other card, including the A100 SXM and PCIe, is its own. |

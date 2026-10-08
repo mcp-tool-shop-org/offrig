@@ -47,16 +47,22 @@ fn account(balance: f64) -> String {
 }
 
 fn offers(price: Option<f64>) -> String {
-    let types: Vec<Value> = gpu_ids()
+    // `price` is the per-GPU secure price. `gpus --count 2` prints twice that.
+    // `None` is a full market: NONE discards the listed price.
+    let gpus: Vec<Value> = gpu_ids()
         .iter()
-        .map(|id| {
-            json!({
-                "id": id, "displayName": id, "memoryInGb": 16, "secureCloud": true,
-                "lowestPrice": price.map(|p| json!({"uninterruptablePrice": p, "stockStatus": "High"}))
-            })
+        .map(|id| match price {
+            Some(p) => json!({
+                "id": id, "name": id, "memory": 16, "secure": true,
+                "price": {"secure": p}, "maxCount": {"secure": 8}, "availability": "HIGH"
+            }),
+            None => json!({
+                "id": id, "name": id, "memory": 16, "secure": true,
+                "price": {"secure": 1.0}, "maxCount": {"secure": 8}, "availability": "NONE"
+            }),
         })
         .collect();
-    json!({"data": {"gpuTypes": types}}).to_string()
+    json!({"gpus": gpus}).to_string()
 }
 
 type Pods = Arc<Mutex<Vec<Value>>>;
@@ -67,7 +73,7 @@ fn runpod(pods: Pods, balance: f64) -> impl Fn(&str, &str) -> (u16, String) + Se
         let mut pods = pods.lock().expect("pods");
         match route {
             "POST /graphql" if body.contains("myself") => (200, account(balance)),
-            "POST /graphql" => (200, offers(Some(1.0))),
+            "GET /catalog/gpus" => (200, offers(Some(1.0))),
             "GET /pods" => (200, Value::Array(pods.clone()).to_string()),
             "POST /pods" => {
                 let want: Value = serde_json::from_str(body).unwrap_or_default();
@@ -255,7 +261,7 @@ fn gpus_lists_offers_and_filters_by_vram() {
     let text = out(&o);
     assert!(text.contains("GPU (x2)"), "{text}");
     assert!(text.contains("32GB"), "two 16 GB cards: {text}");
-    assert!(text.contains("1.00"), "{text}");
+    assert!(text.contains("2.00"), "per-GPU $1.00 times count 2: {text}");
     let none = rig.run(&["gpus", "--count", "2", "--min-vram", "999"]);
     assert_eq!(
         out(&none).lines().count(),
@@ -538,7 +544,7 @@ fn up_survives_a_dead_price_api_and_reports_no_capacity() {
         |c| c.active_profile = "small".into(),
         &names,
         move |route, _| match route {
-            "POST /graphql" => (500, "{}".into()),
+            "GET /catalog/gpus" | "POST /graphql" => (500, "{}".into()),
             "GET /pods" => (200, "[]".into()),
             "POST /pods" => {
                 *seen.lock().expect("n") += 1;
@@ -570,7 +576,7 @@ fn up_reports_a_pod_that_never_got_an_address_as_rented_and_not_ready() {
         &names,
         move |route, body| match route {
             "POST /graphql" if body.contains("myself") => (200, account(50.0)),
-            "POST /graphql" => (200, offers(Some(1.0))),
+            "GET /catalog/gpus" => (200, offers(Some(1.0))),
             "GET /pods" => (200, "[]".into()),
             "POST /pods" | "GET /pods/pod1" => (200, bare.into()),
             _ => (404, "{}".into()),
@@ -594,7 +600,7 @@ fn up_stops_when_the_gpus_are_not_free() {
         &names,
         |route, body| match route {
             "POST /graphql" if body.contains("myself") => (200, account(50.0)),
-            "POST /graphql" => (200, offers(None)),
+            "GET /catalog/gpus" => (200, offers(None)),
             "GET /pods" => (200, "[]".into()),
             _ => (404, "{}".into()),
         },

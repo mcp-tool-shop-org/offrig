@@ -20,10 +20,10 @@ fn graphql(body: &str) -> String {
     if body.contains("myself") {
         return r#"{"data":{"myself":{"clientBalance":12.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#.into();
     }
-    // Every small-tier GPU type, free at 0.25.
-    r#"{"data":{"gpuTypes":[
-        {"id":"NVIDIA RTX 2000 Ada Generation","displayName":"RTX 2000 Ada","memoryInGb":16,"secureCloud":true,
-         "lowestPrice":{"uninterruptablePrice":0.25,"stockStatus":"High"}}]}}"#
+    // The small tier's first card, free at 0.25 per GPU. Count is 1.
+    r#"{"gpus":[
+        {"id":"NVIDIA RTX 2000 Ada Generation","name":"RTX 2000 Ada","memory":16,"secure":true,
+         "price":{"secure":0.25},"maxCount":{"secure":8},"availability":"HIGH"}]}"#
         .into()
 }
 
@@ -48,6 +48,7 @@ async fn launch_job_ask_and_shutdown_against_a_mock_runpod() {
     let created: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
     let created_log = Arc::clone(&created);
     let (url, hits) = mock(move |route, body, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
         "POST /graphql" => (200, graphql(body)),
         "GET /pods" => (200, "[]".into()),
         "POST /pods" => {

@@ -839,6 +839,7 @@ mod tests {
             gpu_count: 1,
             price_per_hr: price,
             stock: None,
+            cuda: Vec::new(),
         }
     }
 
@@ -987,6 +988,7 @@ mod ui_tests {
                 gpu_count: 1,
                 price_per_hr: Some(1.59),
                 stock: Some("Low".into()),
+                cuda: Vec::new(),
             }],
         ));
         for u in updates {
