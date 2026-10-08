@@ -130,6 +130,12 @@ pub struct Job {
     /// a CUDA 12.8 build on an older driver starts, then finds no GPU.
     #[serde(default)]
     pub min_cuda: Option<String>,
+    /// Name of a RunPod secret holding a Hugging Face token, as on a recipe. RunPod puts
+    /// it in the pod's environment at start, the bootstrap writes it to a file only root
+    /// can read, and every `exec`/`run` points `HF_TOKEN_PATH` at that file. The token
+    /// never enters the pod spec, this file, or a command line.
+    #[serde(default)]
+    pub hf_token_secret: Option<String>,
 }
 
 /// The host CUDA versions RunPod's `allowedCudaVersions` accepts, newest first
@@ -168,8 +174,22 @@ impl Job {
                 CUDA_VERSIONS.join(", ")
             ));
         }
+        if let Some(sec) = &self.hf_token_secret
+            && !secret_name(sec)
+        {
+            return bad(format!(
+                "hf_token_secret {sec:?} must be a RunPod secret name"
+            ));
+        }
         Ok(())
     }
+}
+
+/// A RunPod secret name: letters, digits, `_` and `-`, not empty.
+fn secret_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// `repo:tag` with a real tag: not empty, not `latest`, not a registry port.
@@ -351,10 +371,7 @@ impl Recipe {
             return bad(format!("recipe arg {a:?} must be one token with no spaces"));
         }
         if let Some(sec) = &self.hf_token_secret
-            && (sec.is_empty()
-                || !sec
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            && !secret_name(sec)
         {
             return bad(format!(
                 "hf_token_secret {sec:?} must be a RunPod secret name"
@@ -522,6 +539,7 @@ pub fn default_profiles() -> Vec<Profile> {
             job: Some(Job {
                 image: JOB_IMAGE.into(),
                 min_cuda: Some(JOB_IMAGE_CUDA.into()),
+                hf_token_secret: None,
             }),
             // The jobs this profile runs install a current vLLM, whose PyTorch is a
             // CUDA 13 build: an A100 host on a CUDA 12.8 driver cost $0.40 and failed
@@ -560,6 +578,7 @@ pub fn default_profiles() -> Vec<Profile> {
             job: Some(Job {
                 image: JOB_IMAGE.into(),
                 min_cuda: Some(JOB_IMAGE_CUDA.into()),
+                hf_token_secret: None,
             }),
             min_cuda: None,
             min_vram_gb: None,
@@ -819,11 +838,13 @@ mod tests {
         let latest = Job {
             image: "runpod/pytorch:latest".into(),
             min_cuda: None,
+            hf_token_secret: None,
         };
         assert!(latest.validate("t", 0, false).is_err(), "latest refused");
         let untagged = Job {
             image: "runpod/pytorch".into(),
             min_cuda: None,
+            hf_token_secret: None,
         };
         assert!(
             untagged.validate("t", 0, false).is_err(),
@@ -854,6 +875,7 @@ mod tests {
         let old_cuda = Job {
             image: JOB_IMAGE.into(),
             min_cuda: Some("12.10".into()),
+            hf_token_secret: None,
         };
         assert!(
             old_cuda.validate("t", 0, false).is_err(),

@@ -4,6 +4,15 @@ All notable changes to offrig are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and offrig follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- **A Hugging Face token on job pods.** A job profile can name a RunPod secret with
+  `hf_token_secret`, as a recipe already could. RunPod substitutes it at start, and the
+  bootstrap writes it to a root-only file. Job commands get `HF_TOKEN_PATH`, because an ssh
+  session doesn't inherit the pod's environment. The token never enters the spec, a command
+  line or a log. (2026-10-08: an anonymous download at about 11 MB/s stopped a training run
+  before it could finish inside its cap.)
+
 ## [1.0.0] - 2026-10-07
 
 The first release. offrig has run real work since 2026-10-02, and since 2026-10-07 two

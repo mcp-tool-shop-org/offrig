@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::config::{
-    Config, Engine, OLLAMA_IMAGE, Profile, REMOTE_OLLAMA_PORT, Recipe, cuda_at_least,
+    Config, Engine, Job, OLLAMA_IMAGE, Profile, REMOTE_OLLAMA_PORT, Recipe, cuda_at_least,
 };
 use crate::runpod::PodCreate;
 
@@ -82,14 +82,36 @@ mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh
 printf '%s\n' "${PUBLIC_KEY:-}" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
 ssh-keygen -A >/dev/null
 /usr/sbin/sshd -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AllowTcpForwarding=no
+if [ -n "${HF_TOKEN:-}" ]; then
+  (umask 077; printf '%s' "$HF_TOKEN" > /root/.offrig-hf-token)
+  echo "[offrig] Hugging Face token written for ssh sessions"
+fi
 echo "[offrig] sshd up; job pod waiting for work"
 sleep infinity
 "#;
 
+/// Where a job pod's bootstrap writes the Hugging Face token (root-only), when the
+/// profile names a secret. An ssh session does not inherit the container's
+/// environment, so `exec` and `run` reach the token through `HF_TOKEN_PATH`.
+pub const HF_TOKEN_FILE: &str = "/root/.offrig-hf-token";
+
+/// The variables every job command runs with. `HF_TOKEN_PATH` is always set: with no
+/// token configured the file does not exist and Hugging Face downloads anonymously.
 pub fn job_env() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert("HF_HOME".into(), HF_DIR.into());
+    env.insert("HF_TOKEN_PATH".into(), HF_TOKEN_FILE.into());
     env.insert("OFFRIG_JOB_DIR".into(), JOB_DIR.into());
+    env
+}
+
+/// The job pod's own environment: [`job_env`], plus the token as a RunPod secret
+/// reference when the profile names one, which RunPod substitutes at start.
+pub fn job_pod_env(j: &Job) -> BTreeMap<String, String> {
+    let mut env = job_env();
+    if let Some(sec) = &j.hf_token_secret {
+        env.insert("HF_TOKEN".into(), format!("{{{{ RUNPOD_SECRET_{sec} }}}}"));
+    }
     env
 }
 
@@ -164,7 +186,7 @@ pub const ENV_DEADLINE: &str = "OFFRIG_DEADLINE";
 pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
     let on_volume = profile.network_volume_id.is_some();
     let (image, start, mut env) = match (&profile.job, &profile.recipe) {
-        (Some(j), _) => (j.image.clone(), BOOTSTRAP_JOB, job_env()),
+        (Some(j), _) => (j.image.clone(), BOOTSTRAP_JOB, job_pod_env(j)),
         (None, Some(r)) => match r.engine {
             Engine::Sglang => (r.image.clone(), BOOTSTRAP_SGLANG, engine_env(profile, r)),
         },
@@ -429,6 +451,38 @@ mod tests {
         );
         assert!(!BOOTSTRAP_JOB.contains("ollama") && !BOOTSTRAP_JOB.contains("sglang"));
         assert!(BOOTSTRAP_JOB.contains("PasswordAuthentication=no"));
+    }
+
+    #[test]
+    fn a_job_pod_gets_the_token_as_a_secret_and_its_commands_reach_it_by_file() {
+        let cfg = Config::default();
+        let plain = pod_create(&cfg, cfg.profile("job").expect("job profile"));
+        assert!(!plain.env.contains_key("HF_TOKEN"), "no secret, no token");
+        let mut p = cfg.profile("job").expect("job profile").clone();
+        p.job.as_mut().expect("job").hf_token_secret = Some("hf_read".into());
+        let body = pod_create(&cfg, &p);
+        assert_eq!(body.env["HF_TOKEN"], "{{ RUNPOD_SECRET_hf_read }}");
+        // ssh sessions do not inherit the container's environment: commands get the
+        // file's path, never the token or the secret reference.
+        let cmd = job_env();
+        assert_eq!(cmd["HF_TOKEN_PATH"], HF_TOKEN_FILE);
+        assert!(!cmd.contains_key("HF_TOKEN"));
+        assert!(BOOTSTRAP_JOB.contains(&format!(
+            "umask 077; printf '%s' \"$HF_TOKEN\" > {HF_TOKEN_FILE}"
+        )));
+        assert!(
+            !BOOTSTRAP_JOB.contains("echo \"$HF_TOKEN"),
+            "the token is never logged"
+        );
+        let mut bad = p.clone();
+        bad.job.as_mut().expect("job").hf_token_secret = Some("hf read".into());
+        assert!(
+            bad.job
+                .as_ref()
+                .expect("job")
+                .validate("t", 0, false)
+                .is_err()
+        );
     }
 
     #[test]
