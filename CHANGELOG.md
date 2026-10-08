@@ -19,6 +19,27 @@ All notable changes to offrig are documented here. The format is based on
   session doesn't inherit the pod's environment. The token never enters the spec, a command
   line or a log. (2026-10-08: an anonymous download at about 11 MB/s stopped a training run
   before it could finish inside its cap.)
+- **`offrig_complete`, an OpenRouter lane under the budget.** One chat completion against
+  OpenRouter, approved for one job: Kimi-K3 (`moonshotai/kimi-k3`) piano arrangements for
+  the ai-jam-sessions project. Both the model and the project are allow-listed in code;
+  any other model or project is refused, and widening either takes a pull request.
+  - Before the call, the worst case is priced from the dearest provider, and the request
+    caps the provider price at that rate. The worst case is input bound x input price plus
+    max_tokens x output price, and max_tokens covers reasoning and answer together. It is
+    committed against the project's budget in the same ledger as pods, and refused
+    (`budget_exceeded`) when it exceeds what is left.
+  - After the call, OpenRouter's real charge (`usage.cost`) is recorded and the
+    commitment released. A charge above the worst case is recorded as charged, with a
+    WARNING.
+  - If the stream fails, the charge is looked up by generation id and recorded. A
+    charge that cannot be read yet stays committed until a later call settles it.
+  - The answer goes to a project file, and its inputs must be project files. The key
+    (`OPENROUTER_API_KEY`) is never written anywhere. There is no fallback to any other
+    service.
+- **Schema v4.** The ledger holds completions as well as plans, and is rebuilt in a
+  transaction with every row kept. An older side-car refuses a v4 store ("Update
+  offrig") and reads a v4 sibling as unreadable, so every side-car is updated together.
+  `offrig_status` lists held and recent completions.
 
 ## [1.0.0] - 2026-10-07
 

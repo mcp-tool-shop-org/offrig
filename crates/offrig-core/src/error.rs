@@ -14,6 +14,16 @@ pub enum Error {
         body: String,
     },
 
+    #[error("OPENROUTER_API_KEY is not set")]
+    MissingOpenRouterKey,
+
+    #[error("openrouter returned {status} for {what}: {body}")]
+    OpenRouter {
+        what: String,
+        status: u16,
+        body: String,
+    },
+
     #[error("runpod graphql error for {what}: {message}")]
     GraphQl { what: String, message: String },
 
@@ -144,7 +154,8 @@ impl Error {
     /// `code` field and the CLI's exit status). Codes never change once released.
     pub fn code(&self) -> &'static str {
         match self {
-            Error::MissingApiKey => "missing_api_key",
+            Error::MissingApiKey | Error::MissingOpenRouterKey => "missing_api_key",
+            Error::OpenRouter { .. } => "openrouter_api",
             Error::Api { .. } | Error::GraphQl { .. } => "runpod_api",
             Error::Http { .. } => "network",
             Error::Decode { .. } => "internal",
@@ -168,7 +179,9 @@ impl Error {
     /// Whether the same call can reasonably succeed if tried again later.
     pub fn retryable(&self) -> bool {
         match self {
-            Error::Api { status, .. } => *status == 429 || *status >= 500,
+            Error::Api { status, .. } | Error::OpenRouter { status, .. } => {
+                *status == 429 || *status >= 500
+            }
             Error::Http { .. }
             | Error::NoSshEndpoint { .. }
             | Error::Ssh(_)
@@ -213,6 +226,14 @@ mod tests {
             body: String::new(),
         };
         assert_eq!(api(500).code(), "runpod_api");
+        let or = |status| Error::OpenRouter {
+            what: "w".into(),
+            status,
+            body: String::new(),
+        };
+        assert_eq!(or(402).code(), "openrouter_api");
+        assert!(or(503).retryable() && !or(402).retryable());
+        assert_eq!(Error::MissingOpenRouterKey.code(), "missing_api_key");
         for e in [
             Error::MissingApiKey,
             Error::Cancelled("x".into()),

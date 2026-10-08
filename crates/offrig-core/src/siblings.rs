@@ -406,4 +406,49 @@ mod tests {
             "lane a, project /p: its store has no open plan"
         );
     }
+
+    /// A v4 side-car reads a sibling's v3 store normally (a read-only view never
+    /// migrates), and a store newer than this offrig knows is "unreadable", never an
+    /// error: the same check is what makes a v3 side-car report a v4 sibling that way.
+    #[test]
+    fn an_older_sibling_store_reads_and_a_newer_one_is_unreadable() {
+        let dir = temp("v3");
+        let db = dir.join(".offrig").join("offrig.db");
+        std::fs::create_dir_all(db.parent().expect("parent")).expect("dir");
+        {
+            let c = rusqlite::Connection::open(&db).expect("open");
+            c.execute_batch(
+                "CREATE TABLE plans (id INTEGER PRIMARY KEY, profile TEXT NOT NULL, gpu_count INTEGER NOT NULL,
+                   gpu_types TEXT NOT NULL, max_hours REAL NOT NULL, max_price_hr REAL NOT NULL, worst_case REAL NOT NULL,
+                   state TEXT NOT NULL DEFAULT 'planned', pod_id TEXT, created_at INTEGER NOT NULL, note TEXT,
+                   committed_at INTEGER, started_at INTEGER);
+                 CREATE TABLE ledger (id INTEGER PRIMARY KEY, plan_id INTEGER NOT NULL, kind TEXT NOT NULL,
+                   amount REAL NOT NULL, at INTEGER NOT NULL, note TEXT);
+                 INSERT INTO plans(profile, gpu_count, gpu_types, max_hours, max_price_hr, worst_case, state, pod_id,
+                   created_at, note, committed_at)
+                   VALUES ('job', 1, '[]', 2.0, 2.0, 4.0, 'committed', 'p3', 1, 'step 2', 1);
+                 PRAGMA user_version = 3;",
+            )
+            .expect("v3 store");
+        }
+        match read_plan(&dir, "p3") {
+            PlanView::Open(p) => assert_eq!(p.note.as_deref(), Some("step 2")),
+            other => panic!("a v3 sibling should read: {other:?}"),
+        }
+        let still: i64 = rusqlite::Connection::open(&db)
+            .expect("reopen")
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(still, 3, "reading a sibling never migrates it");
+
+        rusqlite::Connection::open(&db)
+            .expect("reopen")
+            .execute_batch("PRAGMA user_version = 99;")
+            .expect("future version");
+        assert!(
+            matches!(read_plan(&dir, "p3"), PlanView::Unreadable(ref m) if m.contains("v99")),
+            "a newer sibling store is unreadable, not an error"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

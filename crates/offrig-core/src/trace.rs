@@ -2,7 +2,7 @@
 //!
 //! The level is process-wide and set once at start-up by the CLI. Detail goes to
 //! stderr so stdout stays the command's result. Every line is redacted first: the
-//! `RUNPOD_API_KEY` value and any `Bearer` token never reach the terminal at any level.
+//! `RUNPOD_API_KEY` and `OPENROUTER_API_KEY` values and any `Bearer` token never reach the terminal at any level.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -66,10 +66,11 @@ pub fn redact_with(text: &str, secrets: &[&str]) -> String {
     result
 }
 
-/// `redact_with` using the live `RUNPOD_API_KEY`.
+/// `redact_with` using the live `RUNPOD_API_KEY` and `OPENROUTER_API_KEY`.
 pub fn redact(text: &str) -> String {
     let key = std::env::var("RUNPOD_API_KEY").unwrap_or_default();
-    redact_with(text, &[&key])
+    let or_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+    redact_with(text, &[&key, &or_key])
 }
 
 /// A line for `--verbose` (and `--debug`).
