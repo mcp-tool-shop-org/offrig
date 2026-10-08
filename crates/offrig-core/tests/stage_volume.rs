@@ -22,7 +22,7 @@ fn rp(url: &str) -> RunPod {
 #[test]
 fn an_existing_volume_in_the_data_center_is_reused_not_recreated() {
     let m = serve(|req, _| match req.route().as_str() {
-        "GET /networkvolumes" => (
+        "GET /network-volumes" => (
             200,
             r#"[{"id":"other-dc","name":"offrig-frontier","size":300,"dataCenterId":"US-KS-2"},
                 {"id":"other-name","name":"something","size":300,"dataCenterId":"EUR-IS-1"},
@@ -34,18 +34,18 @@ fn an_existing_volume_in_the_data_center_is_reused_not_recreated() {
     let (vol, created) = stage::ensure_volume(&rp(&m.url), &frontier(), "EUR-IS-1").expect("found");
     assert_eq!(vol.id, "mine");
     assert!(!created);
-    assert_eq!(m.count("POST /networkvolumes"), 0, "nothing was created");
+    assert_eq!(m.count("POST /network-volumes"), 0, "nothing was created");
 }
 
 #[test]
 fn a_missing_volume_is_created_sized_for_the_weights() {
     let m = serve(|req, _| match req.route().as_str() {
-        "GET /networkvolumes" => (
+        "GET /network-volumes" => (
             200,
             r#"[{"id":"x","name":"offrig-frontier","size":300,"dataCenterId":"US-KS-2"}]"#
                 .to_string(),
         ),
-        "POST /networkvolumes" => (
+        "POST /network-volumes" => (
             200,
             r#"{"id":"new","name":"offrig-frontier","size":300,"dataCenterId":"EUR-IS-1"}"#
                 .to_string(),
@@ -58,7 +58,7 @@ fn a_missing_volume_is_created_sized_for_the_weights() {
     let sent: serde_json::Value = serde_json::from_str(&m.last().body).expect("json");
     assert_eq!(sent["name"], "offrig-frontier");
     assert_eq!(sent["size"], 300, "252 GB x 1.15 + 10");
-    assert_eq!(sent["dataCenterId"], "EUR-IS-1");
+    assert_eq!(sent["dataCenter"], "EUR-IS-1");
 }
 
 #[test]

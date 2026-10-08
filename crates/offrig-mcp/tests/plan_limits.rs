@@ -277,8 +277,15 @@ async fn the_launch_rents_only_from_the_plans_stored_gpu_list_and_cuda_floor() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
     let sent: Value = serde_json::from_str(&sent).expect("create body");
-    assert_eq!(sent["gpuTypeIds"], json!([RTX_S, RTX_W]), "{sent}");
-    assert_eq!(sent["allowedCudaVersions"], json!(["13.0"]), "{sent}");
+    assert_eq!(sent["gpu"]["id"], RTX_S, "{sent}");
+    assert_eq!(sent["gpu"]["minCudaVersion"], "13.0", "{sent}");
+    assert_eq!(sent["gpu"]["count"], 1, "{sent}");
+    assert!(sent.get("gpuTypeIds").is_none(), "{sent}");
+    assert!(sent.get("allowedCudaVersions").is_none(), "{sent}");
+    assert!(
+        !sent.to_string().contains("H100") && !sent.to_string().contains("A100"),
+        "{sent}"
+    );
 
     let _ = call(&client, "offrig_shutdown", json!({"plan_id": plan_id})).await;
     client.cancel().await.expect("shutdown");

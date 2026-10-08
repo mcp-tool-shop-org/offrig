@@ -202,7 +202,6 @@ pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
         name: pod_name(cfg, profile),
         image_name: image,
         gpu_type_ids: profile.gpu_type_ids.clone(),
-        gpu_type_priority: "custom".into(),
         gpu_count: profile.gpu_count,
         cloud_type: "SECURE".into(),
         support_public_ip: true,
@@ -212,14 +211,13 @@ pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
         network_volume_id: profile.network_volume_id.clone(),
         volume_mount_path: "/workspace".into(),
         data_center_ids: profile.data_center_id.iter().cloned().collect(),
-        allowed_cuda_versions: profile
+        min_cuda_version: profile
             .effective_min_cuda()
-            .as_deref()
-            .and_then(cuda_at_least)
-            .unwrap_or_default(),
+            .filter(|v| cuda_at_least(v).is_some()),
         docker_entrypoint: vec!["bash".into(), "-c".into()],
         docker_start_cmd: vec![start.into()],
         env,
+        max_price_hr: None,
     }
 }
 
@@ -242,8 +240,8 @@ pub fn pod_create_for_plan(
     if !gpu_types.is_empty() {
         body.gpu_type_ids = gpu_types.to_vec();
     }
-    if let Some(v) = min_cuda.and_then(cuda_at_least) {
-        body.allowed_cuda_versions = v;
+    if let Some(v) = min_cuda.filter(|v| cuda_at_least(v).is_some()) {
+        body.min_cuda_version = Some(v.to_string());
     }
     body
 }
@@ -251,6 +249,7 @@ pub fn pod_create_for_plan(
 /// Mark a plan's pod with its plan id and deadline (UTC, ISO 8601), added to the env it
 /// already carries. A plan whose worst case is not committed has no deadline to show.
 pub fn mark_plan(body: &mut PodCreate, plan: &crate::store::Plan) {
+    body.max_price_hr = Some(plan.max_price_hr);
     body.env.insert(ENV_PLAN.into(), plan.id.to_string());
     if let Some(d) = plan.deadline() {
         body.env
@@ -491,20 +490,17 @@ mod tests {
         // jam: the image's own floor, CUDA 12.8 or newer.
         let jam = pod_create(&cfg, cfg.profile("jam").expect("jam profile"));
         assert_eq!(
-            jam.allowed_cuda_versions,
-            ["13.0", "12.9", "12.8"],
+            jam.min_cuda_version.as_deref(),
+            Some("12.8"),
             "a CUDA 12.8 image needs a 12.8 driver or newer"
         );
         let v = serde_json::to_value(&jam).expect("json");
-        assert_eq!(v["allowedCudaVersions"][2], "12.8", "RunPod's field name");
+        assert_eq!(v["gpu"]["minCudaVersion"], "12.8", "RunPod's field name");
         // job: the profile's own floor (CUDA 13) is newer than the image's and wins.
         let job = pod_create(&cfg, cfg.profile("job").expect("job profile"));
-        assert_eq!(job.allowed_cuda_versions, ["13.0"], "issue #9");
+        assert_eq!(job.min_cuda_version.as_deref(), Some("13.0"), "issue #9");
         let medium = pod_create(&cfg, cfg.profile("medium").expect("medium"));
-        assert!(
-            medium.allowed_cuda_versions.is_empty(),
-            "unchanged for Ollama"
-        );
+        assert!(medium.min_cuda_version.is_none(), "unchanged for Ollama");
     }
 
     #[test]
@@ -519,11 +515,11 @@ mod tests {
             }
         }
         let medium = pod_create(&cfg, cfg.profile("medium").expect("medium"));
-        assert_eq!(medium.allowed_cuda_versions, ["13.0", "12.9"]);
+        assert_eq!(medium.min_cuda_version.as_deref(), Some("12.9"));
         let jam = pod_create(&cfg, cfg.profile("jam").expect("jam"));
         assert_eq!(
-            jam.allowed_cuda_versions,
-            ["13.0", "12.9", "12.8"],
+            jam.min_cuda_version.as_deref(),
+            Some("12.8"),
             "the image's 12.8 is newer than 12.4, so it stays the floor"
         );
     }
@@ -535,9 +531,10 @@ mod tests {
         let only = vec!["NVIDIA RTX PRO 6000 Blackwell Server Edition".to_string()];
         let body = pod_create_for_plan(&cfg, job, &only, Some("13.0"), None);
         assert_eq!(body.gpu_type_ids, only, "not the profile's six cards");
-        assert_eq!(body.allowed_cuda_versions, ["13.0"]);
+        assert_eq!(body.min_cuda_version.as_deref(), Some("13.0"));
         let v = serde_json::to_value(&body).expect("json");
-        assert_eq!(v["gpuTypeIds"].as_array().map(Vec::len), Some(1));
+        assert_eq!(v["gpu"]["id"], only[0]);
+        assert_eq!(v["gpu"]["minCudaVersion"], "13.0");
         // A plan that stored nothing falls back to the profile's.
         let old = pod_create_for_plan(&cfg, job, &[], None, None);
         assert_eq!(old, pod_create(&cfg, job));
@@ -598,19 +595,16 @@ mod tests {
         let job = cfg.profile("job").expect("job profile");
         assert_eq!(job.container_disk_gb, 60);
         let v = serde_json::to_value(pod_create(&cfg, job)).expect("json");
-        assert_eq!(
-            v["containerDiskInGb"], 60,
-            "the profile's, as RunPod names it"
-        );
+        assert_eq!(v["disk"], 60, "the profile's container disk");
         // A plan's size replaces it in the create body, and nothing else changes.
         let big = pod_create_for_plan(&cfg, job, &[], None, Some(400));
         let v = serde_json::to_value(&big).expect("json");
-        assert_eq!(v["containerDiskInGb"], 400);
+        assert_eq!(v["disk"], 400);
         let mut same = big.clone();
         same.container_disk_in_gb = job.container_disk_gb;
         assert_eq!(same, pod_create(&cfg, job));
         // The volume the work dir lives on is separate and untouched.
-        assert_eq!(v["volumeInGb"], 200);
+        assert_eq!(v["mounts"]["persistent"]["size"], 200);
     }
 
     #[test]

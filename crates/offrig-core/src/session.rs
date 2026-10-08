@@ -101,7 +101,13 @@ pub fn job_serves_nothing(profile: &Profile) -> Error {
 }
 
 pub fn is_no_capacity(e: &Error) -> bool {
-    matches!(e, Error::Api { body, .. } if body.contains("no instances currently available"))
+    match e {
+        // The GPU loop already walked the list. Wait, then try that same list again.
+        Error::NoCapacity(_) => true,
+        Error::Api { status: 400, .. } => true,
+        Error::Api { body, .. } if body.contains("no instances currently available") => true,
+        _ => false,
+    }
 }
 
 fn no_capacity(body: &crate::runpod::PodCreate, waited: Duration) -> Error {
