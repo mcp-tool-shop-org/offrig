@@ -55,8 +55,8 @@ export const config: SiteConfig = {
     {
       kind: 'features',
       id: 'agents',
-      title: 'A side-car agents can be trusted with money',
-      subtitle: 'offrig-mcp is an MCP server. The budget cap is set by a human; an agent cannot name its own price.',
+      title: 'An agent spends only what you allow',
+      subtitle: 'offrig-mcp is an MCP server that lets an agent rent GPUs inside a budget cap you set. The agent can plan and launch, but it can never raise the cap, and every launch is priced at its worst case first.',
       features: [
         {
           title: 'Priced before it spends',
