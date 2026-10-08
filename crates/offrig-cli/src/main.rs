@@ -213,6 +213,27 @@ enum Cmd {
         #[arg(long)]
         project: Option<std::path::PathBuf>,
     },
+    /// Index documents and code for hybrid (keyword + meaning) search of this project.
+    /// Embeddings come from a dedicated CPU-only Ollama (config `embed_url`, default
+    /// http://127.0.0.1:11490), never the shared one and never a GPU. Only changed files
+    /// are re-embedded; .gitignore is respected, and binaries, files over 1 MB and
+    /// secrets-like files (.env*, *.pem, *.key, id_*, *credentials*) are skipped.
+    Index {
+        /// Files or directories to index
+        paths: Vec<std::path::PathBuf>,
+        /// Show what is indexed (counts, model, dimension, last run) and change nothing
+        #[arg(long, conflicts_with_all = ["rebuild", "paths"])]
+        status: bool,
+        /// Drop every vector and embed all chunks again (needed to change the model)
+        #[arg(long)]
+        rebuild: bool,
+        /// Embedding model (the index remembers it; changing it needs --rebuild)
+        #[arg(long, default_value = offrig_core::index::DEFAULT_EMBED_MODEL)]
+        model: String,
+        /// Project directory (default: the current directory)
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+    },
     /// Stage a recipe profile's weights on a RunPod network volume so launches skip
     /// the download. The volume bills monthly until removed; only a human stages.
     Stage {
@@ -374,6 +395,70 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
             println!("{}", budget_menu::line(&store.budget()?));
+            Ok(())
+        }
+        Cmd::Index {
+            paths,
+            status,
+            rebuild,
+            model,
+            project,
+        } => {
+            let dir = match project {
+                Some(p) => p,
+                None => std::env::current_dir()?,
+            };
+            let store = offrig_core::store::Store::open(&dir.join(".offrig").join("offrig.db"))?;
+            if status {
+                let st = store.index_stats()?;
+                let kinds: Vec<String> = st
+                    .chunks_by_kind
+                    .iter()
+                    .map(|(k, n)| format!("{n} {k}"))
+                    .collect();
+                println!(
+                    "chunks: {} ({} sources), embedded: {}",
+                    if kinds.is_empty() {
+                        "none".into()
+                    } else {
+                        kinds.join(", ")
+                    },
+                    st.sources,
+                    st.embedded
+                );
+                println!(
+                    "model: {}, dimension: {}",
+                    st.model
+                        .as_deref()
+                        .unwrap_or("not set (nothing embedded yet)"),
+                    st.dim.map_or("-".into(), |d| d.to_string())
+                );
+                println!(
+                    "last indexed: {}",
+                    st.last_indexed.map_or("never".into(), |t| format!(
+                        "{} s ago (unix {t})",
+                        (cost::now_unix() - t).max(0)
+                    ))
+                );
+                return Ok(());
+            }
+            if paths.is_empty() && !rebuild {
+                bail!("give files or directories to index, or --rebuild, or --status");
+            }
+            let ollama = Ollama::new(&offrig_core::index::embed_url()?);
+            if rebuild {
+                store.clear_embeddings()?;
+            }
+            let roots: Vec<std::path::PathBuf> = paths.iter().map(|p| dir.join(p)).collect();
+            let rep =
+                offrig_core::index::index_paths(&store, &ollama, &model, &dir, &roots, rebuild)?;
+            info!(
+                "indexed {} source(s) into {} chunk(s); {} unchanged; embedded {} chunk(s) with {model}",
+                rep.indexed, rep.chunks, rep.unchanged, rep.embedded
+            );
+            for (source, why) in &rep.skipped {
+                info!("skipped {source}: {why}");
+            }
             Ok(())
         }
         Cmd::Init => {

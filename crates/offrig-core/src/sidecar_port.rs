@@ -29,6 +29,7 @@ fn reserved(port: u16) -> Option<&'static str> {
         0..=1023 => Some("a privileged port"),
         LOCAL_OLLAMA_PORT => Some("the local Ollama's port"),
         11435 | 11436 => Some("the offrig tunnel's port"),
+        11490 => Some("the default embedding server's port"),
         p if (LANE_PORT_BASE..lanes_top).contains(&p) => Some("a project lane's tunnel port range"),
         _ => None,
     }

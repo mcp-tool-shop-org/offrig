@@ -6,6 +6,20 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **A project index with hybrid search (schema v5).** `offrig index <paths...>` chunks
+  documents, code and logs into the project database; `--status` and `--rebuild` report
+  and rebuild it. Memory records are indexed too. `offrig_memory_search` gains `mode`
+  (`keyword` or `hybrid`): hybrid fuses BM25 and cosine rankings by reciprocal rank fusion
+  and is the default once the project has an index. Handoff prompts use it as well.
+  - Vectors are int8 BLOBs scanned in process; no SQLite extension. A superseded or
+    withdrawn record leaves the index. The v4 to v5 migration is forward-only and indexes
+    the active records.
+  - Embeddings come from a dedicated CPU-only Ollama (`embed_url`, default
+    `http://127.0.0.1:11490`, or `OFFRIG_EMBED_URL`), never the shared Ollama on 11434 and
+    never a GPU. A port that collides with another offrig port is refused. A missing model
+    or server is an error with the command that fixes it, and a different model or
+    dimension needs `offrig index --rebuild`.
+
 - **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget and
   any running plans, then offers to set a new cap (confirmed first) or stop new spending.
   `--show` prints the one-line budget, and so does any run where stdout isn't a terminal.

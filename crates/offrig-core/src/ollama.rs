@@ -84,6 +84,11 @@ impl Ollama {
         }
     }
 
+    /// The base URL this client talks to.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     fn get(&self, path: &str, what: &str) -> Result<Value> {
         let mut resp = self
             .agent
@@ -294,6 +299,46 @@ impl Ollama {
             tool_call: stream.tool_call,
             seconds: started.elapsed().as_secs_f64(),
         })
+    }
+}
+
+impl Ollama {
+    /// Embed `inputs` in one `/api/embed` call, one vector per input in order. With
+    /// `cpu_only` the request carries `num_gpu: 0` so the model never loads on a GPU.
+    /// A model the server does not have is reported with the pull line.
+    pub fn embed(&self, model: &str, inputs: &[String], cpu_only: bool) -> Result<Vec<Vec<f32>>> {
+        let what = "embed";
+        let mut body = json!({ "model": model, "input": inputs });
+        if cpu_only {
+            body["options"] = json!({ "num_gpu": 0 });
+        }
+        let v = self.post("/api/embed", &body, what).map_err(|e| match &e {
+            Error::Ollama(m) if m.contains("http 404") => Error::Refused(format!(
+                "the embedding model {model} is not installed on {}; run `ollama pull {model}` against that host",
+                self.base
+            )),
+            _ => e,
+        })?;
+        let rows = v["embeddings"]
+            .as_array()
+            .ok_or_else(|| Error::Ollama(format!("{what}: the reply carried no embeddings")))?;
+        let out: Vec<Vec<f32>> = rows
+            .iter()
+            .map(|r| {
+                r.as_array()
+                    .map(|a| a.iter().map(|n| n.as_f64().unwrap_or(0.0) as f32).collect())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let dim = out.first().map_or(0, Vec::len);
+        if out.len() != inputs.len() || dim == 0 || out.iter().any(|r| r.len() != dim) {
+            return Err(Error::Ollama(format!(
+                "{what}: expected {} vectors of one size, got {}",
+                inputs.len(),
+                out.len()
+            )));
+        }
+        Ok(out)
     }
 }
 

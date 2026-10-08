@@ -315,6 +315,88 @@ fn budget_shows_the_cap_for_a_project_directory() {
 }
 
 #[test]
+fn index_embeds_incrementally_reports_status_and_rebuilds() {
+    // A fixed tunnel port keeps the mock embed server (an ephemeral port) clear of it.
+    let rig = Rig::new(
+        "index",
+        |c| c.tunnel_port = 11450,
+        &[],
+        |_, _| (404, "{}".into()),
+    );
+    let (embed, hits) = common::mock(|route, body| match route {
+        "POST /api/embed" => {
+            let v: Value = serde_json::from_str(body).expect("json");
+            let n = v["input"].as_array().map_or(0, Vec::len);
+            (
+                200,
+                json!({"embeddings": vec![vec![0.5, 0.25, -0.5]; n]}).to_string(),
+            )
+        }
+        _ => (404, "{}".into()),
+    });
+    let proj = rig.dir.join("proj");
+    std::fs::create_dir_all(proj.join("docs")).expect("proj");
+    std::fs::write(
+        proj.join("docs/a.md"),
+        "# A
+
+some notes",
+    )
+    .expect("a");
+    std::fs::write(proj.join("secret.pem"), "x").expect("pem");
+    let p = proj.to_str().expect("utf8");
+    let run = |args: &[&str]| {
+        rig.command(args)
+            .env("OFFRIG_EMBED_URL", &embed)
+            .output()
+            .expect("run offrig")
+    };
+    let none = run(&["index", "--project", p]);
+    assert_eq!(none.status.code(), Some(1), "{}", err(&none));
+    let first = run(&["index", "docs", "secret.pem", "--project", p]);
+    assert_eq!(first.status.code(), Some(0), "{}", err(&first));
+    let text = out(&first);
+    assert!(
+        text.contains("indexed 1 source(s) into 1 chunk(s)"),
+        "{text}"
+    );
+    assert!(text.contains("secret.pem: secrets-like file"), "{text}");
+    let status = run(&["index", "--status", "--project", p]);
+    let text = out(&status);
+    assert!(
+        text.contains("1 doc") && text.contains("nomic-embed-text, dimension: 3"),
+        "{text}"
+    );
+    let calls = count(&hits, "POST /api/embed");
+    let again = run(&["index", "docs", "--project", p]);
+    assert!(out(&again).contains("1 unchanged"), "{}", out(&again));
+    assert_eq!(
+        count(&hits, "POST /api/embed"),
+        calls,
+        "nothing re-embedded"
+    );
+    // A different model needs --rebuild.
+    let other = run(&["index", "docs", "--model", "mxbai", "--project", p]);
+    assert_eq!(other.status.code(), Some(1), "{}", err(&other));
+    assert!(
+        err(&other).contains("offrig index --rebuild"),
+        "{}",
+        err(&other)
+    );
+    let rebuilt = run(&["index", "--rebuild", "--model", "mxbai", "--project", p]);
+    assert_eq!(rebuilt.status.code(), Some(0), "{}", err(&rebuilt));
+    assert!(out(&run(&["index", "--status", "--project", p])).contains("mxbai"));
+    // The shared Ollama's port is never an embed endpoint.
+    let bad = rig
+        .command(&["index", "docs", "--project", p])
+        .env("OFFRIG_EMBED_URL", "http://127.0.0.1:11434")
+        .output()
+        .expect("run");
+    assert_eq!(bad.status.code(), Some(1), "{}", err(&bad));
+    assert!(err(&bad).contains("shared local Ollama"), "{}", err(&bad));
+}
+
+#[test]
 fn down_needs_yes_then_terminates_the_pod() {
     let (rig, pods) = rig_with("down", vec![lane_pod()], 50.0);
     let refused = rig.run(&["down"]);

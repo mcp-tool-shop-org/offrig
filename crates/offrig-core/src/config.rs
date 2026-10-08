@@ -44,6 +44,10 @@ pub struct Config {
     /// Role OS checkout whose dossiers and cards define handoff roles. `None` uses
     /// only offrig's built-in game roles.
     pub role_os_dir: Option<String>,
+    /// Where project-index embeddings are computed: a dedicated CPU-only Ollama, never
+    /// the shared one on 11434 (loading an embedding model there can evict a GPU model).
+    /// `OFFRIG_EMBED_URL` overrides it.
+    pub embed_url: String,
     pub active_profile: String,
     pub profiles: Vec<Profile>,
     /// The lane this config runs in: `None` is the plain lane (the CLI, the app, Zed),
@@ -303,6 +307,7 @@ impl Default for Config {
             zed_provider: "offrig".into(),
             auto_stop_idle_minutes: Some(30),
             role_os_dir: default_role_os_dir(),
+            embed_url: crate::index::DEFAULT_EMBED_URL.into(),
             active_profile: "medium".into(),
             profiles: default_profiles(),
             lane_tag: None,

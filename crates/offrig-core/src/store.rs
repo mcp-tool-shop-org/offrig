@@ -17,7 +17,7 @@ use crate::checks::{Check, Outcome};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -154,6 +154,40 @@ CREATE TABLE IF NOT EXISTS handoff_events (
   reason      TEXT NOT NULL,
   override    INTEGER NOT NULL DEFAULT 0,
   at          INTEGER NOT NULL
+);
+
+-- The project index (v5). Unlike records, chunks can be replaced: re-indexing a changed
+-- source swaps its chunks, so the FTS table has delete triggers too.
+CREATE TABLE IF NOT EXISTS chunks (
+  id         INTEGER PRIMARY KEY,
+  source     TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('doc','code','log','record')),
+  title      TEXT NOT NULL,
+  ordinal    INTEGER NOT NULL,
+  body       TEXT NOT NULL,
+  sha256     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chunks_source ON chunks(source, ordinal);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(title, body, content='chunks', content_rowid='id');
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
+  INSERT INTO chunks_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+END;
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+  model    TEXT NOT NULL,
+  dim      INTEGER NOT NULL,
+  vec      BLOB NOT NULL,
+  scale    REAL NOT NULL
 );
 "#;
 
@@ -311,6 +345,36 @@ pub fn fts_query(text: &str) -> Option<String> {
         .map(|w| format!("\"{}\"", w.replace('"', "")))
         .collect();
     (!words.is_empty()).then(|| words.join(" OR "))
+}
+
+// ---------------------------------------------------------------- project index
+
+/// One chunk to store for a source. `body` already begins with the header line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewChunk {
+    pub ordinal: i64,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChunkRow {
+    pub id: i64,
+    pub source: String,
+    pub kind: String,
+    pub title: String,
+    pub ordinal: i64,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IndexStats {
+    pub chunks_by_kind: Vec<(String, i64)>,
+    pub sources: i64,
+    pub embedded: i64,
+    pub model: Option<String>,
+    pub dim: Option<i64>,
+    pub last_indexed: Option<i64>,
 }
 
 // ---------------------------------------------------------------- plans and budget
@@ -749,9 +813,71 @@ impl Store {
             )
             .map_err(db("copying the ledger to v4"))?;
         }
-        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+        let store = Self { conn };
+        if (1..5).contains(&version) {
+            // v4 -> v5: the index tables were just created; active records join it so
+            // memory search ranks them. Their vectors fill in at the next embed pass.
+            store.backfill_record_chunks()?;
+        }
+        store
+            .conn
+            .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
             .map_err(db("writing the schema version"))?;
-        Ok(Self { conn })
+        Ok(store)
+    }
+
+    fn backfill_record_chunks(&self) -> Result<()> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(db("starting the record backfill"))?;
+        let mut st = tx
+            .prepare(&format!(
+                "SELECT {RECORD_COLS} FROM records WHERE status = 'active' ORDER BY id"
+            ))
+            .map_err(db("reading records for the index"))?;
+        let recs = st
+            .query_map([], record_row)
+            .map_err(db("reading records for the index"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading records for the index"))?;
+        drop(st);
+        for r in &recs {
+            Self::insert_record_chunk(&tx, r.id, r.kind, &r.body, &r.tags)?;
+        }
+        tx.commit().map_err(db("committing the record backfill"))
+    }
+
+    /// An active record as one chunk, `source = record:<id>`, so memory search ranks it
+    /// by keywords and, once embedded, by meaning.
+    fn insert_record_chunk(
+        conn: &Connection,
+        id: i64,
+        kind: Kind,
+        body: &str,
+        tags: &str,
+    ) -> Result<()> {
+        let source = format!("record:{id}");
+        let mut text = crate::index::header(&source, "record", kind.as_str());
+        text.push('\n');
+        text.push_str(body.trim());
+        if !tags.trim().is_empty() {
+            text.push_str("\ntags: ");
+            text.push_str(tags.trim());
+        }
+        conn.execute(
+            "INSERT INTO chunks(source, kind, title, ordinal, body, sha256, created_at)
+             VALUES (?1, 'record', ?2, 0, ?3, ?4, ?5)",
+            params![
+                source,
+                kind.as_str(),
+                text,
+                crate::index::sha256_hex(text.as_bytes()),
+                now_unix()
+            ],
+        )
+        .map_err(db("indexing a record"))?;
+        Ok(())
     }
 
     // ---- settings
@@ -865,7 +991,14 @@ impl Store {
                 params![id, old],
             )
             .map_err(db("marking the record superseded"))?;
+            // A superseded record leaves the index, so hybrid search cannot return it.
+            tx.execute(
+                "DELETE FROM chunks WHERE source = ?1",
+                params![format!("record:{old}")],
+            )
+            .map_err(db("removing the superseded record from the index"))?;
         }
+        Self::insert_record_chunk(&tx, id, kind, r.body.trim(), &r.tags.join(" "))?;
         tx.commit().map_err(db("committing a record write"))?;
         Ok(id)
     }
@@ -884,6 +1017,12 @@ impl Store {
         if n == 0 {
             return Err(Error::Refused(format!("record {id} is not active")));
         }
+        self.conn
+            .execute(
+                "DELETE FROM chunks WHERE source = ?1",
+                params![format!("record:{id}")],
+            )
+            .map_err(db("removing the withdrawn record from the index"))?;
         Ok(())
     }
 
@@ -936,6 +1075,207 @@ impl Store {
             .map_err(db("searching records"))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(db("searching records"))
+    }
+
+    // ---- the project index
+
+    /// The hash recorded for an indexed source, `None` when it has no chunks.
+    pub fn source_sha(&self, source: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT sha256 FROM chunks WHERE source = ?1 LIMIT 1",
+                params![source],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db("reading a source hash"))
+    }
+
+    /// Swap a source's chunks for `chunks` in one transaction; the old ones (and their
+    /// vectors) go. Returns the new chunk ids.
+    pub fn replace_source(
+        &self,
+        source: &str,
+        kind: &str,
+        sha256: &str,
+        chunks: &[NewChunk],
+    ) -> Result<Vec<i64>> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(db("starting a source replace"))?;
+        tx.execute("DELETE FROM chunks WHERE source = ?1", params![source])
+            .map_err(db("removing a source's old chunks"))?;
+        let mut ids = Vec::with_capacity(chunks.len());
+        for c in chunks {
+            tx.execute(
+                "INSERT INTO chunks(source, kind, title, ordinal, body, sha256, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![source, kind, c.title, c.ordinal, c.body, sha256, now_unix()],
+            )
+            .map_err(db("inserting a chunk"))?;
+            ids.push(tx.last_insert_rowid());
+        }
+        tx.commit().map_err(db("committing a source replace"))?;
+        Ok(ids)
+    }
+
+    /// Chunks that have no vector yet, oldest first: `(id, text to embed)`.
+    pub fn unembedded(&self, limit: usize) -> Result<Vec<(i64, String)>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT c.id, c.body FROM chunks c LEFT JOIN embeddings e ON e.chunk_id = c.id
+                 WHERE e.chunk_id IS NULL ORDER BY c.id LIMIT ?1",
+            )
+            .map_err(db("preparing the unembedded read"))?;
+        st.query_map(params![limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db("reading unembedded chunks"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading unembedded chunks"))
+    }
+
+    /// Store int8 vectors for chunks, and pin the index's model and dimension.
+    pub fn put_embeddings(
+        &self,
+        model: &str,
+        dim: usize,
+        rows: &[(i64, Vec<i8>, f32)],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(db("starting an embedding write"))?;
+        for (id, vec, scale) in rows {
+            let bytes: Vec<u8> = vec.iter().map(|b| *b as u8).collect();
+            tx.execute(
+                "INSERT OR REPLACE INTO embeddings(chunk_id, model, dim, vec, scale)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, model, dim as i64, bytes, f64::from(*scale)],
+            )
+            .map_err(db("storing an embedding"))?;
+        }
+        for (k, v) in [
+            ("embed_model", model.to_string()),
+            ("embed_dim", dim.to_string()),
+            ("index_updated_at", now_unix().to_string()),
+        ] {
+            tx.execute(
+                "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![k, v],
+            )
+            .map_err(db("writing the index settings"))?;
+        }
+        tx.commit().map_err(db("committing an embedding write"))
+    }
+
+    /// Forget every vector and the index's model, so a different model can be used.
+    /// Chunks stay; the next embed pass refills them.
+    pub fn clear_embeddings(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "DELETE FROM embeddings;
+                 DELETE FROM settings WHERE key IN ('embed_model', 'embed_dim');",
+            )
+            .map_err(db("clearing embeddings"))
+    }
+
+    pub fn has_embeddings(&self) -> Result<bool> {
+        self.conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM embeddings)", [], |r| r.get(0))
+            .map_err(db("checking for embeddings"))
+    }
+
+    /// Chunk ids matching `text` by BM25, best first, optionally of one kind.
+    pub fn fts_chunks(&self, text: &str, kind: Option<&str>, limit: usize) -> Result<Vec<i64>> {
+        let Some(fts) = fts_query(text) else {
+            return Ok(Vec::new());
+        };
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT c.id FROM chunks_fts f JOIN chunks c ON c.id = f.rowid
+                 WHERE chunks_fts MATCH ?1 AND (?2 IS NULL OR c.kind = ?2)
+                 ORDER BY bm25(chunks_fts) LIMIT ?3",
+            )
+            .map_err(db("preparing a chunk search"))?;
+        st.query_map(params![fts, kind, limit as i64], |r| r.get(0))
+            .map_err(db("searching chunks"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("searching chunks"))
+    }
+
+    /// Every stored vector `(chunk id, scale, int8 bytes)`, optionally of one chunk kind.
+    pub fn embedding_rows(&self, kind: Option<&str>) -> Result<Vec<(i64, f32, Vec<u8>)>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT e.chunk_id, e.scale, e.vec FROM embeddings e JOIN chunks c ON c.id = e.chunk_id
+                 WHERE (?1 IS NULL OR c.kind = ?1)",
+            )
+            .map_err(db("preparing the vector read"))?;
+        st.query_map(params![kind], |r| {
+            Ok((r.get(0)?, r.get::<_, f64>(1)? as f32, r.get(2)?))
+        })
+        .map_err(db("reading vectors"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db("reading vectors"))
+    }
+
+    /// The chunks with these ids, in the order asked; ids that no longer exist are
+    /// left out.
+    pub fn chunks_by_ids(&self, ids: &[i64]) -> Result<Vec<ChunkRow>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let row = self
+                .conn
+                .query_row(
+                    "SELECT id, source, kind, title, ordinal, body FROM chunks WHERE id = ?1",
+                    params![id],
+                    |r| {
+                        Ok(ChunkRow {
+                            id: r.get(0)?,
+                            source: r.get(1)?,
+                            kind: r.get(2)?,
+                            title: r.get(3)?,
+                            ordinal: r.get(4)?,
+                            body: r.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(db("reading a chunk"))?;
+            out.extend(row);
+        }
+        Ok(out)
+    }
+
+    pub fn index_stats(&self) -> Result<IndexStats> {
+        let count = |sql: &str| -> Result<i64> {
+            self.conn
+                .query_row(sql, [], |r| r.get(0))
+                .map_err(db("counting the index"))
+        };
+        let mut st = self
+            .conn
+            .prepare("SELECT kind, COUNT(*) FROM chunks GROUP BY kind ORDER BY kind")
+            .map_err(db("counting chunks"))?;
+        let by_kind = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db("counting chunks"))?
+            .collect::<rusqlite::Result<Vec<(String, i64)>>>()
+            .map_err(db("counting chunks"))?;
+        Ok(IndexStats {
+            chunks_by_kind: by_kind,
+            sources: count("SELECT COUNT(DISTINCT source) FROM chunks")?,
+            embedded: count("SELECT COUNT(*) FROM embeddings")?,
+            model: self.setting("embed_model")?,
+            dim: self.setting("embed_dim")?.and_then(|d| d.parse().ok()),
+            last_indexed: self
+                .setting("index_updated_at")?
+                .and_then(|d| d.parse().ok()),
+        })
     }
 
     pub fn latest_checkpoint(&self, task_id: i64) -> Result<Option<Record>> {
@@ -2507,6 +2847,124 @@ mod tests {
             .expect("version");
         assert_eq!(v, SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v4_databases_migrate_to_v5_and_index_their_active_records() {
+        let dir = std::env::temp_dir().join(format!("offrig-migrate5-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("v4.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            // A v5 file with the index torn out is what a v4 binary left behind.
+            let s = Store::open(&path).expect("open");
+            let old = s
+                .record(rec(Kind::Fact, "the solver is slow"))
+                .expect("old");
+            let mut next = rec(Kind::Fact, "the solver is fast now");
+            next.supersedes = Some(old);
+            next.reason = Some("measured".into());
+            s.record(next).expect("new");
+            s.conn
+                .execute_batch(
+                    "DROP TABLE embeddings; DROP TABLE chunks_fts; DROP TABLE chunks;
+                     PRAGMA user_version = 4;",
+                )
+                .expect("v4 shape");
+        }
+        let s = Store::open(&path).expect("migrates");
+        let stats = s.index_stats().expect("stats");
+        assert_eq!(stats.chunks_by_kind, vec![("record".to_string(), 1)]);
+        // Only the active record is searchable, by its chunk.
+        let ids = s.fts_chunks("solver", Some("record"), 10).expect("fts");
+        let rows = s.chunks_by_ids(&ids).expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "record:2");
+        assert!(
+            rows[0]
+                .body
+                .starts_with("[record:2 \u{b7} record \u{b7} fact]\n")
+        );
+        drop(s);
+        let v: i64 = Connection::open(&path)
+            .expect("reopen")
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(v, 5);
+        // A read-only view still opens a v5 store.
+        assert!(Store::open_read_only(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_are_chunks_until_superseded_or_withdrawn() {
+        let s = store();
+        let a = s
+            .record(rec(Kind::Decision, "use the quartz scheduler"))
+            .expect("a");
+        let b = s
+            .record(rec(Kind::Fact, "quartz needs a clock"))
+            .expect("b");
+        let sources = |s: &Store| {
+            let ids = s.fts_chunks("quartz", Some("record"), 10).expect("fts");
+            let mut v: Vec<String> = s
+                .chunks_by_ids(&ids)
+                .expect("rows")
+                .into_iter()
+                .map(|c| c.source)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(sources(&s), [format!("record:{a}"), format!("record:{b}")]);
+        let mut next = rec(Kind::Decision, "use the cron scheduler");
+        next.supersedes = Some(a);
+        next.reason = Some("quartz is gone".into());
+        let c = s.record(next).expect("c");
+        assert_eq!(sources(&s), [format!("record:{b}")]);
+        s.withdraw(b, "wrong").expect("withdraw");
+        assert!(sources(&s).is_empty());
+        assert_eq!(s.fts_chunks("cron", None, 10).expect("fts").len(), 1);
+        assert_eq!(
+            s.index_stats().expect("stats").chunks_by_kind,
+            vec![("record".to_string(), 1)]
+        );
+        let _ = c;
+    }
+
+    #[test]
+    fn replacing_a_source_swaps_chunks_their_vectors_and_the_fts_rows() {
+        let s = store();
+        let chunk = |t: &str| NewChunk {
+            ordinal: 0,
+            title: "t".into(),
+            body: t.into(),
+        };
+        let ids = s
+            .replace_source("a.md", "doc", "h1", &[chunk("alpha beta")])
+            .expect("one");
+        assert_eq!(s.source_sha("a.md").expect("sha").as_deref(), Some("h1"));
+        assert_eq!(s.unembedded(10).expect("todo").len(), 1);
+        s.put_embeddings("m", 2, &[(ids[0], vec![127, 0], 0.01)])
+            .expect("put");
+        assert!(s.has_embeddings().expect("has"));
+        assert!(s.unembedded(10).expect("todo").is_empty());
+        assert_eq!(s.embedding_rows(Some("doc")).expect("rows").len(), 1);
+        assert!(s.embedding_rows(Some("code")).expect("rows").is_empty());
+        let st = s.index_stats().expect("stats");
+        assert_eq!(
+            (st.model.as_deref(), st.dim, st.embedded),
+            (Some("m"), Some(2), 1)
+        );
+        // New text replaces the old: the vector cascades away, FTS follows.
+        s.replace_source("a.md", "doc", "h2", &[chunk("gamma")])
+            .expect("two");
+        assert!(!s.has_embeddings().expect("has"));
+        assert!(s.fts_chunks("alpha", None, 5).expect("fts").is_empty());
+        assert_eq!(s.fts_chunks("gamma", None, 5).expect("fts").len(), 1);
+        s.clear_embeddings().expect("clear");
+        assert_eq!(s.setting("embed_model").expect("setting"), None);
+        assert!(s.replace_source("b", "bogus", "h", &[chunk("x")]).is_err());
     }
 
     #[test]
