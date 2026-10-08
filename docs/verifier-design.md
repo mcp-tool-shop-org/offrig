@@ -187,7 +187,7 @@ Missing today:
 - **Embedding:**
   - Done on the host CPU (the maintainer's decision) by a **dedicated CPU-only Ollama
     instance**, never the shared one:
-    - It runs on its own port (default `127.0.0.1:11435`), started with
+    - It runs on its own port (default `127.0.0.1:11490`, clear of the local Ollama on 11434, the plain-lane tunnel on 11435, lane ports from 11500 and side-car ports from 11700; a guard test refuses any collision), started with
       `CUDA_VISIBLE_DEVICES=-1`.
     - `num_gpu: 0` is sent as well, as a second guard.
     - On the shared instance, loading an embedding model can evict a GPU model mid-run,
