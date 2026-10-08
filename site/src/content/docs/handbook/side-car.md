@@ -123,6 +123,58 @@ a supersession with a reason, never an overwrite. `offrig_memory_search` searche
 active, and each result carries its source and date. The context for every handoff turn is
 built from this store.
 
+## Project index
+
+`offrig index <paths...>` cuts documents, code and logs into chunks (about 800 to 2000
+characters, on paragraph or declaration boundaries, each opening with a
+`[source · kind · title]` line) and stores them in the project database next to the memory
+records. Active records are chunks too, so memory search ranks them the same way.
+
+- Re-running it re-embeds only files whose hash changed. `.gitignore` is respected;
+  binaries, files over 1 MB, and secrets-like files (`.env*`, `*.pem`, `*.key`, `id_*`,
+  `*credentials*`) are skipped and listed.
+- `offrig index --status` shows the counts, the embedding model and dimension, and the last
+  run. `offrig index --rebuild` drops every vector and embeds all chunks again; it is how
+  you change the model (`--model`).
+- `offrig_memory_search` takes `mode`: `keyword` (words must match) or `hybrid` (keyword
+  BM25 top 50 and cosine top 50, fused by reciprocal rank fusion, top 20 kept). With no
+  `mode` it is hybrid once the project has an index and keyword before, and the reply says
+  which ran. Asking for `hybrid` with no index, or with the embed server down, is an error;
+  it never turns into a keyword search. Handoff prompts use the same search, and fall back
+  to keywords if the embed server is unreachable, so a turn is not lost.
+
+### The embed server
+
+Embeddings come from a dedicated, CPU-only Ollama, never the shared one on `11434` and never
+a GPU: loading an embedding model into the shared server can evict a GPU model mid-run, and
+a zero-GPU request can still open a CUDA context. Start it once, on its own port:
+
+```bash
+OLLAMA_HOST=127.0.0.1:11490 CUDA_VISIBLE_DEVICES=-1 ollama serve
+OLLAMA_HOST=127.0.0.1:11490 ollama pull nomic-embed-text
+```
+
+In PowerShell, set the variables first, then run the same two commands, each in its own
+window or job:
+
+```powershell
+$env:OLLAMA_HOST = '127.0.0.1:11490'; $env:CUDA_VISIBLE_DEVICES = '-1'
+ollama serve
+```
+
+Check it with `nvidia-smi`: no process from this server should appear.
+
+offrig sends documents and queries to nomic-embed-text with the `search_document: ` and
+`search_query: ` prefixes the model was trained with; other models get none.
+
+The URL is `embed_url` in `config.toml` (default `http://127.0.0.1:11490`), and
+`OFFRIG_EMBED_URL` overrides it. offrig refuses a port that belongs to something else it
+runs: `11434`, the configured tunnel port and its runner, the plain lane, the lane range
+and the side-car range. Requests also carry `num_gpu: 0` as a second guard. If nothing
+answers, the error shows the lines above; if the model is missing, it says
+`ollama pull nomic-embed-text`. If the index was built with a different model or dimension,
+every search and index call stops and tells you to run `offrig index --rebuild`.
+
 ## All tools
 
 | Tool | Spends | What it does |
@@ -135,7 +187,7 @@ built from this store.
 | `offrig_ask` | pod time | One handoff turn on the pod's model |
 | `offrig_run` | pod time | A detached runner that works the queue |
 | `offrig_handoffs` | no | Queue, list, preview, show and record handoffs |
-| `offrig_memory_search` | no | Search project memory |
+| `offrig_memory_search` | no | Search project memory (`mode`: keyword or hybrid) |
 | `offrig_memory_record` | no | Add to project memory |
 | `offrig_put` | pod time | Copy files to a job pod |
 | `offrig_exec` | pod time | Start, follow, stop or briefly run a command on a job pod |

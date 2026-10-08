@@ -11,6 +11,7 @@ use std::path::Path;
 use crate::checks::{self, Check, Outcome};
 use crate::context::{self, Assembled, Input, Parts};
 use crate::error::Result;
+use crate::index;
 use crate::roles;
 use crate::store::{Handoff, Kind, Output, Query, State, Store};
 
@@ -36,15 +37,18 @@ pub fn prepare(
     let role_block = roles::render(&role);
     let briefs = store.active(Kind::Brief)?;
     let constraints = store.active(Kind::Constraint)?;
-    let retrieved: Vec<_> = store
-        .search(&Query {
+    // Hybrid ranking when the project index has embeddings, keywords otherwise.
+    let retrieved: Vec<_> = index::records_for_prompt(
+        store,
+        &Query {
             text: h.mission.clone(),
             limit: 8,
             ..Default::default()
-        })?
-        .into_iter()
-        .filter(|r| matches!(r.kind, Kind::Decision | Kind::Fact))
-        .collect();
+        },
+    )?
+    .into_iter()
+    .filter(|r| matches!(r.kind, Kind::Decision | Kind::Fact))
+    .collect();
     let checkpoint = store.latest_checkpoint(h.id)?;
     let inputs = inputs(store, h)?;
     let assembled = context::assemble(

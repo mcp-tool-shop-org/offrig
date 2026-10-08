@@ -210,3 +210,33 @@ fn the_sse_parser_and_thinking_stripper_handle_odd_lines() {
     assert_eq!(strip_thinking("a</think>b</think>  c "), "c");
     assert_eq!(strip_thinking("  plain "), "plain");
 }
+
+#[test]
+fn embed_sends_the_cpu_guard_and_checks_the_vectors() {
+    let m = serve(|r, n| match (r.route().as_str(), n) {
+        ("POST /api/embed", 0) => (
+            200,
+            r#"{"model":"nomic-embed-text","embeddings":[[0.5,-0.5],[1.0,0.0]]}"#.into(),
+        ),
+        ("POST /api/embed", 1) => (200, r#"{"embeddings":[[0.5,-0.5]]}"#.into()),
+        ("POST /api/embed", 2) => (404, r#"{"error":"model \"x\" not found"}"#.into()),
+        ("POST /api/embed", 3) => (200, r#"{"embeddings":[[1.0],[1.0,2.0]]}"#.into()),
+        _ => (404, "{}".into()),
+    });
+    let o = Ollama::new(&m.url);
+    let two = vec!["a".to_string(), "b".to_string()];
+    let v = o.embed("nomic-embed-text", &two, true).expect("embed");
+    assert_eq!(v, vec![vec![0.5, -0.5], vec![1.0, 0.0]]);
+    let sent: serde_json::Value = serde_json::from_str(&m.last().body).expect("json");
+    assert_eq!(sent["model"], "nomic-embed-text");
+    assert_eq!(sent["input"], json!(["a", "b"]));
+    assert_eq!(sent["options"]["num_gpu"], 0);
+    // Too few vectors for the inputs.
+    assert!(o.embed("m", &two, false).is_err());
+    assert!(m.last().body.contains("input") && !m.last().body.contains("num_gpu"));
+    // A missing model names the pull line.
+    let e = o.embed("x", &two, true).expect_err("404").to_string();
+    assert!(e.contains("ollama pull x"), "{e}");
+    // Ragged vectors.
+    assert!(o.embed("m", &two, true).is_err());
+}

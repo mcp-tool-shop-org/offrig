@@ -19,6 +19,7 @@ use std::time::Duration;
 use offrig_core::config::Config;
 use offrig_core::cost;
 use offrig_core::error::chain;
+use offrig_core::index;
 use offrig_core::lanes::{LaneCtx, Registry};
 use offrig_core::planning;
 use offrig_core::roles;
@@ -189,6 +190,11 @@ pub struct SearchArgs {
     /// At most this many results (default 8, max 50).
     #[serde(default)]
     pub limit: Option<usize>,
+    /// keyword (words must match) or hybrid (keywords and meaning, fused). Default:
+    /// hybrid when the project has an index (`offrig index`), keyword otherwise. The
+    /// reply says which ran. hybrid without an index is an error, not a keyword search.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -543,6 +549,50 @@ impl Sidecar {
                 "the project store did not open".into(),
             )),
         }
+    }
+
+    /// Embed records written since the last embed pass, when the project has an index.
+    /// Best effort: an embed server that is down leaves the chunk for the next
+    /// `offrig index`, and the record is searchable by keywords meanwhile.
+    async fn embed_new_records(&self) -> bool {
+        let pending = self.with_store(|s| {
+            Ok(if s.has_embeddings()? {
+                Some((index::index_model(s)?, s.unembedded(index::BATCH)?))
+            } else {
+                None
+            })
+        });
+        let Ok(Some((model, todo))) = pending else {
+            return false;
+        };
+        if todo.is_empty() {
+            return false;
+        }
+        let texts: Vec<String> = todo.iter().map(|(_, t)| t.clone()).collect();
+        let vecs = tokio::task::spawn_blocking(move || {
+            index::embed_call(
+                &index::embed_client()?,
+                &model,
+                index::Task::Document,
+                &texts,
+            )
+        })
+        .await;
+        let Ok(Ok(vecs)) = vecs else { return false };
+        let dim = vecs.first().map_or(0, Vec::len);
+        let rows: Vec<(i64, Vec<i8>, f32)> = todo
+            .iter()
+            .zip(&vecs)
+            .map(|((id, _), v)| {
+                let (q, scale) = index::quantize(v);
+                (*id, q, scale)
+            })
+            .collect();
+        self.with_store(|s| {
+            index::check_dim(s, dim)?;
+            s.put_embeddings(&index::index_model(s)?, dim, &rows)
+        })
+        .is_ok()
     }
 
     fn role_os(&self) -> Option<PathBuf> {
@@ -941,7 +991,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_memory_search",
-        description = "Search the project's memory: active records only (superseded and withdrawn ones are hidden), best match first, each with its source and date. Use before deciding anything the project may already have decided. Read-only.",
+        description = "Search the project's memory: active records only (superseded and withdrawn ones are hidden), best match first, each with its source and date. Hybrid (keywords plus meaning) when the project has an index, keyword otherwise; the reply says which ran. Use before deciding anything the project may already have decided. Read-only.",
         annotations(
             title = "Search project memory",
             read_only_hint = true,
@@ -958,21 +1008,62 @@ impl Sidecar {
                 );
             }
         };
+        let requested = match a.mode.as_deref() {
+            None => None,
+            Some("keyword") => Some(index::Mode::Keyword),
+            Some("hybrid") => Some(index::Mode::Hybrid),
+            Some(other) => {
+                return fail_err(
+                    &offrig_core::Error::Refused(format!("unknown search mode {other:?}")),
+                    "use mode=keyword or mode=hybrid, or omit it",
+                );
+            }
+        };
         let q = Query {
             text: a.query,
             kind,
             task_id: a.task_id,
             limit: a.limit.unwrap_or(8),
         };
-        match self.with_store(|s| s.search(&q)) {
+        let planned =
+            self.with_store(|s| Ok((index::plan_mode(s, requested)?, index::index_model(s)?)));
+        let (mode, model) = match planned {
+            Ok(p) => p,
+            Err(e) => return fail_err(&e, "run `offrig index <paths>` first, or use mode=keyword"),
+        };
+        // The query embedding is a network call to the CPU-only embed server: made
+        // outside the store lock, and never silently replaced by a keyword search.
+        let qvec = if mode == index::Mode::Hybrid {
+            let text = q.text.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                index::embed_query(&index::embed_client()?, &model, &text)
+            })
+            .await;
+            match res {
+                Ok(Ok(v)) => Some(v),
+                Ok(Err(e)) => return fail_err(&e, "start the embed server, or use mode=keyword"),
+                Err(e) => return fail_internal(&e, "retry"),
+            }
+        } else {
+            None
+        };
+        let found = self.with_store(|s| match &qvec {
+            Some(v) => index::search_with_vector(s, &q, v),
+            None => index::search_records(s, &q, None),
+        });
+        match found {
             Ok(rs) => {
                 let n = rs.len();
                 ok(json!({
+                    "mode": mode.as_str(),
                     "results": rs.iter().map(record_json).collect::<Vec<_>>(),
                     "next_action": if n == 0 { "nothing recorded on this; record what you learn with offrig_memory_record" } else { "cite records by id when you rely on them" },
                 }))
             }
-            Err(e) => fail_err(&e, "simplify the query to a few plain words"),
+            Err(e) => fail_err(
+                &e,
+                "simplify the query to a few plain words, or rebuild the index with `offrig index --rebuild`",
+            ),
         }
     }
 
@@ -1006,9 +1097,12 @@ impl Sidecar {
         };
         let res = self.with_store(|s| s.record(new));
         match res {
-            Ok(id) => ok(
-                json!({"id": id, "kind": kind.as_str(), "next_action": "cite it as #id; supersede it rather than contradict it"}),
-            ),
+            Ok(id) => {
+                let embedded = self.embed_new_records().await;
+                ok(
+                    json!({"id": id, "kind": kind.as_str(), "embedded": embedded, "next_action": "cite it as #id; supersede it rather than contradict it"}),
+                )
+            }
             Err(e) => fail_err(
                 &e,
                 "search for the record it conflicts with, then supersede it with a reason",

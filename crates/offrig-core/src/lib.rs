@@ -13,6 +13,7 @@ pub mod cost;
 pub mod error;
 pub mod fsutil;
 pub mod guard;
+pub mod index;
 pub mod job;
 pub mod lanes;
 pub mod ollama;

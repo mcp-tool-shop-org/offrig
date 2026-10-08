@@ -89,6 +89,7 @@ and `retryable` existed keep working.
 | `11435`, `11436` | The plain lane's tunnel and runner |
 | `11500`–`11627` | Project lanes' tunnels and runners, two ports per lane |
 | `11700`–`11763` | Project lanes' side-car ports (shell driver), one per lane |
+| `11490` | The CPU-only Ollama that computes project-index embeddings (`embed_url`); never `11434` |
 
 ## Files
 
