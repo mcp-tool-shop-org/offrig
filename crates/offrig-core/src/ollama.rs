@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
@@ -302,6 +302,149 @@ impl Ollama {
     }
 }
 
+/// One message of a multi-message chat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Msg {
+    pub role: String,
+    pub content: String,
+}
+
+impl Msg {
+    pub fn new(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.into(),
+        }
+    }
+}
+
+/// How much a thinking model reasons before it answers. Ollama takes a boolean for
+/// most models and a level for gpt-oss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkLevel {
+    Off,
+    On,
+    Low,
+    Medium,
+    High,
+}
+
+impl ThinkLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThinkLevel::Off => "off",
+            ThinkLevel::On => "on",
+            ThinkLevel::Low => "low",
+            ThinkLevel::Medium => "medium",
+            ThinkLevel::High => "high",
+        }
+    }
+
+    fn to_json(self) -> Value {
+        match self {
+            ThinkLevel::Off => json!(false),
+            ThinkLevel::On => json!(true),
+            other => json!(other.as_str()),
+        }
+    }
+}
+
+/// A chat sent to Ollama's native `/api/chat`, where `format` (a JSON schema) and
+/// `think` live. Every option left `None` is left to the server's default.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<Msg>,
+    /// A JSON schema the reply must follow (structured output).
+    pub format: Option<Value>,
+    pub think: Option<ThinkLevel>,
+    pub temperature: Option<f64>,
+    pub seed: Option<i64>,
+    pub num_ctx: Option<u32>,
+    pub num_predict: Option<i32>,
+}
+
+impl ChatRequest {
+    /// The `/api/chat` body: never streamed, sampling settings under `options`.
+    pub fn body(&self) -> Value {
+        let mut body = json!({
+            "model": self.model,
+            "stream": false,
+            "messages": self.messages,
+        });
+        if let Some(f) = &self.format {
+            body["format"] = f.clone();
+        }
+        if let Some(t) = self.think {
+            body["think"] = t.to_json();
+        }
+        let mut options = serde_json::Map::new();
+        if let Some(t) = self.temperature {
+            options.insert("temperature".into(), json!(t));
+        }
+        if let Some(n) = self.seed {
+            options.insert("seed".into(), json!(n));
+        }
+        if let Some(n) = self.num_ctx {
+            options.insert("num_ctx".into(), json!(n));
+        }
+        if let Some(n) = self.num_predict {
+            options.insert("num_predict".into(), json!(n));
+        }
+        if !options.is_empty() {
+            body["options"] = Value::Object(options);
+        }
+        body
+    }
+}
+
+/// What `/api/chat` answered.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChatResponse {
+    pub content: String,
+    /// The model's reasoning, when it keeps it apart from the answer.
+    pub thinking: String,
+    pub done_reason: String,
+    pub eval_count: Option<u64>,
+    pub prompt_eval_count: Option<u64>,
+    /// Nanoseconds, as Ollama reports it.
+    pub total_duration: Option<u64>,
+}
+
+impl Ollama {
+    /// A non-streamed multi-message chat through the native API. A reply that stopped
+    /// at the token limit (`done_reason: length`) is a `Truncated` error, never a
+    /// short answer.
+    pub fn chat_messages(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        let what = "chat";
+        let v = self.post("/api/chat", &req.body(), what)?;
+        if let Some(err) = v.get("error") {
+            return Err(Error::Ollama(format!("{what}: {err}")));
+        }
+        let message = &v["message"];
+        let content = message["content"]
+            .as_str()
+            .ok_or_else(|| Error::Ollama(format!("{what}: the reply carried no message")))?;
+        let resp = ChatResponse {
+            content: content.to_string(),
+            thinking: message["thinking"].as_str().unwrap_or_default().to_string(),
+            done_reason: v["done_reason"].as_str().unwrap_or_default().to_string(),
+            eval_count: v["eval_count"].as_u64(),
+            prompt_eval_count: v["prompt_eval_count"].as_u64(),
+            total_duration: v["total_duration"].as_u64(),
+        };
+        if resp.done_reason == "length" {
+            return Err(Error::Truncated(format!(
+                "{} stopped at its token limit after {} tokens; raise num_predict",
+                req.model,
+                resp.eval_count.unwrap_or(0)
+            )));
+        }
+        Ok(resp)
+    }
+}
+
 impl Ollama {
     /// Embed `inputs` in one `/api/embed` call, one vector per input in order. With
     /// `cpu_only` the request carries `num_gpu: 0` so the model never loads on a GPU.
@@ -458,6 +601,52 @@ mod tests {
             s.feed(r#"data: {"error":{"message":"model not found"}}"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn chat_bodies_carry_only_what_was_set() {
+        let bare = ChatRequest {
+            model: "m".into(),
+            messages: vec![Msg::new("user", "hi")],
+            ..Default::default()
+        };
+        let b = bare.body();
+        assert_eq!(b["stream"], false);
+        assert_eq!(b["messages"][0]["role"], "user");
+        assert!(b.get("format").is_none() && b.get("think").is_none());
+        assert!(b.get("options").is_none());
+        let full = ChatRequest {
+            format: Some(json!({"type": "object"})),
+            think: Some(ThinkLevel::High),
+            temperature: Some(0.0),
+            seed: Some(7),
+            num_ctx: Some(8192),
+            num_predict: Some(512),
+            ..bare
+        };
+        let b = full.body();
+        assert_eq!(b["think"], "high");
+        assert_eq!(b["format"]["type"], "object");
+        assert_eq!(b["options"]["seed"], 7);
+        assert_eq!(b["options"]["num_ctx"], 8192);
+        assert_eq!(b["options"]["num_predict"], 512);
+        assert_eq!(b["options"]["temperature"], 0.0);
+    }
+
+    #[test]
+    fn think_levels_serialise_as_ollama_expects() {
+        assert_eq!(ThinkLevel::Off.to_json(), json!(false));
+        assert_eq!(ThinkLevel::On.to_json(), json!(true));
+        assert_eq!(ThinkLevel::Low.to_json(), json!("low"));
+        for l in [
+            ThinkLevel::Off,
+            ThinkLevel::On,
+            ThinkLevel::Low,
+            ThinkLevel::Medium,
+            ThinkLevel::High,
+        ] {
+            assert!(!l.as_str().is_empty());
+        }
     }
 
     #[test]

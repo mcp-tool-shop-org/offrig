@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::checks::{Check, Outcome};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
+use crate::verify::{CheckType, Verdict, VerdictKind};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -189,6 +190,30 @@ CREATE TABLE IF NOT EXISTS embeddings (
   vec      BLOB NOT NULL,
   scale    REAL NOT NULL
 );
+
+-- Verifier verdicts (v6). Append-only: a verdict is never edited, and the model's own
+-- verdict is kept beside the one that stood after the quote rule. All of it is
+-- untrusted model output.
+CREATE TABLE IF NOT EXISTS verdicts (
+  id             INTEGER PRIMARY KEY,
+  claim_id       TEXT NOT NULL,
+  claim_sha256   TEXT NOT NULL,
+  check_type     TEXT NOT NULL CHECK (check_type IN ('grounded','reasoning','knowledge')),
+  verdict        TEXT NOT NULL CHECK (verdict IN ('supported','unsupported','cannot_tell')),
+  model_verdict  TEXT NOT NULL CHECK (model_verdict IN ('supported','unsupported','cannot_tell')),
+  reason         TEXT,
+  reasoning      TEXT NOT NULL,
+  quote          TEXT NOT NULL,
+  source         TEXT NOT NULL,
+  needs_human    INTEGER NOT NULL,
+  model          TEXT NOT NULL,
+  plan_id        INTEGER,
+  pins           TEXT NOT NULL,
+  timing         TEXT NOT NULL,
+  untrusted      INTEGER NOT NULL DEFAULT 1 CHECK (untrusted = 1),
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS verdicts_claim ON verdicts(claim_id, id);
 "#;
 
 pub struct Store {
@@ -365,6 +390,14 @@ pub struct ChunkRow {
     pub title: String,
     pub ordinal: i64,
     pub body: String,
+}
+
+/// A verdict as stored: the record, its row id and when it was written.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StoredVerdict {
+    pub id: i64,
+    pub created_at: i64,
+    pub verdict: Verdict,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1249,6 +1282,128 @@ impl Store {
             out.extend(row);
         }
         Ok(out)
+    }
+
+    // ---- Verifier verdicts
+
+    /// Store a verdict. Rows are only ever added.
+    pub fn save_verdict(&self, v: &Verdict) -> Result<i64> {
+        let pins =
+            serde_json::to_string(&v.pins).map_err(|e| Error::decode("a verdict's pins", e))?;
+        let timing =
+            serde_json::to_string(&v.timing).map_err(|e| Error::decode("a verdict's timing", e))?;
+        self.conn
+            .execute(
+                "INSERT INTO verdicts(claim_id, claim_sha256, check_type, verdict, model_verdict, reason,
+                                      reasoning, quote, source, needs_human, model, plan_id, pins, timing, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    v.claim_id,
+                    v.claim_sha256,
+                    v.check_type.as_str(),
+                    v.verdict.as_str(),
+                    v.model_verdict.as_str(),
+                    v.reason,
+                    v.reasoning,
+                    v.evidence_quote,
+                    v.evidence_source,
+                    v.needs_human,
+                    v.pins.model,
+                    v.pins.plan_id,
+                    pins,
+                    timing,
+                    now_unix()
+                ],
+            )
+            .map_err(db("saving a verdict"))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Every stored verdict for a claim id, oldest first.
+    pub fn verdicts_for_claim(&self, claim_id: &str) -> Result<Vec<StoredVerdict>> {
+        self.verdicts_where("claim_id = ?1 ORDER BY id", params![claim_id])
+    }
+
+    /// The most recent verdicts, newest first.
+    pub fn recent_verdicts(&self, n: usize) -> Result<Vec<StoredVerdict>> {
+        self.verdicts_where("1 ORDER BY id DESC LIMIT ?1", params![n as i64])
+    }
+
+    fn verdicts_where(
+        &self,
+        clause: &str,
+        args: impl rusqlite::Params,
+    ) -> Result<Vec<StoredVerdict>> {
+        let mut st = self
+            .conn
+            .prepare(&format!(
+                "SELECT id, created_at, claim_id, claim_sha256, check_type, verdict, model_verdict, reason,
+                        reasoning, quote, source, needs_human, pins, timing
+                 FROM verdicts WHERE {clause}"
+            ))
+            .map_err(db("reading verdicts"))?;
+        let rows = st
+            .query_map(args, |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    [
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                    ],
+                    r.get::<_, Option<String>>(7)?,
+                    [
+                        r.get::<_, String>(8)?,
+                        r.get::<_, String>(9)?,
+                        r.get::<_, String>(10)?,
+                    ],
+                    r.get::<_, bool>(11)?,
+                    [r.get::<_, String>(12)?, r.get::<_, String>(13)?],
+                ))
+            })
+            .map_err(db("reading verdicts"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading verdicts"))?;
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    created_at,
+                    [claim_id, sha, ct, vd, mv],
+                    reason,
+                    [reasoning, quote, source],
+                    needs_human,
+                    [pins, timing],
+                )| {
+                    let bad = |what: &str| Error::Refused(format!("verdict {id} has a bad {what}"));
+                    Ok(StoredVerdict {
+                        id,
+                        created_at,
+                        verdict: Verdict {
+                            claim_id,
+                            claim_sha256: sha,
+                            check_type: CheckType::parse(&ct).ok_or_else(|| bad("check type"))?,
+                            verdict: VerdictKind::parse(&vd).ok_or_else(|| bad("verdict"))?,
+                            model_verdict: VerdictKind::parse(&mv)
+                                .ok_or_else(|| bad("model verdict"))?,
+                            reason,
+                            reasoning,
+                            evidence_quote: quote,
+                            evidence_source: source,
+                            needs_human,
+                            pins: serde_json::from_str(&pins)
+                                .map_err(|e| Error::decode("a verdict's pins", e))?,
+                            timing: serde_json::from_str(&timing)
+                                .map_err(|e| Error::decode("a verdict's timing", e))?,
+                            untrusted: true,
+                        },
+                    })
+                },
+            )
+            .collect()
     }
 
     pub fn index_stats(&self) -> Result<IndexStats> {
@@ -2890,10 +3045,83 @@ mod tests {
             .expect("reopen")
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .expect("version");
-        assert_eq!(v, 5);
-        // A read-only view still opens a v5 store.
+        assert_eq!(v, SCHEMA_VERSION);
+        // A read-only view still opens a current store.
         assert!(Store::open_read_only(&path).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v5_databases_migrate_to_v6_and_gain_the_verdicts_table() {
+        let dir = std::env::temp_dir().join(format!("offrig-migrate6-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("v5.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let s = Store::open(&path).expect("open");
+            let old = s
+                .record(rec(Kind::Fact, "kept across the migration"))
+                .expect("rec");
+            s.conn
+                .execute_batch("DROP TABLE verdicts; PRAGMA user_version = 5;")
+                .expect("v5 shape");
+            assert_eq!(old, 1);
+        }
+        let s = Store::open(&path).expect("migrates");
+        assert!(s.recent_verdicts(5).expect("empty table exists").is_empty());
+        s.save_verdict(&crate::verify::sample_verdict("c1", VerdictKind::Supported))
+            .expect("writes");
+        assert_eq!(
+            s.index_stats().expect("stats").chunks_by_kind,
+            vec![("record".to_string(), 1)]
+        );
+        drop(s);
+        let v: i64 = Connection::open(&path)
+            .expect("reopen")
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(v, 6);
+        assert!(Store::open_read_only(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verdicts_are_appended_and_read_back_whole() {
+        use crate::verify::sample_verdict;
+        let s = store();
+        let mut v = sample_verdict("claim-a", VerdictKind::Supported);
+        v.pins.plan_id = Some(3);
+        v.pins.model_digest = Some("sha256:abc".into());
+        v.needs_human = true;
+        let first = s.save_verdict(&v).expect("save");
+        let mut downgraded = sample_verdict("claim-a", VerdictKind::CannotTell);
+        downgraded.model_verdict = VerdictKind::Supported;
+        downgraded.reason = Some("quote_not_found".into());
+        let second = s.save_verdict(&downgraded).expect("save again");
+        s.save_verdict(&sample_verdict("claim-b", VerdictKind::Unsupported))
+            .expect("other claim");
+        assert!(second > first);
+        let rows = s.verdicts_for_claim("claim-a").expect("rows");
+        assert_eq!(rows.len(), 2);
+        // The whole record, pins included, survives the round trip.
+        assert_eq!(rows[0].verdict, v);
+        assert_eq!(rows[0].id, first);
+        assert!(rows[0].created_at > 0);
+        assert_eq!(rows[1].verdict.verdict, VerdictKind::CannotTell);
+        assert_eq!(rows[1].verdict.model_verdict, VerdictKind::Supported);
+        assert_eq!(rows[1].verdict.reason.as_deref(), Some("quote_not_found"));
+        let recent = s.recent_verdicts(2).expect("recent");
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].verdict.claim_id, "claim-b");
+        assert!(s.verdicts_for_claim("nobody").expect("none").is_empty());
+        // Stored rows are always untrusted; the column refuses anything else.
+        let e = s.conn.execute("UPDATE verdicts SET untrusted = 0", []);
+        assert!(e.is_err());
+        // A corrupted row is reported, not guessed at.
+        s.conn
+            .execute("UPDATE verdicts SET pins = 'nope' WHERE id = ?1", [first])
+            .expect("corrupt");
+        assert!(s.verdicts_for_claim("claim-a").is_err());
     }
 
     #[test]

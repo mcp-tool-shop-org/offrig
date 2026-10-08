@@ -6,6 +6,7 @@
 //! tunnel is down a request fails instead of landing on this machine. `guard` checks
 //! that this still holds.
 
+pub mod calibrate;
 pub mod checks;
 pub mod config;
 pub mod context;
@@ -33,6 +34,7 @@ pub mod stage;
 pub mod store;
 pub mod trace;
 pub mod tunnel;
+pub mod verify;
 pub mod watchdog;
 pub mod zed;
 
