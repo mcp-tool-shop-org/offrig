@@ -162,7 +162,7 @@ The pod is disposable and the database is not. The database sits with the projec
 side-car reads and writes it locally, and whatever runs on the pod reaches it through
 the side-car's tools.
 
-## Tool surface (11 tools, fixed order)
+## Tool surface (fixed order)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -177,6 +177,7 @@ the side-car's tools.
 | `offrig_ask` | read-ish | Sends one role-headed handoff turn to the pod model, with context assembled from memory, and returns the reply. |
 | `offrig_run` | **destroys at the end** | Starts the detached runner that works the queue on the pod model and shuts the pod down when nothing is left (unless `keep_pod`). Idempotent while a runner is alive. |
 | `offrig_shutdown` | **destroys** | Terminates the pod. Refuses while work is unharvested unless given a reason, and records the reason. |
+| `offrig_complete` | **spends** | One OpenRouter chat completion, ai-jam-sessions and allow-listed models only. Commits the worst case against the budget, records the real charge, writes the answer to a project file. See "The OpenRouter lane". |
 
 The runner (phase 3a, below) works text handoffs. Code handoffs with a branch each, run
 on the pod, come later, behind the same queue.
@@ -378,10 +379,131 @@ download pod is guarded and terminated on every exit path (tested). Launches go
 offline only behind a completion marker. Whether to create the frontier volume, and
 where, is open: Mike chose to build it first (2026-10-03).
 
+## The OpenRouter lane (`offrig_complete`)
+
+Status: built 2026-10-08. The Director approved Kimi-K3 on OpenRouter
+(`moonshotai/kimi-k3`) for ai-jam-sessions' piano arrangements that day, and asked for
+the calls to go through offrig "just for this", so the budget cap and the ledger that
+hold RunPod pods hold these calls too. OpenRouter stays off for every other use
+(global standing rule 1). The Publisher reviewed this plan the same day and added the
+per-project allow-list, the reasoning-token bound, the overrun warning, the sibling-store
+check and the no-key-in-files test.
+
+**What it is.** One tool: a one-shot chat completion against OpenRouter. It takes
+model, system (text or a file), user content (text and/or files), max_tokens,
+reasoning effort and temperature. It streams the answer, writes it to a file under the
+project, and returns the path, the token usage and the charge. No pod, no tunnel, no
+lane port: it never touches RunPod, ssh config or Zed.
+
+**Two allow-lists, both constants in code** (`offrig_core::openrouter`):
+- models: `moonshotai/kimi-k3` only;
+- projects: the side-car's lane must be `ai-jam-sessions`. The lane is read, never
+  allocated, so calling the tool from another project leaves no lane behind.
+
+Widening either takes a pull request, not a config edit or a tool argument.
+
+**Price, before the call.**
+- The price comes from the public `GET /api/v1/models/{id}/endpoints`, which lists
+  every provider. offrig takes the highest input price and the highest output price
+  across all of them. No key is sent with this read.
+- The request sends `provider.max_price` at those prices, so no provider dearer than
+  the priced worst case can serve it.
+- **Worst case** = input bound × input price + max_tokens × output price + any
+  per-request price, rounded up to the cent.
+  - The input bound is the UTF-8 byte length of system plus user, plus 512 tokens for
+    the chat template. A byte-level BPE token is at least one byte, so the bound
+    over-counts.
+  - `max_tokens` caps reasoning and answer together. OpenRouter counts reasoning
+    tokens toward `max_tokens`, and with an effort level it sizes the reasoning budget
+    from it. They bill at the output rate.
+- The worst case is committed against the project's budget in the same ledger as pod
+  plans. The commit runs inside `BEGIN IMMEDIATE`, so two side-cars cannot both commit
+  past the cap. It is refused (`budget_exceeded`) when it exceeds what is left. Only
+  Mike sets the cap, with `offrig budget`.
+
+Measured 2026-10-08: providers listed $0.67-0.72 per million in and $13-15 per million
+out, so `max_tokens` 200,000 has a worst case of about $3.01. The Amazing Grace
+arrangement cost $0.30.
+
+**After the call.**
+- The actual `usage.cost` (OpenRouter's real charge) is recorded as the plan's
+  `actual` in the ledger, and the whole commitment is released, exactly like
+  `close_plan`.
+- If the charge exceeds the worst case, the reply carries a WARNING. The real figure
+  is still recorded, because a tripwire that rounds the number down hides the defect it
+  exists to catch.
+- **Stream error:** offrig asks `GET /api/v1/generation?id=<gen id>` what was charged,
+  records that with `cost_source: generation`, and says so.
+  - If no generation started (an HTTP error before the stream), it records $0 with
+    `cost_source: none`.
+  - If the charge cannot be read yet, the commitment stays held. The next call, and
+    status, list it, and a later call settles it once it is an hour old.
+- The provider that served the call is recorded with it. The Battle Hymn receipt and
+  the Director disagree about whether Kimi-K3 ran on Ollama Cloud or OpenRouter.
+  From now on the row says which provider served each call.
+- **No fallback.** If OpenRouter fails, the call fails. It never retries on another
+  service, and never on Ollama Cloud, which the standing rule keeps off.
+
+**The key.** It comes from `OPENROUTER_API_KEY` in the environment.
+- It is sent only to OpenRouter's chat and generation endpoints.
+- It is never written to the output file, the store or a log, and errors are redacted.
+  A test greps the written file, the database and the reply for it.
+- The base URL can be redirected for tests in debug builds only, as with RunPod.
+
+**Files.** Inputs (`system_file`, `user_files`) must resolve inside the project, so
+the tool cannot be used to send a file from elsewhere on the machine. The output path
+is relative and stays inside the project (default `.offrig/out/completion-<id>.md`).
+Any reasoning text goes beside it as `.reasoning.md`.
+
+**Schema v4.**
+- New `completions` table.
+- `ledger.plan_id` becomes nullable, with a `completion_id` column and a CHECK that
+  exactly one of the two is set. The ledger is rebuilt in a transaction, and its rows
+  copy over unchanged.
+- A completion is not a plan: `open_plans`, the watchdog and the one-live-plan lane
+  rule never see it.
+- A sibling side-car still on v3 reads a v4 store as "sibling unreadable" (its
+  version check refuses newer schemas). A v4 side-car reads a v3 sibling's plans
+  normally; a read-only view never migrates. Both directions are tested.
+
+**Standards compliance (OpenRouter lane).**
+- **PIN_PER_STEP: 2.** The model is pinned by id from a fixed allow-list. Each row
+  records model, provider, the priced rates, max_tokens, the generation id and the
+  charge. Temperature and effort are the caller's and are echoed in the reply.
+  Remaining gap: OpenRouter ids are not weight digests; a provider can change what
+  serves an id.
+- **ANDON_AUTHORITY: 3.** These refuse before money moves:
+  - a model not on the list;
+  - a project not on the list;
+  - no key;
+  - an input file outside the project;
+  - a worst case over the budget.
+
+  Each one is tested.
+- **NAMED_COMPENSATORS: 2.** A spent completion has no undo. The compensator is the
+  ledger: the commitment is released on every exit path (refused, failed, done) and
+  replaced by the measured charge. Commitments whose charge was unreadable are held
+  and settled later, never released blind. Table below.
+- **DECOMPOSE_BY_SECRETS: 2.** Each part owns its own concern:
+  - how OpenRouter prices and bills: `openrouter.rs`;
+  - how the books are kept: `store.rs`;
+  - what the tool accepts: the side-car.
+- **UNCERTAINTY_GATED_HUMANS: 2.** The human gate is the budget cap and the two
+  allow-lists, all of them Mike's. A first real call needs his go, given in chat.
+- **EXTERNAL_VERIFIER: n/a.** No specialized claims. The answer is untrusted model
+  output for the caller to judge.
+
+| Action | Undo | State after | Owner |
+|---|---|---|---|
+| `offrig_complete` (a paid generation) | none: the generation is billed when it runs | charge recorded as actual; commitment released | the calling agent; Mike via the cap |
+| The worst-case commitment | release on every exit path; a held one settles from the generation id once an hour has passed | budget restored less the real charge | offrig |
+| The output file | delete or overwrite it; it is a project file | as before the call | the calling agent |
+
 ## Decisions
 
 - 2026-10-02, Mike: the frontier tier serves with SGLang (TP=4, AWQ, fp8 KV). Small and medium stay on Ollama. Amended 2026-10-03 on the 3b evidence: KV stays full precision on sm_120, where fp8 KV was reported to corrupt output.
 - 2026-10-02, Mike: register the side-car with Claude Code at user scope. Because it then starts in every project, the store opens on first use, never on start.
 - One database per project, at `<project>/.offrig/offrig.db`, so memory travels with the code (the proposal; not overruled).
 - 2026-10-03, Mike: phase 3 green-lit. Order: 3a runner, 3b SGLang frontier recipe (rehearsed on 1× RTX PRO 6000 first), 3c first real frontier queue.
+- 2026-10-08, Mike: OpenRouter for ai-jam-sessions' arrangements only, Kimi-K3, through offrig's budget and ledger (`offrig_complete`).
 - Open: whether Docker Sandboxes should isolate the agents that run handoffs (under evaluation).

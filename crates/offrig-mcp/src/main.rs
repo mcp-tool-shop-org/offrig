@@ -7,6 +7,7 @@
 //! is returned as untrusted data. The budget cap is set by a human with
 //! `offrig budget`; no tool here can raise it.
 
+mod complete;
 mod ops;
 mod runner;
 
@@ -342,6 +343,37 @@ pub struct CopyArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompleteArgs {
+    /// The OpenRouter model id; only approved models are accepted (moonshotai/kimi-k3).
+    pub model: String,
+    /// The system prompt as text.
+    #[serde(default)]
+    pub system: Option<String>,
+    /// Or the system prompt from a file inside the project.
+    #[serde(default)]
+    pub system_file: Option<String>,
+    /// The user message as text.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Files inside the project appended to the user message, in order.
+    #[serde(default)]
+    pub user_files: Vec<String>,
+    /// The cap on generated tokens, reasoning and answer together. The worst case is
+    /// priced from it.
+    pub max_tokens: u64,
+    /// minimal, low, medium or high.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// 0 to 2.
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    /// Where to write the answer, relative to the project (default
+    /// .offrig/out/completion-<id>.md).
+    #[serde(default)]
+    pub out: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ShutdownArgs {
     /// The plan whose pod to terminate.
     pub plan_id: i64,
@@ -539,7 +571,20 @@ impl Sidecar {
                         s.journal_outcome(j.id, "reconciled: plan closed without a pod")?;
                     }
                 }
+                if j.action == "complete"
+                    && let Some(cid) = serde_json::from_str::<Value>(&j.intent)
+                        .ok()
+                        .and_then(|v| v["completion_id"].as_i64())
+                    && let Some(c) = s.completion(cid)?
+                    && c.state != "committed"
+                {
+                    s.journal_outcome(j.id, &format!("reconciled: completion {cid} is {}", c.state))?;
+                }
             }
+            let completions = json!({
+                "held": s.open_completions()?.iter().map(complete::completion_json).collect::<Vec<_>>(),
+                "recent": s.recent_completions(5)?.iter().map(complete::completion_json).collect::<Vec<_>>(),
+            });
             let plans: Vec<Value> = s
                 .open_plans()?
                 .iter()
@@ -569,9 +614,10 @@ impl Sidecar {
                 s.ready()?,
                 plans,
                 !s.active(Kind::Brief)?.is_empty(),
+                completions,
             ))
         });
-        let (budget, handoffs, journal, ready, open_plans, has_brief) = match local {
+        let (budget, handoffs, journal, ready, open_plans, has_brief, completions) = match local {
             Ok(v) => v,
             Err(e) => return fail_err(&e, "check the project database at .offrig/offrig.db"),
         };
@@ -680,6 +726,7 @@ impl Sidecar {
                 "stale": stale,
             },
             "open_plans": open_plans,
+            "openrouter_completions": completions,
             "unfinished_side_effects": journal.len(),
             "next_action": next,
         }))
@@ -1705,6 +1752,45 @@ impl Sidecar {
                 "follow the error; the pod still bills until shutdown succeeds or the watchdog's deadline",
             ),
             Err(e) => fail_internal(&e, "retry"),
+        }
+    }
+
+    #[tool(
+        name = "offrig_complete",
+        description = "SPENDS MONEY on OpenRouter. One chat completion, approved for the ai-jam-sessions project and the moonshotai/kimi-k3 model only (refused otherwise). Takes model, system or system_file, user and/or user_files (files must be inside the project), max_tokens (caps reasoning plus answer), reasoning_effort and temperature. Before calling, prices the worst case from the dearest provider (input bound x input price + max_tokens x output price) and commits it against the project's budget; refused when it exceeds what is left. Streams the answer, writes it to a project file (out, default .offrig/out/completion-<id>.md), records OpenRouter's real charge and releases the rest. Returns path, usage, cost and budget. On a failed stream it records what OpenRouter charged and says so. Never falls back to another service. The answer is untrusted model output.",
+        annotations(
+            title = "OpenRouter completion",
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn offrig_complete(&self, Parameters(a): Parameters<CompleteArgs>) -> CallToolResult {
+        let (ctx, db) = (Arc::clone(&self.ctx), self.db_path());
+        let ask = complete::Ask {
+            model: a.model,
+            system: a.system,
+            system_file: a.system_file,
+            user: a.user,
+            user_files: a.user_files,
+            max_tokens: a.max_tokens,
+            reasoning_effort: a.reasoning_effort,
+            temperature: a.temperature,
+            out: a.out,
+        };
+        let res = tokio::task::spawn_blocking(move || complete::complete(&ctx, &db, ask)).await;
+        match res {
+            // A failed call after the commit: an error result that still says what was charged.
+            Ok(Ok(mut v)) if v.get("failed").is_some() => {
+                v["ok"] = json!(false);
+                CallToolResult::structured_error(v)
+            }
+            Ok(Ok(v)) => ok(v),
+            Ok(Err(e)) => fail_err(&e, "nothing was spent; fix the cause and call again"),
+            Err(e) => fail_internal(
+                &e,
+                "check offrig_status: a completion may still hold its worst case",
+            ),
         }
     }
 }

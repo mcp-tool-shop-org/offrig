@@ -17,7 +17,7 @@ use crate::checks::{Check, Outcome};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -71,13 +71,38 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS completions (
+  id            INTEGER PRIMARY KEY,
+  model         TEXT NOT NULL,
+  lane          TEXT NOT NULL,
+  input_bound   INTEGER NOT NULL,
+  max_tokens    INTEGER NOT NULL,
+  price_in_m    REAL NOT NULL,
+  price_out_m   REAL NOT NULL,
+  worst_case    REAL NOT NULL,
+  state         TEXT NOT NULL DEFAULT 'committed' CHECK (state IN ('committed','done','failed')),
+  generation_id TEXT,
+  provider      TEXT,
+  cost          REAL,
+  cost_source   TEXT,
+  tokens_in     INTEGER,
+  tokens_out    INTEGER,
+  reasoning_tokens INTEGER,
+  out_path      TEXT,
+  error         TEXT,
+  created_at    INTEGER NOT NULL,
+  finished_at   INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS ledger (
-  id       INTEGER PRIMARY KEY,
-  plan_id  INTEGER NOT NULL REFERENCES plans(id),
-  kind     TEXT NOT NULL CHECK (kind IN ('commit','actual','release')),
-  amount   REAL NOT NULL,
-  at       INTEGER NOT NULL,
-  note     TEXT
+  id            INTEGER PRIMARY KEY,
+  plan_id       INTEGER REFERENCES plans(id),
+  completion_id INTEGER REFERENCES completions(id),
+  kind          TEXT NOT NULL CHECK (kind IN ('commit','actual','release')),
+  amount        REAL NOT NULL,
+  at            INTEGER NOT NULL,
+  note          TEXT,
+  CHECK ((plan_id IS NULL) <> (completion_id IS NULL))
 );
 
 CREATE TABLE IF NOT EXISTS journal (
@@ -343,9 +368,9 @@ pub struct NewPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
     pub cap: f64,
-    /// Committed by open plans and not yet released.
+    /// Committed by open plans and held OpenRouter completions, not yet released.
     pub committed: f64,
-    /// Recorded actual spend of closed plans.
+    /// Recorded actual spend of closed plans and ended completions.
     pub spent: f64,
     pub remaining: f64,
 }
@@ -356,6 +381,62 @@ impl Budget {
     pub fn floor(&self) -> f64 {
         self.spent + self.committed
     }
+}
+
+/// One OpenRouter completion: its worst case committed against the budget before the
+/// call, its real charge recorded after (see docs/sidecar-design.md, "The OpenRouter lane").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Completion {
+    pub id: i64,
+    pub model: String,
+    pub lane: String,
+    pub input_bound: u64,
+    pub max_tokens: u64,
+    /// The priced rates, $ per million tokens.
+    pub price_in_m: f64,
+    pub price_out_m: f64,
+    pub worst_case: f64,
+    /// `committed` (the worst case is held), `done` or `failed`.
+    pub state: String,
+    pub generation_id: Option<String>,
+    pub provider: Option<String>,
+    pub cost: Option<f64>,
+    /// Where the charge came from: `usage` (the stream), `generation` (asked after a
+    /// failure) or `none` (no generation started, nothing charged).
+    pub cost_source: Option<String>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub out_path: Option<String>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewCompletion {
+    pub model: String,
+    pub lane: String,
+    pub input_bound: u64,
+    pub max_tokens: u64,
+    pub price_in_m: f64,
+    pub price_out_m: f64,
+    pub worst_case: f64,
+}
+
+/// How a completion ended. `cost` is the real charge; `None` keeps the commitment held
+/// (the charge could not be read yet) and the completion stays `committed`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CompletionEnd {
+    pub failed: bool,
+    pub cost: Option<f64>,
+    pub cost_source: Option<String>,
+    pub provider: Option<String>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub out_path: Option<String>,
+    pub error: Option<String>,
 }
 
 /// A journaled side effect whose outcome was never written.
@@ -649,8 +730,25 @@ impl Store {
                 }
             }
         }
+        // v3 -> v4: OpenRouter completions share the ledger, so its plan_id may be NULL.
+        // SQLite cannot relax NOT NULL in place: rename the table, let the schema create
+        // the new one, copy every row across and drop the old one, in one transaction.
+        let rebuild_ledger = version < 4 && table_lacks(&conn, "ledger", "completion_id")?;
+        if rebuild_ledger {
+            conn.execute_batch("BEGIN; ALTER TABLE ledger RENAME TO ledger_v3;")
+                .map_err(db("migrating the ledger to v4"))?;
+        }
         conn.execute_batch(SCHEMA)
             .map_err(db("creating the schema"))?;
+        if rebuild_ledger {
+            conn.execute_batch(
+                "INSERT INTO ledger(id, plan_id, kind, amount, at, note)
+                   SELECT id, plan_id, kind, amount, at, note FROM ledger_v3;
+                 DROP TABLE ledger_v3;
+                 COMMIT;",
+            )
+            .map_err(db("copying the ledger to v4"))?;
+        }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
             .map_err(db("writing the schema version"))?;
         Ok(Self { conn })
@@ -671,7 +769,7 @@ impl Store {
         let b = self.budget()?;
         if usd + 1e-9 < b.floor() {
             return Err(Error::Refused(format!(
-                "the cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open plans. ${:.2} stops new paid sessions and leaves running ones alone",
+                "the cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open plans and completions. ${:.2} stops new paid sessions and leaves running ones alone",
                 b.floor(),
                 b.spent,
                 b.committed,
@@ -1206,6 +1304,189 @@ impl Store {
         self.budget()
     }
 
+    // ---- OpenRouter completions
+
+    /// Commit a completion's worst case against the budget, refused when it exceeds what
+    /// is left. The check and the commit run under one write lock (`BEGIN IMMEDIATE`), so
+    /// two side-cars sharing this file cannot both commit past the cap.
+    pub fn commit_completion(&self, c: NewCompletion) -> Result<Completion> {
+        if !(c.worst_case.is_finite() && c.worst_case >= 0.0) {
+            return Err(Error::Refused(format!(
+                "worst case {} must be a non-negative amount",
+                c.worst_case
+            )));
+        }
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(db("starting a completion commit"))?;
+        let res = self.commit_completion_locked(&c);
+        match res {
+            Ok(id) => {
+                self.conn
+                    .execute_batch("COMMIT")
+                    .map_err(db("committing a completion"))?;
+                self.completion(id)?
+                    .ok_or_else(|| Error::Refused("completion vanished after commit".into()))
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    fn commit_completion_locked(&self, c: &NewCompletion) -> Result<i64> {
+        let b = self.budget()?;
+        if c.worst_case > b.remaining + 1e-9 {
+            return Err(Error::Budget(format!(
+                "worst case ${:.2} (at most {} tokens in and {} out, at ${}/M in and ${}/M out) \
+                 exceeds the ${:.2} left of the ${:.2} budget; lower max_tokens or ask Mike to raise the cap",
+                c.worst_case,
+                c.input_bound,
+                c.max_tokens,
+                c.price_in_m,
+                c.price_out_m,
+                b.remaining,
+                b.cap
+            )));
+        }
+        let now = now_unix();
+        self.conn
+            .execute(
+                "INSERT INTO completions(model, lane, input_bound, max_tokens, price_in_m, price_out_m, worst_case, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    c.model,
+                    c.lane,
+                    c.input_bound as i64,
+                    c.max_tokens as i64,
+                    c.price_in_m,
+                    c.price_out_m,
+                    c.worst_case,
+                    now
+                ],
+            )
+            .map_err(db("saving a completion"))?;
+        let id = self.conn.last_insert_rowid();
+        self.conn
+            .execute(
+                "INSERT INTO ledger(completion_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
+                params![id, c.worst_case, now],
+            )
+            .map_err(db("writing a completion commit"))?;
+        Ok(id)
+    }
+
+    /// Note the generation id as soon as the stream names it, so the charge can be looked
+    /// up later even if this process dies mid-stream.
+    pub fn set_completion_generation(&self, id: i64, generation_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE completions SET generation_id = ?1 WHERE id = ?2",
+                params![generation_id, id],
+            )
+            .map_err(db("recording a generation id"))?;
+        Ok(())
+    }
+
+    /// End a completion. With a known cost: release the whole commitment and record the
+    /// cost as actual spend, like `close_plan`. Without one: record what is known and keep
+    /// the commitment held. A closed completion is left as it is.
+    pub fn close_completion(&self, id: i64, end: CompletionEnd) -> Result<Budget> {
+        let c = self
+            .completion(id)?
+            .ok_or_else(|| Error::Refused(format!("no completion {id}")))?;
+        if c.state != "committed" {
+            return self.budget();
+        }
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(db("starting a completion close"))?;
+        let now = now_unix();
+        let state = match (end.cost, end.failed) {
+            (None, _) => "committed",
+            (Some(_), true) => "failed",
+            (Some(_), false) => "done",
+        };
+        if let Some(cost) = end.cost {
+            tx.execute(
+                "INSERT INTO ledger(completion_id, kind, amount, at, note) VALUES (?1, 'release', ?2, ?3, 'completion ended')",
+                params![id, c.worst_case, now],
+            )
+            .map_err(db("writing a completion release"))?;
+            tx.execute(
+                "INSERT INTO ledger(completion_id, kind, amount, at, note) VALUES (?1, 'actual', ?2, ?3, ?4)",
+                params![
+                    id,
+                    cost.max(0.0),
+                    now,
+                    end.cost_source.as_deref().unwrap_or("measured")
+                ],
+            )
+            .map_err(db("writing a completion's charge"))?;
+        }
+        tx.execute(
+            "UPDATE completions SET state = ?2, cost = ?3, cost_source = COALESCE(?4, cost_source),
+                    provider = COALESCE(?5, provider), tokens_in = COALESCE(?6, tokens_in),
+                    tokens_out = COALESCE(?7, tokens_out), reasoning_tokens = COALESCE(?8, reasoning_tokens),
+                    out_path = COALESCE(?9, out_path), error = COALESCE(?10, error),
+                    finished_at = CASE WHEN ?3 IS NULL THEN finished_at ELSE ?11 END
+             WHERE id = ?1",
+            params![
+                id,
+                state,
+                end.cost,
+                end.cost_source,
+                end.provider,
+                end.tokens_in.map(|v| v as i64),
+                end.tokens_out.map(|v| v as i64),
+                end.reasoning_tokens.map(|v| v as i64),
+                end.out_path,
+                end.error,
+                now
+            ],
+        )
+        .map_err(db("closing a completion"))?;
+        tx.commit().map_err(db("committing a completion close"))?;
+        self.budget()
+    }
+
+    pub fn completion(&self, id: i64) -> Result<Option<Completion>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {COMPLETION_COLS} FROM completions WHERE id = ?1"),
+                params![id],
+                completion_row,
+            )
+            .optional()
+            .map_err(db("reading a completion"))
+    }
+
+    /// Completions whose worst case is still held: in flight, or ended with a charge
+    /// that could not be read yet.
+    pub fn open_completions(&self) -> Result<Vec<Completion>> {
+        self.completions_where("state = 'committed' ORDER BY id", 1000)
+    }
+
+    /// The most recent completions, newest first.
+    pub fn recent_completions(&self, n: usize) -> Result<Vec<Completion>> {
+        self.completions_where("1 ORDER BY id DESC", n)
+    }
+
+    fn completions_where(&self, clause: &str, n: usize) -> Result<Vec<Completion>> {
+        let mut st = self
+            .conn
+            .prepare(&format!(
+                "SELECT {COMPLETION_COLS} FROM completions WHERE {clause} LIMIT {n}"
+            ))
+            .map_err(db("preparing a completion read"))?;
+        st.query_map([], completion_row)
+            .map_err(db("reading completions"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading completions"))
+    }
+
     /// Write intent before a side effect; fill in the outcome after.
     pub fn journal(
         &self,
@@ -1521,6 +1802,36 @@ impl Store {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db("reading events"))
     }
+}
+
+const COMPLETION_COLS: &str = "id, model, lane, input_bound, max_tokens, price_in_m, price_out_m, worst_case, \
+     state, generation_id, provider, cost, cost_source, tokens_in, tokens_out, reasoning_tokens, out_path, error, \
+     created_at, finished_at";
+
+fn completion_row(r: &Row<'_>) -> rusqlite::Result<Completion> {
+    let u = |v: Option<i64>| v.map(|n| n.max(0) as u64);
+    Ok(Completion {
+        id: r.get(0)?,
+        model: r.get(1)?,
+        lane: r.get(2)?,
+        input_bound: r.get::<_, i64>(3)?.max(0) as u64,
+        max_tokens: r.get::<_, i64>(4)?.max(0) as u64,
+        price_in_m: r.get(5)?,
+        price_out_m: r.get(6)?,
+        worst_case: r.get(7)?,
+        state: r.get(8)?,
+        generation_id: r.get(9)?,
+        provider: r.get(10)?,
+        cost: r.get(11)?,
+        cost_source: r.get(12)?,
+        tokens_in: u(r.get(13)?),
+        tokens_out: u(r.get(14)?),
+        reasoning_tokens: u(r.get(15)?),
+        out_path: r.get(16)?,
+        error: r.get(17)?,
+        created_at: r.get(18)?,
+        finished_at: r.get(19)?,
+    })
 }
 
 #[cfg(test)]
@@ -1960,6 +2271,213 @@ mod tests {
         let back = s.plan(p.id).expect("read").expect("plan");
         assert_eq!(back.gpu_types, p.gpu_types);
         assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");
+    }
+
+    fn new_completion(worst: f64) -> NewCompletion {
+        NewCompletion {
+            model: "moonshotai/kimi-k3".into(),
+            lane: "ai-jam-sessions".into(),
+            input_bound: 2_000,
+            max_tokens: 200_000,
+            price_in_m: 0.72,
+            price_out_m: 15.0,
+            worst_case: worst,
+        }
+    }
+
+    #[test]
+    fn a_completion_commits_its_worst_case_and_records_the_real_charge() {
+        let s = store();
+        s.set_budget_cap(4.50).expect("cap");
+        let c = s.commit_completion(new_completion(3.01)).expect("commit");
+        assert_eq!(c.state, "committed");
+        let b = s.budget().expect("budget");
+        assert_eq!((b.committed, b.spent), (3.01, 0.0));
+        assert!((b.remaining - 1.49).abs() < 1e-9);
+        // Not a plan: the lane rule and the watchdog never see it.
+        assert!(s.open_plans().expect("plans").is_empty());
+        assert_eq!(s.open_completions().expect("open").len(), 1);
+
+        s.set_completion_generation(c.id, "gen-1").expect("gen");
+        let b = s
+            .close_completion(
+                c.id,
+                CompletionEnd {
+                    cost: Some(0.30),
+                    cost_source: Some("usage".into()),
+                    provider: Some("Wafer".into()),
+                    tokens_in: Some(1_700),
+                    tokens_out: Some(19_500),
+                    out_path: Some(".offrig/out/completion-1.md".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("close");
+        assert_eq!(b.committed, 0.0, "the whole commitment is released");
+        assert!((b.spent - 0.30).abs() < 1e-9 && (b.remaining - 4.20).abs() < 1e-9);
+        let done = s.completion(c.id).expect("read").expect("row");
+        assert_eq!(done.state, "done");
+        assert_eq!(done.generation_id.as_deref(), Some("gen-1"));
+        assert_eq!(done.provider.as_deref(), Some("Wafer"));
+        assert_eq!(done.cost, Some(0.30));
+        assert!(done.finished_at.is_some());
+        // Closing twice changes nothing.
+        let again = s
+            .close_completion(
+                c.id,
+                CompletionEnd {
+                    cost: Some(9.0),
+                    ..Default::default()
+                },
+            )
+            .expect("again");
+        assert!((again.spent - 0.30).abs() < 1e-9);
+        assert!(s.open_completions().expect("open").is_empty());
+        assert_eq!(s.recent_completions(5).expect("recent")[0].id, c.id);
+    }
+
+    #[test]
+    fn a_completion_over_the_budget_left_is_refused_and_commits_nothing() {
+        let s = store();
+        s.set_budget_cap(4.50).expect("cap");
+        s.commit_completion(new_completion(3.01)).expect("first");
+        let err = s
+            .commit_completion(new_completion(3.01))
+            .expect_err("over budget");
+        assert!(matches!(err, Error::Budget(_)), "{err}");
+        assert!(err.to_string().contains("$1.49 left"), "{err}");
+        assert_eq!(s.open_completions().expect("open").len(), 1);
+        assert!((s.budget().expect("b").committed - 3.01).abs() < 1e-9);
+        assert!(matches!(
+            s.commit_completion(new_completion(f64::NAN)),
+            Err(Error::Refused(_))
+        ));
+        // Pods and completions draw on one cap.
+        let plan = s.create_plan(NewPlan {
+            profile: "jam".into(),
+            gpu_count: 1,
+            gpu_types: vec![],
+            max_hours: 4.0,
+            max_price_hr: 0.49,
+            note: None,
+        });
+        assert!(matches!(plan, Err(Error::Budget(_))), "1.96 > 1.49 left");
+    }
+
+    #[test]
+    fn an_unread_charge_keeps_the_commitment_held_and_a_failure_records_its_charge() {
+        let s = store();
+        s.set_budget_cap(10.0).expect("cap");
+        let c = s.commit_completion(new_completion(3.01)).expect("commit");
+        s.close_completion(
+            c.id,
+            CompletionEnd {
+                failed: true,
+                error: Some("stream broke".into()),
+                ..Default::default()
+            },
+        )
+        .expect("held");
+        let held = s.completion(c.id).expect("read").expect("row");
+        assert_eq!(held.state, "committed");
+        assert_eq!(held.error.as_deref(), Some("stream broke"));
+        assert!((s.budget().expect("b").committed - 3.01).abs() < 1e-9);
+        let b = s
+            .close_completion(
+                c.id,
+                CompletionEnd {
+                    failed: true,
+                    cost: Some(0.12),
+                    cost_source: Some("generation".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("settled");
+        assert!((b.spent - 0.12).abs() < 1e-9 && b.committed == 0.0);
+        let row = s.completion(c.id).expect("read").expect("row");
+        assert_eq!(row.state, "failed");
+        assert_eq!(row.error.as_deref(), Some("stream broke"), "kept");
+        assert_eq!(row.cost_source.as_deref(), Some("generation"));
+        assert!(matches!(
+            s.close_completion(999, CompletionEnd::default()),
+            Err(Error::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn v3_ledgers_migrate_to_v4_without_losing_rows() {
+        let dir = std::env::temp_dir().join(format!("offrig-migrate4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("v3.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = Connection::open(&path).expect("open");
+            c.execute_batch(
+                "CREATE TABLE plans (id INTEGER PRIMARY KEY, profile TEXT NOT NULL, gpu_count INTEGER NOT NULL,
+                   gpu_types TEXT NOT NULL, max_hours REAL NOT NULL, max_price_hr REAL NOT NULL, worst_case REAL NOT NULL,
+                   state TEXT NOT NULL DEFAULT 'planned', pod_id TEXT, created_at INTEGER NOT NULL, note TEXT,
+                   committed_at INTEGER, started_at INTEGER);
+                 CREATE TABLE ledger (id INTEGER PRIMARY KEY, plan_id INTEGER NOT NULL REFERENCES plans(id),
+                   kind TEXT NOT NULL CHECK (kind IN ('commit','actual','release')), amount REAL NOT NULL,
+                   at INTEGER NOT NULL, note TEXT);
+                 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings VALUES ('budget_cap', '12');
+                 INSERT INTO plans(profile, gpu_count, gpu_types, max_hours, max_price_hr, worst_case, state, created_at)
+                   VALUES ('small', 1, '[]', 1.0, 0.24, 0.24, 'closed', 1);
+                 INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (1, 'commit', 0.24, 1, 'worst case');
+                 INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (1, 'release', 0.24, 2, 'plan closed');
+                 INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (1, 'actual', 0.08, 2, 'measured');
+                 PRAGMA user_version = 3;",
+            )
+            .expect("v3 schema");
+        }
+        let s = Store::open(&path).expect("migrates");
+        let b = s.budget().expect("budget");
+        assert_eq!((b.cap, b.committed), (12.0, 0.0));
+        assert!((b.spent - 0.08).abs() < 1e-9, "every ledger row survived");
+        let rows: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM ledger WHERE plan_id = 1", [], |r| {
+                r.get(0)
+            })
+            .expect("count");
+        assert_eq!(rows, 3);
+        assert!(!table_lacks(&s.conn, "ledger", "completion_id").expect("cols"));
+        let old: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'ledger_v3'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("master");
+        assert_eq!(old, 0, "the old table is gone");
+        s.commit_completion(new_completion(1.0))
+            .expect("a completion row");
+        // A ledger row belongs to exactly one plan or completion.
+        assert!(
+            s.conn
+                .execute(
+                    "INSERT INTO ledger(kind, amount, at) VALUES ('commit', 1.0, 3)",
+                    []
+                )
+                .is_err()
+        );
+        assert!(
+            s.conn
+                .execute(
+                    "INSERT INTO ledger(plan_id, completion_id, kind, amount, at) VALUES (1, 1, 'commit', 1.0, 3)",
+                    []
+                )
+                .is_err()
+        );
+        drop(s);
+        let v: i64 = Connection::open(&path)
+            .expect("reopen")
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(v, SCHEMA_VERSION);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
