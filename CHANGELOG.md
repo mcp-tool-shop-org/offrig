@@ -6,6 +6,13 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget and
+  any running plans, then offers to set a new cap (confirmed first) or stop new spending.
+  `--show` prints the one-line budget, and so does any run where stdout isn't a terminal.
+- **The cap can't take back money given to a run.** It can never be set below spent plus
+  committed, from the menu or from `offrig budget <usd>`. Stopping new spending sets it to
+  exactly that, so a running training job keeps its allocation and runs to its deadline.
+
 - **A Hugging Face token on job pods.** A job profile can name a RunPod secret with
   `hf_token_secret`, as a recipe already could. RunPod substitutes it at start, and the
   bootstrap writes it to a root-only file. Job commands get `HF_TOKEN_PATH`, because an ssh

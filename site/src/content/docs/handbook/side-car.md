@@ -23,10 +23,22 @@ it. Then a human sets the project's cap, in the project directory:
 
 ```text
 offrig budget 15          set the cap to $15
-offrig budget             show cap, committed, spent and remaining
+offrig budget             in a terminal: a menu to set a new cap or stop new spending
+offrig budget --show      show cap, committed, spent and remaining
 ```
 
-No tool can change the cap. An agent reads it; only a person sets it.
+No tool can change the cap. An agent reads it; only a person sets it. Run without an
+amount in a terminal, `offrig budget` shows the budget and any running plans, then offers:
+
+1. **Set a new cap.** Asked for, then confirmed.
+2. **Stop new spending.** Lowers the cap to what's already spent plus what's committed, so
+   nothing is left for a new plan.
+
+**Money given to a run stays with it.** The cap can never go below spent plus committed, by
+the menu or by `offrig budget <usd>`. Stopping new spending leaves a running training job
+alone: it keeps its allocation and goes on to its deadline. To stop a pod now, use
+`offrig down` or the session's `offrig_shutdown`. Where stdout isn't a terminal (a script,
+an agent's shell), `offrig budget` prints the one-line budget as before.
 
 ## The loop an agent follows
 
