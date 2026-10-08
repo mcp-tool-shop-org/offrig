@@ -6,6 +6,30 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **The verifier's verdict contract (schema v6).** The groundwork for `offrig verify`; no
+  command uses it yet.
+  - The verifier sees the claim and the evidence, never how the claim was made. It replies
+    with its reasoning first, then `supported`, `unsupported` or `cannot_tell`, a quote and
+    the passage the quote came from.
+  - A `supported` verdict stands only if its quote is at least 12 characters and appears
+    word for word in one evidence passage (whitespace and curly quotes are normalised).
+    Otherwise it becomes `cannot_tell` with the reason `quote_not_found`. An `unsupported`
+    verdict may give no quote, but a quote it gives must be found.
+  - A reply that breaks the schema is retried once, then reported as a `bad_verdict`
+    error, never as a verdict. A reply cut off at the output limit is a `truncated` error.
+  - Every verdict is stored in an append-only `verdicts` table, always marked untrusted,
+    with what produced it: the model and digest, the embedding model, the prompt and
+    role-card hashes, the evidence ids, and the temperature, seed, think level and limits.
+  - Calibration metrics for choosing the default model: per check type, the false-accept
+    rate with a Wilson 95% interval, the abstain rate and the balanced accuracy on decided
+    claims. A model qualifies only if, for grounded and reasoning checks, the upper end of
+    its false-accept interval is under 10%, it abstains on at most 20% of claims, it is
+    right on at least 80% of the claims it decides, and the gold set has at least 100
+    false claims.
+  - Chat with Ollama now uses its native `/api/chat`, which takes a JSON-schema `format`,
+    a `think` level and pinned sampling settings.
+  - The v5 to v6 migration is forward-only, so an older offrig refuses a v6 database.
+
 - **A project index with hybrid search (schema v5).** `offrig index <paths...>` chunks
   documents, code and logs into the project database; `--status` and `--rebuild` report
   and rebuild it. Memory records are indexed too. `offrig_memory_search` gains `mode`

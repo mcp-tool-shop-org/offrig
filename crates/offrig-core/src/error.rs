@@ -75,6 +75,15 @@ pub enum Error {
     #[error("engine: {0}")]
     Engine(String),
 
+    /// The model stopped at its token limit before it finished (`done_reason: length`).
+    /// What it wrote is not an answer.
+    #[error("truncated: {0}")]
+    Truncated(String),
+
+    /// A verifier reply that failed its schema, twice. Never reported as a verdict.
+    #[error("bad verdict reply: {0}")]
+    BadVerdict(String),
+
     #[error("cancelled while {0}")]
     Cancelled(String),
 
@@ -166,6 +175,8 @@ impl Error {
             Error::Guard(_) => "guard_refused",
             Error::Timeout(_) => "timeout",
             Error::Ollama(_) | Error::Engine(_) => "model_server",
+            Error::Truncated(_) => "truncated",
+            Error::BadVerdict(_) => "bad_verdict",
             Error::Cancelled(_) => "cancelled",
             Error::NoCapacity(_) => "no_capacity",
             Error::PodNotReady { .. } => "pod_not_ready",
@@ -305,6 +316,8 @@ mod tests {
             ),
             (Error::Ollama("x".into()), "model_server", true),
             (Error::Engine("x".into()), "model_server", true),
+            (Error::Truncated("x".into()), "truncated", false),
+            (Error::BadVerdict("x".into()), "bad_verdict", false),
             (
                 Error::Db {
                     what: "w".into(),

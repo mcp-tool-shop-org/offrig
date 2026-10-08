@@ -3,7 +3,7 @@
 
 mod support;
 
-use offrig_core::ollama::{Ollama, SseChat, strip_thinking};
+use offrig_core::ollama::{ChatRequest, Msg, Ollama, SseChat, ThinkLevel, strip_thinking};
 use serde_json::json;
 use support::serve;
 
@@ -239,4 +239,66 @@ fn embed_sends_the_cpu_guard_and_checks_the_vectors() {
     assert!(e.contains("ollama pull x"), "{e}");
     // Ragged vectors.
     assert!(o.embed("m", &two, true).is_err());
+}
+
+fn native(content: &str, reason: &str) -> String {
+    json!({
+        "model": "a:1",
+        "message": {"role": "assistant", "content": content, "thinking": "mulled it over"},
+        "done": true, "done_reason": reason,
+        "total_duration": 1_500_000_000u64, "eval_count": 40, "prompt_eval_count": 300
+    })
+    .to_string()
+}
+
+#[test]
+fn native_chat_sends_messages_schema_and_options_and_reads_the_counts() {
+    let m = serve(|r, n| match (r.route().as_str(), n) {
+        ("POST /api/chat", 0) => (200, native(r#"{"verdict":"supported"}"#, "stop")),
+        ("POST /api/chat", 1) => (200, native("half an ans", "length")),
+        ("POST /api/chat", 2) => (200, r#"{"error":"model not found"}"#.into()),
+        ("POST /api/chat", 3) => (200, r#"{"done":true}"#.into()),
+        ("POST /api/chat", 4) => (200, r#"{"message":{"content":"x"}}"#.into()),
+        _ => (500, "boom".into()),
+    });
+    let o = Ollama::new(&m.url);
+    let req = ChatRequest {
+        model: "a:1".into(),
+        messages: vec![Msg::new("system", "be strict"), Msg::new("user", "claim")],
+        format: Some(json!({"type": "object", "properties": {"verdict": {"type": "string"}}})),
+        think: Some(ThinkLevel::On),
+        temperature: Some(0.0),
+        seed: Some(1),
+        num_ctx: Some(16384),
+        num_predict: Some(2048),
+    };
+    let r = o.chat_messages(&req).expect("reply");
+    assert_eq!(r.content, r#"{"verdict":"supported"}"#);
+    assert_eq!(r.thinking, "mulled it over");
+    assert_eq!(r.done_reason, "stop");
+    assert_eq!(
+        (r.eval_count, r.prompt_eval_count, r.total_duration),
+        (Some(40), Some(300), Some(1_500_000_000))
+    );
+    let sent: serde_json::Value = serde_json::from_str(&m.last().body).expect("json");
+    assert_eq!(sent["stream"], false);
+    assert_eq!(sent["messages"][1]["content"], "claim");
+    assert_eq!(sent["think"], true);
+    assert_eq!(sent["format"]["type"], "object");
+    assert_eq!(sent["options"]["num_ctx"], 16384);
+    // Truncation is a structured error with its own code, never a short answer.
+    let e = o.chat_messages(&req).expect_err("length");
+    assert_eq!(e.code(), "truncated");
+    assert!(e.to_string().contains("num_predict"), "{e}");
+    let e = o.chat_messages(&req).expect_err("error body").to_string();
+    assert!(e.contains("model not found"), "{e}");
+    let e = o.chat_messages(&req).expect_err("no message").to_string();
+    assert!(e.contains("no message"), "{e}");
+    // A reply with no counts or reason still reads.
+    let r = o.chat_messages(&req).expect("sparse");
+    assert_eq!(
+        (r.content.as_str(), r.eval_count, r.thinking.as_str()),
+        ("x", None, "")
+    );
+    assert!(o.chat_messages(&req).is_err(), "a 500 is an error");
 }
