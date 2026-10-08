@@ -490,10 +490,15 @@ pub fn normalise(s: &str) -> String {
     straight.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// True when the normalised quote sits inside one evidence passage, normalised.
+/// A quote shorter than this, once normalised, proves nothing: a word like "the" is
+/// found in almost any passage. Such a quote counts as not found.
+pub const MIN_QUOTE_CHARS: usize = 12;
+
+/// True when the normalised quote is at least [`MIN_QUOTE_CHARS`] long and sits inside
+/// one evidence passage, normalised.
 pub fn quote_found(quote: &str, evidence: &[Passage]) -> bool {
     let q = normalise(quote);
-    !q.is_empty() && evidence.iter().any(|p| normalise(&p.text).contains(&q))
+    q.chars().count() >= MIN_QUOTE_CHARS && evidence.iter().any(|p| normalise(&p.text).contains(&q))
 }
 
 /// The reason recorded when the quote rule turns a verdict into `cannot_tell`.
@@ -1077,6 +1082,14 @@ mod tests {
         assert!(!quote_found("x", &[]));
     }
 
+    #[test]
+    fn a_quote_too_short_to_prove_anything_is_not_found() {
+        let e = [passage("p", "the cache is cleared on the next start")];
+        assert!(!quote_found("the", &e), "one common word proves nothing");
+        assert!(!quote_found("the next", &e), "under the minimum length");
+        assert!(quote_found("cleared on the next start", &e));
+    }
+
     fn raw(verdict: VerdictKind, quote: &str) -> RawReply {
         RawReply {
             reasoning: "r".into(),
@@ -1201,9 +1214,9 @@ mod tests {
 
     #[test]
     fn high_stakes_claims_always_go_to_a_human() {
-        let mut c = claim(CheckType::Grounded, "x", vec![ev("a", "text here")]);
+        let mut c = claim(CheckType::Grounded, "x", vec![ev("a", "the text here")]);
         c.high_stakes = true;
-        let fake = Fake::saying(&[&reply_json("supported", "text here")]);
+        let fake = Fake::saying(&[&reply_json("supported", "the text here")]);
         let v = verify_one(&fake, &VerifyConfig::new("m"), &c, &[]).expect("verdict");
         assert_eq!(v.verdict, VerdictKind::Supported);
         assert!(v.needs_human);
@@ -1211,8 +1224,11 @@ mod tests {
 
     #[test]
     fn a_schema_failure_is_retried_once_with_a_nudge() {
-        let c = claim(CheckType::Grounded, "x", vec![ev("a", "text here")]);
-        let fake = Fake::saying(&["I think it is fine.", &reply_json("supported", "text here")]);
+        let c = claim(CheckType::Grounded, "x", vec![ev("a", "the text here")]);
+        let fake = Fake::saying(&[
+            "I think it is fine.",
+            &reply_json("supported", "the text here"),
+        ]);
         let v = verify_one(&fake, &VerifyConfig::new("m"), &c, &[]).expect("second try");
         assert_eq!(v.timing.attempts, 2);
         assert_eq!(v.timing.eval_count, 20);
@@ -1249,7 +1265,7 @@ mod tests {
 
     #[test]
     fn plain_text_mode_sends_no_schema_and_still_parses() {
-        let c = claim(CheckType::Grounded, "x", vec![ev("a", "text here")]);
+        let c = claim(CheckType::Grounded, "x", vec![ev("a", "the text here")]);
         let body = format!("```json\n{}\n```<|eot_id|>", reply_json("unsupported", ""));
         let fake = Fake::saying(&[&body]);
         let mut cfg = VerifyConfig::new("m");
