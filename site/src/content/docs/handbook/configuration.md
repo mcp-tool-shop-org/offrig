@@ -101,6 +101,22 @@ there, against 354 MB/s on its container disk.
 - **It's deleted with the pod.** Copy results back with `offrig_get` before
   `offrig_shutdown`.
 
+### A Hugging Face token on a job pod
+
+Anonymous Hugging Face downloads can be slow: one job pod fetched a 32B model at about
+11 MB/s. A token can raise that, and it is needed for gated repos. Give the job profile
+`"job": { ..., "hf_token_secret": "<name>" }`, where `<name>` is a RunPod secret holding a
+read-only token.
+
+- RunPod puts the token in the pod's environment at start. The pod spec carries only the
+  reference `{{ RUNPOD_SECRET_<name> }}`.
+- An ssh session doesn't inherit that environment. So the bootstrap writes the token to
+  `/root/.offrig-hf-token`, readable by root only, and every job command runs with
+  `HF_TOKEN_PATH` set to that file. Hugging Face tools read it from there. This works even
+  when your command sets its own `HF_HOME`.
+- The token never appears in a command line, a log or offrig's files. Anything you run on
+  the pod as root can read it, so use a fine-grained, read-only token.
+
 ## Staging weights on a network volume
 
 A recipe profile downloads its weights at every launch. For the frontier that was about 20
