@@ -350,6 +350,14 @@ pub struct Budget {
     pub remaining: f64,
 }
 
+impl Budget {
+    /// The lowest the cap can be set: spent plus committed. At the floor nothing is
+    /// left for a new plan, and every open plan keeps the money it was given.
+    pub fn floor(&self) -> f64 {
+        self.spent + self.committed
+    }
+}
+
 /// A journaled side effect whose outcome was never written.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JournalEntry {
@@ -650,10 +658,24 @@ impl Store {
 
     // ---- settings
 
+    /// Set the cap. It can never go below what is already spent plus what is
+    /// committed to open plans: money allocated to a running plan stays allocated, so
+    /// a cap change can't strand a training run mid-way. The lowest cap
+    /// ([`Budget::floor`]) leaves nothing for a new plan.
     pub fn set_budget_cap(&self, usd: f64) -> Result<()> {
         if !(usd.is_finite() && usd >= 0.0) {
             return Err(Error::Refused(format!(
                 "budget cap {usd} must be a non-negative amount"
+            )));
+        }
+        let b = self.budget()?;
+        if usd + 1e-9 < b.floor() {
+            return Err(Error::Refused(format!(
+                "the cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open plans. ${:.2} stops new paid sessions and leaves running ones alone",
+                b.floor(),
+                b.spent,
+                b.committed,
+                b.floor()
             )));
         }
         self.conn
@@ -1717,6 +1739,44 @@ mod tests {
             s.commit_plan(p.id).is_err(),
             "a closed plan cannot be recommitted"
         );
+    }
+
+    #[test]
+    fn the_cap_never_drops_below_money_already_given_to_runs() {
+        let s = store();
+        s.set_budget_cap(20.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "medium".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 3.0,
+                max_price_hr: 2.09,
+                note: None,
+            })
+            .expect("plan");
+        s.commit_plan(p.id).expect("commit");
+        let b = s.budget().expect("b");
+        assert!((b.floor() - 6.27).abs() < 1e-9, "{b:?}");
+        let low = s.set_budget_cap(0.0).expect_err("below the committed run");
+        assert!(low.to_string().contains("can't go below $6.27"), "{low}");
+        assert!(s.set_budget_cap(5.0).is_err());
+        assert_eq!(
+            s.budget().expect("b").cap,
+            20.0,
+            "a refused cap changes nothing"
+        );
+        // The floor itself is allowed: nothing left for a new plan, the run keeps its money.
+        s.set_budget_cap(b.floor()).expect("the floor");
+        let at = s.budget().expect("b");
+        assert!(
+            at.remaining.abs() < 1e-9 && (at.committed - 6.27).abs() < 1e-9,
+            "{at:?}"
+        );
+        // After the run closes, only what it actually spent holds the floor up.
+        s.close_plan(p.id, 1.10).expect("close");
+        s.set_budget_cap(1.10).expect("down to actual spend");
+        assert!(s.set_budget_cap(1.0).is_err(), "below spent");
     }
 
     #[test]

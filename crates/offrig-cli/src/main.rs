@@ -1,6 +1,8 @@
 //! `offrig`: the command-line front end. Every command maps onto offrig-core; the
 //! desktop app drives the same calls.
 
+mod budget_menu;
+
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
@@ -199,10 +201,14 @@ enum Cmd {
         profile: Option<String>,
     },
     /// Show or set this project's spending cap for agent-planned sessions. Only a
-    /// human sets it: the side-car's tools can read it but never change it.
+    /// human sets it: the side-car's tools can read it but never change it. In a
+    /// terminal, with no amount, it opens a menu to set a new cap or zero it.
     Budget {
-        /// New cap in USD; omit to show the current budget
+        /// New cap in USD; omit to show the current budget (a menu in a terminal)
         usd: Option<f64>,
+        /// Print the budget line only, even in a terminal
+        #[arg(long)]
+        show: bool,
         /// Project directory (default: the current directory)
         #[arg(long)]
         project: Option<std::path::PathBuf>,
@@ -336,9 +342,16 @@ fn ensure_tunnel(s: &Session) -> Result<Option<Tunnel>> {
     )?))
 }
 
+/// A person at a terminal: both stdin and stdout are terminals. A tool that captures
+/// stdout (an agent's shell, a script, a test) gets the plain line instead of a menu.
+fn interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
 fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
-        Cmd::Budget { usd, project } => {
+        Cmd::Budget { usd, show, project } => {
             let dir = match project {
                 Some(p) => p,
                 None => std::env::current_dir()?,
@@ -347,12 +360,20 @@ fn run(cli: Cli) -> Result<()> {
             if let Some(cap) = usd {
                 store.set_budget_cap(cap)?;
                 info!("budget cap set to ${cap:.2} for {}", dir.display());
+            } else if !show && interactive() {
+                // The menu names the project by its folder, never the full path.
+                let name = dir.file_name().map_or_else(
+                    || "this project".into(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                return budget_menu::run(
+                    &store,
+                    &name,
+                    &mut std::io::stdin().lock(),
+                    &mut std::io::stdout(),
+                );
             }
-            let b = store.budget()?;
-            println!(
-                "cap ${:.2}  committed ${:.2}  spent ${:.2}  remaining ${:.2}",
-                b.cap, b.committed, b.spent, b.remaining
-            );
+            println!("{}", budget_menu::line(&store.budget()?));
             Ok(())
         }
         Cmd::Init => {
