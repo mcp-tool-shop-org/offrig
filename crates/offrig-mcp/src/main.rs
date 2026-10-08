@@ -1837,14 +1837,14 @@ fn wlog(project: &Path, plan_id: i64, msg: &str) {
 /// The watchdog process: one plan, until its pod is terminated or its books close.
 fn run_watchdog(project: &Path, plan_id: i64) -> anyhow::Result<()> {
     let store = Store::open(&project.join(".offrig").join("offrig.db"))?;
-    let mut poll = Duration::from_secs(60);
+    // Debug builds let a test shorten the poll; a release build always polls every minute.
     #[cfg(debug_assertions)]
-    if let Some(s) = std::env::var("OFFRIG_TEST_WATCHDOG_POLL_SECS")
+    let poll = std::env::var("OFFRIG_TEST_WATCHDOG_POLL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-    {
-        poll = Duration::from_secs(s);
-    }
+        .map_or(Duration::from_secs(60), Duration::from_secs);
+    #[cfg(not(debug_assertions))]
+    let poll = Duration::from_secs(60);
     wlog(project, plan_id, "watchdog started");
     loop {
         let rp = match RunPod::from_env() {
