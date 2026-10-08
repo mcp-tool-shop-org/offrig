@@ -308,7 +308,7 @@ free; the limits only narrow what the plan may rent.
 
 | Limit | Where | Effect |
 |---|---|---|
-| `min_cuda` | profile (`config.toml`) | The oldest host CUDA (driver) version, from RunPod's list (`13.0`, `12.9`, ... `11.8`). The pod create sends every version at or above it as `allowedCudaVersions`. For a job profile the newer of this and the image's own `[profiles.job] min_cuda` applies. |
+| `min_cuda` | profile (`config.toml`) | The oldest host CUDA (driver) version, from RunPod's list (`13.0`, `12.9`, ... `11.8`). The pod create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. For a job profile the newer of this and the image's own `[profiles.job] min_cuda` applies. |
 | `min_vram_gb` | profile | The least total VRAM (all of the profile's GPUs together) a plan accepts. Offers below it are dropped; a type RunPod lists no memory for is dropped too. |
 | `max_price_hr` | `offrig_plan` argument | The most the pod may cost, in total $/hr for all its GPUs (the figure `offrig_offers` shows). Offers above it are dropped, as is a type with no price listed now (it cannot be held to a cap). |
 | `no_fallback` | `offrig_plan` argument | Only the profile's first GPU family is allowed. The two RTX PRO 6000 Blackwell editions (Server and Workstation) are one family; every other card, including the A100 SXM and PCIe, is its own. |
@@ -340,7 +340,7 @@ A pod has two disks: the container disk, local to the host, and the volume mount
 32 MB/s there against 354 MB/s on its container disk, and could not fetch about 130 GB of
 models in time, while the container disk was only 60 GB. The container disk size is the
 profile's `container_disk_gb` (30 to 60 GB in the built-in profiles; the `job` profile has
-60) and goes into the pod create as `containerDiskInGb`. `offrig_plan` takes
+60) and goes into the pod create as `disk`. `offrig_plan` takes
 `container_disk_gb` (1 to 2000) to override it for one plan; the plan stores it, the launch
 sends it, and the plan reply and `offrig_status` show the size in force.
 
@@ -382,8 +382,8 @@ with sshd and nothing else:
   also copies the job's whole log, as written, to a local file (parent folders are created),
   so the tail can stay short.
 - The image is a CUDA 12.8 build, so a job profile names the oldest host CUDA version it
-  runs on (`min_cuda = "12.8"`) and the pod is created with RunPod's `allowedCudaVersions`
-  from it. Without that, a host with an older driver starts the pod and torch finds no GPU,
+  runs on (`min_cuda = "12.8"`) and the pod is created with that floor as
+  `gpu.minCudaVersion`. Without that, a host with an older driver starts the pod and torch finds no GPU,
   after the rent has begun. The work itself can need more than the image: the `job` profile
   also sets `min_cuda = "13.0"` on the profile (see above), because the jobs it runs install a
   current vLLM, whose PyTorch is a CUDA 13 build.

@@ -111,10 +111,10 @@ pub struct Profile {
     #[serde(default)]
     pub job: Option<Job>,
     /// The oldest host CUDA (driver) version this profile's work runs on, from RunPod's
-    /// list ([`CUDA_VERSIONS`]). A plan passes every version at this or newer to the pod
-    /// create as `allowedCudaVersions`, so the pod is never placed on an older driver
-    /// (issue #9). For a job profile the image's own floor ([`Job::min_cuda`]) also
-    /// applies, and the newer of the two wins ([`Profile::effective_min_cuda`]).
+    /// list ([`CUDA_VERSIONS`]). A plan sends that floor as `gpu.minCudaVersion`, so the
+    /// pod is never placed on an older driver (issue #9). For a job profile the image's
+    /// own floor ([`Job::min_cuda`]) also applies, and the newer of the two wins
+    /// ([`Profile::effective_min_cuda`]).
     #[serde(default)]
     pub min_cuda: Option<String>,
     /// The least total VRAM (all of the profile's GPUs together, in GB) a plan accepts.
@@ -142,8 +142,11 @@ pub struct Job {
     pub hf_token_secret: Option<String>,
 }
 
-/// The host CUDA versions RunPod's `allowedCudaVersions` accepts, newest first
-/// (`PodCreateInput` in https://rest.runpod.io/v1/openapi.json, read 2026-10-07).
+/// Host CUDA versions offrig accepts as a floor, newest first. v2 create sends the
+/// floor itself as `gpu.minCudaVersion` (open-ended), not this whole list. The list
+/// was copied from RunPod's v1 `allowedCudaVersions` on 2026-10-07. A version that is
+/// not in it is rejected at config time; the catalog's own list replaces this in a
+/// later phase.
 pub const CUDA_VERSIONS: [&str; 12] = [
     "13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8",
 ];

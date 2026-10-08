@@ -87,13 +87,13 @@ fn runpod(pods: Pods, balance: f64) -> impl Fn(&str, &str) -> (u16, String) + Se
                 pods.retain(|p| p["id"] != id);
                 (204, String::new())
             }
-            "GET /networkvolumes" => (200, "[]".into()),
-            "POST /networkvolumes" => (
+            "GET /network-volumes" => (200, "[]".into()),
+            "POST /network-volumes" => (
                 200,
                 json!({"id": "vol1", "name": "v", "size": 400, "dataCenterId": "EU-RO-1"})
                     .to_string(),
             ),
-            r if r.starts_with("DELETE /networkvolumes/") => (204, String::new()),
+            r if r.starts_with("DELETE /network-volumes/") => (204, String::new()),
             _ => (404, "{}".into()),
         }
     }
@@ -457,7 +457,7 @@ fn stage_refuses_before_it_creates_or_costs() {
         "{}",
         err(&o)
     );
-    assert_eq!(count(&rig.runpod_hits, "POST /networkvolumes"), 0);
+    assert_eq!(count(&rig.runpod_hits, "POST /network-volumes"), 0);
     // Removing something never staged.
     let o = rig.run(&["stage", "frontier", "--remove", "--yes"]);
     assert_eq!(o.status.code(), Some(1), "{}", err(&o));
@@ -489,7 +489,7 @@ fn stage_records_the_volume_before_the_fill_and_remove_deletes_it() {
         "{}",
         err(&o)
     );
-    assert_eq!(count(&rig.runpod_hits, "POST /networkvolumes"), 1);
+    assert_eq!(count(&rig.runpod_hits, "POST /network-volumes"), 1);
     let listed = rig.run(&["profiles"]);
     assert!(
         out(&listed).contains("network volume vol1"),
@@ -511,7 +511,7 @@ fn stage_records_the_volume_before_the_fill_and_remove_deletes_it() {
         "{}",
         out(&removed)
     );
-    assert_eq!(count(&rig.runpod_hits, "DELETE /networkvolumes/vol1"), 1);
+    assert_eq!(count(&rig.runpod_hits, "DELETE /network-volumes/vol1"), 1);
     assert!(!out(&rig.run(&["profiles"])).contains("network volume vol1"));
 }
 

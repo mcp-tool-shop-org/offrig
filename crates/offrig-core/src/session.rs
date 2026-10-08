@@ -101,7 +101,13 @@ pub fn job_serves_nothing(profile: &Profile) -> Error {
 }
 
 pub fn is_no_capacity(e: &Error) -> bool {
-    matches!(e, Error::Api { body, .. } if body.contains("no instances currently available"))
+    match e {
+        // The GPU loop already walked the list. Wait, then try that same list again.
+        Error::NoCapacity(_) => true,
+        Error::Api { status: 400, .. } => true,
+        Error::Api { body, .. } if body.contains("no instances currently available") => true,
+        _ => false,
+    }
 }
 
 fn no_capacity(body: &crate::runpod::PodCreate, waited: Duration) -> Error {
@@ -123,6 +129,9 @@ fn no_capacity(body: &crate::runpod::PodCreate, waited: Duration) -> Error {
 pub struct Wait {
     pub limit: Duration,
     pub poll: Duration,
+    /// When set, a 429 on create is retried only until this instant (the plan
+    /// deadline). `None` uses `limit` from the start of the wait.
+    pub until: Option<Instant>,
 }
 
 impl Wait {
@@ -130,6 +139,7 @@ impl Wait {
         Self {
             limit: Duration::ZERO,
             poll: Duration::from_secs(60),
+            until: None,
         }
     }
 
@@ -137,8 +147,16 @@ impl Wait {
         Self {
             limit: Duration::from_secs(u64::from(m) * 60),
             poll: Duration::from_secs(60),
+            until: None,
         }
     }
+}
+
+/// `ERROR` and `EXITED` are the pod's actual state on v2. During a launch they
+/// are terminal: the pod is already broken, so waiting out the ready timeout
+/// only bills it. `PROVISIONING` and `STARTING` are a normal boot.
+fn launch_status_is_terminal(status: &str) -> bool {
+    matches!(status, "ERROR" | "EXITED")
 }
 
 /// The longest a launch may wait for capacity: the plan's own `wait_minutes`, else the
@@ -301,6 +319,7 @@ impl Session {
         on: &mut dyn FnMut(Event),
     ) -> Result<Pod> {
         let started = Instant::now();
+        let rate_until = wait.until.unwrap_or(started + wait.limit);
         let what = format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | "));
         let mut next_note = started;
         let mut attempt = 0u32;
@@ -312,7 +331,9 @@ impl Session {
             // cannot answer, try the create and let RunPod say no.
             if self.capacity_free(body) != Some(false) {
                 on(Event::Step(format!("creating {} on {what}", body.name)));
-                match self.rp.create_pod(body) {
+                match self.rp.create_pod_until(body, Some(rate_until), &mut |w| {
+                    on(Event::Warn(w));
+                }) {
                     Ok(pod) => return Ok(pod),
                     Err(e) if is_no_capacity(&e) => {}
                     Err(e) => return Err(e),
@@ -348,6 +369,10 @@ impl Session {
     }
 
     /// Wait for the SSH endpoint, write the alias, and wait for sshd to answer.
+    ///
+    /// `ERROR` or `EXITED` ends the wait at once and terminates the pod. On v2
+    /// those are the pod's actual state, and leaving one up bills until
+    /// [`POD_READY_TIMEOUT`]. `PROVISIONING` and `STARTING` keep waiting.
     pub fn wait_ready(&self, pod_id: &str, on: &mut dyn FnMut(Event)) -> Result<Pod> {
         let started = Instant::now();
         let limit = pod_ready_timeout();
@@ -355,6 +380,21 @@ impl Session {
         let mut next_note = started;
         let pod = loop {
             let pod = self.rp.get_pod(pod_id)?;
+            if launch_status_is_terminal(&pod.desired_status) {
+                let status = pod.desired_status.clone();
+                on(Event::Warn(format!(
+                    "pod {pod_id} is {status}; terminating it so it does not bill until the ready timeout"
+                )));
+                if let Err(e) = self.rp.delete_pod(pod_id) {
+                    let msg = format!("could not terminate pod {pod_id} after {status}: {e}");
+                    crate::trace::warn(&format!("runpod: {msg}"));
+                    on(Event::Warn(msg));
+                }
+                return Err(Error::PodNotReady {
+                    pod_id: pod_id.to_string(),
+                    what: format!("RunPod reported {status} during the launch"),
+                });
+            }
             if pod.ssh_endpoint().is_some() {
                 break pod;
             }
@@ -767,7 +807,7 @@ mod tests {
                 };
                 let (status, text) = handler(&route, nth);
                 let resp = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
                     text.len()
                 );
                 let _ = reader.get_mut().write_all(resp.as_bytes());
@@ -800,6 +840,7 @@ mod tests {
         Wait {
             limit: Duration::from_millis(limit_ms),
             poll: Duration::from_millis(20),
+            until: None,
         }
     }
 
@@ -963,6 +1004,129 @@ mod tests {
             .expect_err("401 is not a capacity problem");
         assert!(matches!(err, Error::Api { status: 401, .. }), "{err}");
         assert_eq!(m.count("POST /pods"), 1);
+    }
+
+    #[test]
+    fn only_error_and_exited_stop_a_launch() {
+        assert!(launch_status_is_terminal("ERROR"));
+        assert!(launch_status_is_terminal("EXITED"));
+        for status in ["PROVISIONING", "STARTING", "RUNNING", "TERMINATED", ""] {
+            assert!(!launch_status_is_terminal(status), "{status}");
+        }
+    }
+
+    fn pod_in_status(status: &str) -> String {
+        format!(r#"{{"id":"p1","name":"offrig-frontier","status":"{status}","cost":1.0}}"#)
+    }
+
+    fn a_terminal_status_fails_the_launch_and_terminates(status: &str) {
+        let body = pod_in_status(status);
+        let m = mock(move |route, _| match route {
+            "GET /pods/p1" => (200, body.clone()),
+            "DELETE /pods/p1" => (200, "{}".into()),
+            _ => (404, "{}".into()),
+        });
+        let started = Instant::now();
+        let mut events = Vec::new();
+        let err = session_on(&m)
+            .wait_ready("p1", &mut |e| events.push(e))
+            .expect_err(status);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the launch waited out the ready timeout"
+        );
+        match err {
+            Error::PodNotReady {
+                ref pod_id,
+                ref what,
+            } => {
+                assert_eq!(pod_id, "p1");
+                assert!(what.contains(status), "{what}");
+            }
+            other => panic!("{other}"),
+        }
+        assert_eq!(err.code(), "pod_not_ready");
+        assert_eq!(m.count("GET /pods/p1"), 1, "it did not keep polling");
+        assert_eq!(
+            m.count("DELETE /pods/p1"),
+            1,
+            "the broken pod was terminated"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Warn(w) if w.contains(status))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn an_error_status_fails_the_launch_and_terminates_the_pod() {
+        a_terminal_status_fails_the_launch_and_terminates("ERROR");
+    }
+
+    #[test]
+    fn an_exited_status_during_a_launch_fails_and_terminates_the_pod() {
+        a_terminal_status_fails_the_launch_and_terminates("EXITED");
+    }
+
+    #[test]
+    fn a_rate_limit_past_the_plan_deadline_does_not_try_the_next_gpu() {
+        let m = mock(|route, _| match route {
+            "POST /graphql" => (200, offers(true)),
+            "POST /pods" => (
+                429,
+                r#"{"title":"Too Many Requests","status":429,"detail":"slow down"}"#.into(),
+            ),
+            _ => (404, "{}".into()),
+        });
+        let mut wait = fast(60_000);
+        // The capacity wait still has a minute. The plan deadline has already passed.
+        wait.until = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("instant"),
+        );
+        let started = Instant::now();
+        let err = session_on(&m)
+            .create_when_free(&frontier(), wait, &AtomicBool::new(false), &mut |_| {})
+            .expect_err("rate limited");
+        assert!(matches!(err, Error::Api { status: 429, .. }), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "it slept on Retry-After"
+        );
+        assert_eq!(
+            m.count("POST /pods"),
+            1,
+            "a 429 is not a reason to try the next GPU, and it is not retried past the deadline"
+        );
+    }
+
+    #[test]
+    fn a_failed_live_price_check_is_warned_and_the_create_still_runs() {
+        let m = mock(|route, _| match route {
+            "POST /graphql" => (500, "down".into()),
+            "POST /pods" => (200, POD.into()),
+            _ => (404, "{}".into()),
+        });
+        let mut body = frontier();
+        body.max_price_hr = Some(9.0);
+        body.gpu_type_ids = vec!["NVIDIA RTX PRO 6000 Blackwell Server Edition".into()];
+        let mut events = Vec::new();
+        let pod = session_on(&m)
+            .create_when_free(&body, fast(1_000), &AtomicBool::new(false), &mut |e| {
+                events.push(e)
+            })
+            .expect("created");
+        assert_eq!(pod.id, "p1");
+        assert_eq!(m.count("POST /pods"), 1);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Warn(w) if w.contains("already price-filtered"))),
+            "{events:?}"
+        );
     }
 
     #[test]

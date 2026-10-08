@@ -1,9 +1,10 @@
-//! RunPod API client: REST (`rest.runpod.io/v1`) for pods and network volumes,
-//! GraphQL (`api.runpod.io/graphql`) for GPU prices, stock and the account balance,
-//! which REST does not expose.
+//! RunPod API client: REST v2 (`api.runpod.io/v2`) for pods and network volumes,
+//! GraphQL (`api.runpod.io/graphql`) for GPU prices, stock and the account balance.
+//! The v2 spec (read 2026-10-08) has no balance field. GraphQL stays for that
+//! one query until it retires in early 2027.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -11,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::error::{Error, Result};
 use crate::trace;
 
-pub const REST_BASE: &str = "https://rest.runpod.io/v1";
+pub const REST_BASE: &str = "https://api.runpod.io/v2";
 pub const GRAPHQL_URL: &str = "https://api.runpod.io/graphql";
 
 pub struct RunPod {
@@ -22,7 +23,7 @@ pub struct RunPod {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "serde_json::Value")]
 pub struct Pod {
     pub id: String,
     #[serde(default)]
@@ -75,6 +76,152 @@ fn lenient_string<'de, D: Deserializer<'de>>(
     })
 }
 
+impl TryFrom<serde_json::Value> for Pod {
+    type Error = serde_json::Error;
+
+    fn try_from(v: serde_json::Value) -> std::result::Result<Self, Self::Error> {
+        if v.get("status").is_some() && v.get("desiredStatus").is_none() {
+            return Ok(pod_from_v2(&v));
+        }
+        let old: PodV1 = serde_json::from_value(v)?;
+        Ok(Pod {
+            id: old.id,
+            name: old.name,
+            desired_status: old.desired_status,
+            image: old.image,
+            public_ip: old.public_ip,
+            port_mappings: old.port_mappings,
+            ports: old.ports,
+            cost_per_hr: old.cost_per_hr,
+            gpu_count: old.gpu_count,
+            last_started_at: old.last_started_at,
+            network_volume_id: old.network_volume_id,
+            machine: old.machine,
+        })
+    }
+}
+
+/// The v1 pod shape the fixtures still speak. v2 is mapped onto the same fields.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PodV1 {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    desired_status: String,
+    #[serde(default, alias = "imageName")]
+    image: String,
+    #[serde(default)]
+    public_ip: Option<String>,
+    #[serde(default)]
+    port_mappings: Option<BTreeMap<String, u16>>,
+    #[serde(default)]
+    ports: Vec<String>,
+    #[serde(default, deserialize_with = "lenient_f64")]
+    cost_per_hr: f64,
+    #[serde(default)]
+    gpu_count: u32,
+    #[serde(default)]
+    last_started_at: Option<String>,
+    #[serde(default)]
+    network_volume_id: Option<String>,
+    #[serde(default)]
+    machine: Option<Machine>,
+}
+
+fn json_string(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn json_opt_string(v: &serde_json::Value, key: &str) -> Option<String> {
+    match v.get(key) {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn json_f64(v: &serde_json::Value, key: &str) -> f64 {
+    match v.get(key) {
+        Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Some(serde_json::Value::String(s)) => s.trim().parse().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// v2 `Pod` onto the fields the rest of offrig already reads. Direct SSH is copied
+/// into `public_ip` and `port_mappings["22"]`. The proxy endpoint is not: it cannot
+/// forward ports, and the tunnel needs a direct sshd.
+fn pod_from_v2(v: &serde_json::Value) -> Pod {
+    let gpu = v.get("gpu");
+    let machine = Some(Machine {
+        gpu_type_id: gpu
+            .and_then(|g| g.get("id"))
+            .and_then(|id| id.as_str())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
+        data_center_id: json_opt_string(v, "dataCenterId"),
+        cuda_version: json_opt_string(v, "cudaVersion"),
+    });
+    let direct = v
+        .get("ssh")
+        .and_then(|s| s.get("direct"))
+        .filter(|d| !d.is_null());
+    let (public_ip, port_mappings) = match direct {
+        Some(d) => {
+            let host = json_string(d, "host");
+            let port = d.get("port").and_then(|p| p.as_u64()).unwrap_or(0);
+            if host.is_empty() || port == 0 || port > u16::MAX as u64 {
+                (None, None)
+            } else {
+                let mut map = BTreeMap::new();
+                map.insert("22".to_string(), port as u16);
+                (Some(host), Some(map))
+            }
+        }
+        None => (None, None),
+    };
+    let network_volume_id = v
+        .get("mounts")
+        .and_then(|m| m.get("network"))
+        .and_then(|n| n.as_array())
+        .and_then(|a| a.first())
+        .and_then(|n| n.get("volumeId"))
+        .and_then(|id| id.as_str())
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let ports = v
+        .get("ports")
+        .and_then(|p| p.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Pod {
+        id: json_string(v, "id"),
+        name: json_string(v, "name"),
+        desired_status: json_string(v, "status"),
+        image: json_string(v, "image"),
+        public_ip,
+        port_mappings,
+        ports,
+        cost_per_hr: json_f64(v, "cost"),
+        gpu_count: gpu
+            .and_then(|g| g.get("count"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as u32,
+        last_started_at: json_opt_string(v, "startedAt"),
+        network_volume_id,
+        machine,
+    }
+}
+
 impl Pod {
     pub fn is_running(&self) -> bool {
         self.desired_status == "RUNNING"
@@ -97,32 +244,87 @@ impl Pod {
     }
 }
 
-/// The body of `POST /pods`. Field names follow RunPod's `PodCreateInput`.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+/// One pod the caller wants. `gpu_type_ids` is the plan's list, in plan order.
+/// v2 create takes exactly one GPU type and does not fall back, so [`RunPod::create_pod`]
+/// walks this list. The serialized body is the nested `CreatePodRequest` for the
+/// first id; each attempt builds its own body with [`PodCreate::wire`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct PodCreate {
     pub name: String,
     pub image_name: String,
     pub gpu_type_ids: Vec<String>,
-    pub gpu_type_priority: String,
     pub gpu_count: u32,
     pub cloud_type: String,
+    /// Kept so a reader of the spec can see that direct SSH needs a published port.
+    /// v2 has no `supportPublicIp`; publishing `22/tcp` is what makes `ssh.direct` appear.
     pub support_public_ip: bool,
     pub ports: Vec<String>,
     pub container_disk_in_gb: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub volume_in_gb: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub network_volume_id: Option<String>,
     pub volume_mount_path: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub data_center_ids: Vec<String>,
-    /// Hosts whose CUDA (driver) version is in this list; empty means any host.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub allowed_cuda_versions: Vec<String>,
+    /// Host CUDA floor (`major.minor`), from [`crate::config::Profile::effective_min_cuda`].
+    /// Sent as `gpu.minCudaVersion`. `None` accepts any host.
+    pub min_cuda_version: Option<String>,
     pub docker_entrypoint: Vec<String>,
     pub docker_start_cmd: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// When set, an attempt whose live offer is above this price is not sent.
+    /// The plan's stored list is already price-filtered; this is a second look
+    /// at the live catalog. If that lookup fails, every listed id is still tried
+    /// and a warning is logged. `None` on a profile launch that has no plan cap.
+    pub max_price_hr: Option<f64>,
+}
+
+impl Serialize for PodCreate {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let id = self.gpu_type_ids.first().map(String::as_str).unwrap_or("");
+        self.wire(id).serialize(serializer)
+    }
+}
+
+impl PodCreate {
+    /// The v2 `CreatePodRequest` for one GPU type. Nothing outside `gpu_type_ids` is added.
+    pub fn wire(&self, gpu_id: &str) -> serde_json::Value {
+        let mut gpu = serde_json::json!({
+            "id": gpu_id,
+            "count": self.gpu_count,
+        });
+        if let Some(version) = &self.min_cuda_version {
+            gpu["minCudaVersion"] = serde_json::json!(version);
+        }
+        let mut body = serde_json::json!({
+            "name": self.name,
+            "image": self.image_name,
+            "cloud": self.cloud_type,
+            "ports": self.ports,
+            "disk": self.container_disk_in_gb,
+            "env": self.env,
+            "entrypoint": self.docker_entrypoint,
+            "cmd": self.docker_start_cmd,
+            "gpu": gpu,
+            // The bootstrap writes $PUBLIC_KEY into authorized_keys. v2 injects that
+            // variable only when startSsh is set.
+            "startSsh": true,
+        });
+        if !self.data_center_ids.is_empty() {
+            body["dataCenterIds"] = serde_json::json!(self.data_center_ids);
+        }
+        if let Some(id) = &self.network_volume_id {
+            body["mounts"] = serde_json::json!({
+                "network": [{ "volumeId": id, "path": self.volume_mount_path }]
+            });
+        } else if let Some(size) = self.volume_in_gb {
+            body["mounts"] = serde_json::json!({
+                "persistent": { "size": size, "path": self.volume_mount_path }
+            });
+        }
+        body
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -133,7 +335,8 @@ pub struct NetworkVolume {
     pub name: String,
     #[serde(default)]
     pub size: u32,
-    #[serde(default)]
+    /// v2 calls this `dataCenter`. v1 called it `dataCenterId`.
+    #[serde(default, alias = "dataCenter")]
     pub data_center_id: String,
 }
 
@@ -224,22 +427,40 @@ impl RunPod {
     }
 
     pub fn list_pods(&self) -> Result<Vec<Pod>> {
-        let started = std::time::Instant::now();
-        let resp = self
-            .agent
-            .get(self.url("/pods?includeMachine=true"))
-            .header("Authorization", self.auth())
-            .call()
-            .map_err(|e| Error::http("list pods", e))?;
-        trace::api("list pods", resp.status().as_u16(), started);
-        read_json(resp, "list pods")
+        let mut pods = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..50 {
+            let path = match &cursor {
+                Some(c) => format!("/pods?cursor={}", query_escape(c)),
+                None => "/pods".to_string(),
+            };
+            let started = std::time::Instant::now();
+            let resp = self
+                .agent
+                .get(self.url(&path))
+                .header("Authorization", self.auth())
+                .call()
+                .map_err(|e| Error::http("list pods", e))?;
+            trace::api("list pods", resp.status().as_u16(), started);
+            let text = read_text(resp, "list pods")?;
+            let (page, has_next, next) = parse_pod_page(&text)?;
+            pods.extend(page);
+            if !has_next {
+                break;
+            }
+            match next {
+                Some(c) if Some(&c) != cursor.as_ref() => cursor = Some(c),
+                _ => break,
+            }
+        }
+        Ok(pods)
     }
 
     pub fn get_pod(&self, id: &str) -> Result<Pod> {
         let started = std::time::Instant::now();
         let resp = self
             .agent
-            .get(self.url(&format!("/pods/{id}?includeMachine=true")))
+            .get(self.url(&format!("/pods/{id}")))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("get pod", e))?;
@@ -255,16 +476,155 @@ impl RunPod {
             .ok_or_else(|| Error::PodNotFound(id_or_name.to_string()))
     }
 
+    /// Create the pod, trying each GPU type in list order.
+    ///
+    /// A 400 means this type could not be placed; the next id is tried. The
+    /// error names every type with the reason RunPod gave, because a 400 is not
+    /// promised to mean only "no capacity". Any other status stops the loop.
+    /// A 429 is retried on the same type after `Retry-After`, up to
+    /// [`CREATE_429_RETRIES`] times. With no deadline (a direct create, or
+    /// staging) that count is the only bound.
+    ///
+    /// An id whose live price is above `max_price_hr` is not sent. The plan's
+    /// list is already price-filtered when it was stored, so this is a second
+    /// look. If the live lookup fails, every listed id is still tried and a
+    /// warning is logged. The list itself is never extended.
     pub fn create_pod(&self, spec: &PodCreate) -> Result<Pod> {
-        let started = std::time::Instant::now();
-        let resp = self
-            .agent
-            .post(self.url("/pods"))
-            .header("Authorization", self.auth())
-            .send_json(spec)
-            .map_err(|e| Error::http("create pod", e))?;
-        trace::api("create pod", resp.status().as_u16(), started);
-        read_json(resp, &format!("create pod {}", spec.name))
+        self.create_pod_until(spec, None, &mut |_| {})
+    }
+
+    /// [`create_pod`](Self::create_pod), with the plan deadline and a warning sink.
+    ///
+    /// `deadline` is the plan deadline: a 429 is not retried past it, and the
+    /// next GPU type is not tried instead. `on_warn` receives the same text
+    /// that is logged when the live price lookup fails. The plan's GPU list is
+    /// already price-filtered; the lookup is a second check, not the only one.
+    pub fn create_pod_until(
+        &self,
+        spec: &PodCreate,
+        deadline: Option<Instant>,
+        on_warn: &mut dyn FnMut(String),
+    ) -> Result<Pod> {
+        if spec.gpu_type_ids.is_empty() {
+            return Err(Error::NoCapacity(format!(
+                "no GPU types listed for {}",
+                spec.name
+            )));
+        }
+        let offers = match spec.max_price_hr {
+            Some(_) => match self.gpu_offers_in(
+                spec.gpu_count,
+                spec.data_center_ids.first().map(String::as_str),
+            ) {
+                Ok(offers) => Some(offers),
+                Err(e) => {
+                    let msg = format!(
+                        "the live price check failed ({}); the plan's GPU list is already price-filtered, so every listed type will still be tried",
+                        crate::error::chain(&e)
+                    );
+                    trace::warn(&format!("runpod: {msg}"));
+                    on_warn(msg);
+                    None
+                }
+            },
+            None => None,
+        };
+        let mut tried = Vec::new();
+        let mut refused: Vec<(String, String)> = Vec::new();
+        for id in &spec.gpu_type_ids {
+            if let (Some(cap), Some(offers)) = (spec.max_price_hr, offers.as_ref())
+                && let Some(price) = offers
+                    .iter()
+                    .find(|o| o.id == *id)
+                    .and_then(|o| o.price_per_hr)
+                && price > cap + 1e-4
+            {
+                trace::verbose(&format!(
+                    "runpod: skip {id} at ${price:.4}/hr; the plan cap is ${cap:.4}/hr"
+                ));
+                continue;
+            }
+            trace::verbose(&format!(
+                "runpod: create {} on {}x {id}",
+                spec.name, spec.gpu_count
+            ));
+            tried.push(id.as_str());
+            match self.post_pod(&spec.wire(id), &spec.name, deadline) {
+                Ok(pod) => return Ok(pod),
+                Err(e) if placement_rejected(&e) => {
+                    refused.push((id.clone(), e.to_string()));
+                    trace::verbose(&format!("runpod: {id} was not placed"));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::NoCapacity(if tried.is_empty() {
+            format!(
+                "every GPU listed for {} is above the plan price ${:.4}/hr",
+                spec.name,
+                spec.max_price_hr.unwrap_or(0.0)
+            )
+        } else {
+            let reasons = refused
+                .iter()
+                .map(|(id, why)| format!("{id}: {why}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!(
+                "RunPod could not place {} on [{}]{}",
+                spec.name,
+                tried.join(" | "),
+                if reasons.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {reasons}")
+                }
+            )
+        }))
+    }
+
+    fn post_pod(
+        &self,
+        body: &serde_json::Value,
+        name: &str,
+        deadline: Option<Instant>,
+    ) -> Result<Pod> {
+        let mut retries = 0u32;
+        loop {
+            let started = Instant::now();
+            let resp = self
+                .agent
+                .post(self.url("/pods"))
+                .header("Authorization", self.auth())
+                .send_json(body)
+                .map_err(|e| Error::http("create pod", e))?;
+            let status = resp.status().as_u16();
+            let delay = retry_after(resp.headers());
+            trace::api("create pod", status, started);
+            if status != 429 {
+                return read_json(resp, &format!("create pod {name}"));
+            }
+            let err = match read_json::<Pod>(resp, &format!("create pod {name}")) {
+                Ok(pod) => return Ok(pod),
+                Err(e) => e,
+            };
+            if !retry_fits(deadline, delay) {
+                trace::warn(&format!(
+                    "runpod: create {name} was rate limited; Retry-After of {}s does not fit before the plan deadline, so this GPU type is not retried and the next type is not tried",
+                    delay.as_secs()
+                ));
+                return Err(err);
+            }
+            if retries >= CREATE_429_RETRIES {
+                return Err(err);
+            }
+            retries += 1;
+            trace::warn(&format!(
+                "runpod: create {name} was rate limited; retry {retries} of {CREATE_429_RETRIES} after {}s",
+                delay.as_secs()
+            ));
+            std::thread::sleep(delay);
+        }
     }
 
     /// Terminate a pod. Its container disk is gone afterwards; a network volume is not.
@@ -284,9 +644,9 @@ impl RunPod {
         let started = std::time::Instant::now();
         let resp = self
             .agent
-            .post(self.url(&format!("/pods/{id}/stop")))
+            .post(self.url(&format!("/pods/{id}/action")))
             .header("Authorization", self.auth())
-            .send_empty()
+            .send_json(serde_json::json!({ "action": "stop" }))
             .map_err(|e| Error::http("stop pod", e))?;
         trace::api("stop pod", resp.status().as_u16(), started);
         read_ok(resp, &format!("stop pod {id}"))
@@ -296,12 +656,13 @@ impl RunPod {
         let started = std::time::Instant::now();
         let resp = self
             .agent
-            .get(self.url("/networkvolumes"))
+            .get(self.url("/network-volumes"))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("list network volumes", e))?;
         trace::api("list network volumes", resp.status().as_u16(), started);
-        read_json(resp, "list network volumes")
+        let text = read_text(resp, "list network volumes")?;
+        parse_named_list(&text, "networkVolumes", "list network volumes")
     }
 
     pub fn create_volume(
@@ -311,11 +672,11 @@ impl RunPod {
         data_center_id: &str,
     ) -> Result<NetworkVolume> {
         let body =
-            serde_json::json!({ "name": name, "size": size_gb, "dataCenterId": data_center_id });
+            serde_json::json!({ "name": name, "size": size_gb, "dataCenter": data_center_id });
         let started = std::time::Instant::now();
         let resp = self
             .agent
-            .post(self.url("/networkvolumes"))
+            .post(self.url("/network-volumes"))
             .header("Authorization", self.auth())
             .send_json(&body)
             .map_err(|e| Error::http("create network volume", e))?;
@@ -327,7 +688,7 @@ impl RunPod {
         let started = std::time::Instant::now();
         let resp = self
             .agent
-            .delete(self.url(&format!("/networkvolumes/{id}")))
+            .delete(self.url(&format!("/network-volumes/{id}")))
             .header("Authorization", self.auth())
             .call()
             .map_err(|e| Error::http("delete network volume", e))?;
@@ -483,6 +844,60 @@ pub fn sort_offers(offers: &mut [GpuOffer]) {
     });
 }
 
+/// How many times a 429 on `POST /pods` is retried on the same GPU type.
+/// The first request is not counted. A retry waits for `Retry-After` and does
+/// not run past the plan deadline. A missing or unreadable `Retry-After` waits
+/// one second. The next GPU type is not tried.
+pub const CREATE_429_RETRIES: u32 = 3;
+
+/// v2 create returns 400 when that GPU type cannot be placed. 422 is a bad body
+/// and must not move the loop on. 429 is a rate limit, not a placement miss.
+fn placement_rejected(e: &Error) -> bool {
+    matches!(e, Error::Api { status: 400, .. })
+}
+
+/// Delay-seconds from `Retry-After`. An HTTP-date or a missing header waits one second.
+fn retry_after(headers: &ureq::http::HeaderMap) -> Duration {
+    let Some(raw) = headers.get("retry-after").and_then(|v| v.to_str().ok()) else {
+        return Duration::from_secs(1);
+    };
+    let raw = raw.trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Duration::from_secs(secs);
+    }
+    if let Ok(secs) = raw.parse::<f64>()
+        && secs.is_finite()
+        && secs >= 0.0
+    {
+        return Duration::from_secs_f64(secs);
+    }
+    Duration::from_secs(1)
+}
+
+/// `None` has no plan clock, so the attempt cap is the only bound. A set deadline
+/// refuses a sleep that would end after it.
+fn retry_fits(deadline: Option<Instant>, delay: Duration) -> bool {
+    let Some(end) = deadline else {
+        return true;
+    };
+    Instant::now()
+        .checked_add(delay)
+        .is_some_and(|wake| wake <= end)
+}
+
+fn query_escape(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 fn read_body(mut resp: ureq::http::Response<ureq::Body>, what: &str) -> Result<(u16, String)> {
     let status = resp.status().as_u16();
     let text = resp
@@ -491,15 +906,89 @@ fn read_body(mut resp: ureq::http::Response<ureq::Body>, what: &str) -> Result<(
         .map_err(|e| Error::http(what, e))?;
     if !(200..300).contains(&status) {
         trace::debug(&format!("runpod: {what} failed, response body: {text}"));
-        let mut body = text;
-        body.truncate(600);
         return Err(Error::Api {
             what: what.to_string(),
             status,
-            body,
+            body: problem_text(&text),
         });
     }
     Ok((status, text))
+}
+
+fn read_text(resp: ureq::http::Response<ureq::Body>, what: &str) -> Result<String> {
+    read_body(resp, what).map(|(_, text)| text)
+}
+
+/// RFC 9457 `title`, `detail` and `errors`, so the detail survives in [`Error::Api`].
+/// A body that is not a problem document is kept as-is, clipped to 600 bytes.
+fn problem_text(text: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return clip(text);
+    };
+    let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("");
+    let detail = v.get("detail").and_then(|t| t.as_str()).unwrap_or("");
+    if title.is_empty() && detail.is_empty() && v.get("errors").is_none() {
+        return clip(text);
+    }
+    let mut s = match (title.is_empty(), detail.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => title.to_string(),
+        (true, false) => detail.to_string(),
+        (false, false) => format!("{title}: {detail}"),
+    };
+    if let Some(errors) = v.get("errors").and_then(|e| e.as_array()) {
+        let extra: Vec<&str> = errors.iter().filter_map(|e| e.as_str()).collect();
+        if !extra.is_empty() {
+            if !s.is_empty() {
+                s.push_str("; ");
+            }
+            s.push_str(&extra.join("; "));
+        }
+    }
+    clip(&s)
+}
+
+fn clip(text: &str) -> String {
+    let mut body = text.to_string();
+    body.truncate(600);
+    body
+}
+
+fn parse_pod_page(text: &str) -> Result<(Vec<Pod>, bool, Option<String>)> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| Error::decode("list pods", e))?;
+    if let Some(arr) = v.as_array() {
+        let pods: Vec<Pod> = serde_json::from_value(serde_json::Value::Array(arr.clone()))
+            .map_err(|e| Error::decode("list pods", e))?;
+        return Ok((pods, false, None));
+    }
+    let pods = parse_named_list(text, "pods", "list pods")?;
+    let page = v.get("pagination");
+    let has_next = page
+        .and_then(|p| p.get("hasNextPage"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+    let next = page
+        .and_then(|p| p.get("nextCursor"))
+        .and_then(|c| c.as_str())
+        .filter(|c| !c.is_empty())
+        .map(str::to_string);
+    Ok((pods, has_next, next))
+}
+
+fn parse_named_list<T: DeserializeOwned>(text: &str, key: &str, what: &str) -> Result<Vec<T>> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| Error::decode(what, e))?;
+    let arr = if let Some(arr) = v.as_array() {
+        serde_json::Value::Array(arr.clone())
+    } else {
+        v.get(key).cloned().ok_or_else(|| {
+            Error::decode(
+                what,
+                <serde_json::Error as serde::de::Error>::custom(format!("missing {key}")),
+            )
+        })?
+    };
+    serde_json::from_value(arr).map_err(|e| Error::decode(what, e))
 }
 
 fn read_json<T: DeserializeOwned>(resp: ureq::http::Response<ureq::Body>, what: &str) -> Result<T> {
@@ -532,6 +1021,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retry_after_reads_delay_seconds_and_defaults_when_absent() {
+        let mut headers = ureq::http::HeaderMap::new();
+        assert_eq!(retry_after(&headers), Duration::from_secs(1));
+        headers.insert("retry-after", "0".parse().expect("header"));
+        assert_eq!(retry_after(&headers), Duration::ZERO);
+        headers.insert("retry-after", "30".parse().expect("header"));
+        assert_eq!(retry_after(&headers), Duration::from_secs(30));
+        headers.insert("retry-after", "1.5".parse().expect("header"));
+        assert_eq!(retry_after(&headers), Duration::from_millis(1500));
+        headers.insert(
+            "retry-after",
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().expect("header"),
+        );
+        assert_eq!(retry_after(&headers), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_retry_past_the_deadline_does_not_fit() {
+        assert!(retry_fits(None, Duration::from_secs(3600)));
+        assert!(retry_fits(
+            Some(Instant::now() + Duration::from_secs(5)),
+            Duration::ZERO
+        ));
+        assert!(!retry_fits(Some(Instant::now()), Duration::from_secs(30)));
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("instant");
+        assert!(!retry_fits(Some(past), Duration::ZERO));
+    }
+
+    #[test]
     fn pod_parses_live_shape_and_finds_ssh_endpoint() {
         let json = r#"{"id":"cgf2ktkf2hnf7p","name":"zed-ssh-test","desiredStatus":"RUNNING",
             "imageName":"runpod/pytorch:2.4.0","publicIp":"213.173.102.150",
@@ -561,12 +1081,11 @@ mod tests {
     }
 
     #[test]
-    fn create_body_uses_runpod_field_names_and_omits_unset() {
+    fn create_body_is_a_nested_v2_request_and_omits_unset() {
         let spec = PodCreate {
             name: "t".into(),
             image_name: "ollama/ollama:0.35.0".into(),
             gpu_type_ids: vec!["NVIDIA H200".into()],
-            gpu_type_priority: "custom".into(),
             gpu_count: 2,
             cloud_type: "SECURE".into(),
             support_public_ip: true,
@@ -576,21 +1095,62 @@ mod tests {
             network_volume_id: Some("vol1".into()),
             volume_mount_path: "/workspace".into(),
             data_center_ids: vec![],
-            allowed_cuda_versions: vec![],
+            min_cuda_version: None,
             docker_entrypoint: vec!["bash".into(), "-c".into()],
             docker_start_cmd: vec!["echo".into()],
             env: BTreeMap::new(),
+            max_price_hr: None,
         };
         let v = serde_json::to_value(&spec).expect("spec should serialize");
-        assert_eq!(v["imageName"], "ollama/ollama:0.35.0");
-        assert_eq!(v["gpuTypeIds"][0], "NVIDIA H200");
-        assert_eq!(v["networkVolumeId"], "vol1");
-        assert!(v.get("volumeInGb").is_none());
+        assert_eq!(v["image"], "ollama/ollama:0.35.0");
+        assert_eq!(v["gpu"]["id"], "NVIDIA H200");
+        assert_eq!(v["gpu"]["count"], 2);
+        assert_eq!(v["cloud"], "SECURE");
+        assert_eq!(v["startSsh"], true);
+        assert_eq!(v["disk"], 40);
+        assert_eq!(v["mounts"]["network"][0]["volumeId"], "vol1");
+        assert!(v["mounts"].get("persistent").is_none());
         assert!(v.get("dataCenterIds").is_none());
         assert!(
-            v.get("allowedCudaVersions").is_none(),
+            v["gpu"].get("minCudaVersion").is_none(),
             "any host when unset"
         );
+        assert!(v.get("gpuTypeIds").is_none());
+        assert!(v.get("interruptible").is_none());
+        assert!(v.get("minDownloadMbps").is_none());
+    }
+
+    #[test]
+    fn a_v2_pod_uses_direct_ssh_and_ignores_the_proxy() {
+        let json = r#"{"id":"pod1","name":"offrig-small","status":"RUNNING",
+            "image":"ollama/ollama:0.35.0","cost":0.24,"ports":["22/tcp"],
+            "cudaVersion":"12.8","dataCenterId":"EU-RO-1",
+            "gpu":{"id":"NVIDIA RTX 2000 Ada Generation","count":1},
+            "ssh":{
+              "proxy":{"host":"ssh.runpod.io","port":22,"username":"tok","command":"ssh tok@ssh.runpod.io"},
+              "direct":{"host":"203.0.113.10","port":15186,"username":"root","command":"ssh root@203.0.113.10"}
+            },
+            "mounts":{"network":[{"volumeId":"vol1","path":"/workspace"}]}}"#;
+        let pod: Pod = serde_json::from_str(json).expect("v2 pod");
+        assert!(pod.is_running());
+        assert_eq!(pod.image, "ollama/ollama:0.35.0");
+        assert_eq!(
+            pod.ssh_endpoint(),
+            Some(("203.0.113.10".to_string(), 15186))
+        );
+        assert_eq!(pod.gpu_type(), Some("NVIDIA RTX 2000 Ada Generation"));
+        assert_eq!(pod.host_cuda(), Some("12.8"));
+        assert_eq!(pod.gpu_count, 1);
+        assert_eq!(pod.network_volume_id.as_deref(), Some("vol1"));
+        assert!((pod.cost_per_hr - 0.24).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_v2_pod_without_direct_ssh_has_no_endpoint() {
+        let json = r#"{"id":"pod1","name":"offrig-small","status":"RUNNING","cost":0,
+            "ssh":{"proxy":{"host":"ssh.runpod.io","port":22,"username":"tok","command":"ssh"},"direct":null}}"#;
+        let pod: Pod = serde_json::from_str(json).expect("v2 pod");
+        assert_eq!(pod.ssh_endpoint(), None);
     }
 
     #[test]

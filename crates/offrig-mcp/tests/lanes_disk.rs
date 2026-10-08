@@ -1,6 +1,6 @@
 //! Issue #6 and the container-disk need, end to end against a mock RunPod: `offrig_plan`
 //! names the lane's ssh alias and the pod it will create, a plan's `container_disk_gb`
-//! reaches the pod-create body as `containerDiskInGb` (the profile's size otherwise), and
+//! reaches the pod-create body as `disk` (the profile's size otherwise), and
 //! a shutdown reports what it did to the lane's ssh block.
 
 mod common;
@@ -204,11 +204,13 @@ async fn a_plans_container_disk_reaches_the_create_body() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     let sent: Value = serde_json::from_str(&sent).expect("create body");
-    assert_eq!(sent["containerDiskInGb"], 400, "{sent}");
+    assert_eq!(sent["disk"], 400, "{sent}");
     assert_eq!(
-        sent["volumeInGb"], 200,
+        sent["mounts"]["persistent"]["size"], 200,
         "the volume is the profile's own: {sent}"
     );
+    assert!(sent.get("containerDiskInGb").is_none(), "{sent}");
+    assert!(sent.get("volumeInGb").is_none(), "{sent}");
 
     // Shutdown reports the ssh block it removed (none here: the pod never had an address).
     let s = call(&client, "offrig_shutdown", json!({"plan_id": plan_id})).await;
@@ -263,7 +265,7 @@ async fn a_plans_container_disk_reaches_the_create_body() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     let sent: Value = serde_json::from_str(&sent).expect("create body");
-    assert_eq!(sent["containerDiskInGb"], 60, "{sent}");
+    assert_eq!(sent["disk"], 60, "{sent}");
     let _ = call(&client, "offrig_shutdown", json!({"plan_id": plan_id})).await;
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(&dir);

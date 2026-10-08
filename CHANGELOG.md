@@ -46,6 +46,37 @@ All notable changes to offrig are documented here. The format is based on
   - nomic-embed-text gets the `search_document: ` and `search_query: ` prefixes it was
     trained with.
 
+- **RunPod REST v2.** Pod and network-volume calls use `https://api.runpod.io/v2`.
+  A create sends one nested request per GPU type. v2 does not fall back, so offrig
+  tries the plan's GPU list itself, in that list's order, and never past the plan's
+  price. A 400 tries the next type. A 422, a 401 or a 402 stops. Every attempt is logged.
+- **The CUDA floor is `gpu.minCudaVersion`.** It is the plan's floor (`major.minor`),
+  compared as a version, so a host newer than the copied list (through 13.0) qualifies.
+  `allowedCudaVersions` is no longer sent.
+- **`startSsh` is set,** so RunPod still injects `PUBLIC_KEY` for the bootstrap.
+  Direct SSH is read from `ssh.direct`. The proxy is not used: it cannot forward ports.
+- **Stop** is `POST /pods/{id}/action` with `{"action":"stop"}`. There is no reset.
+  Terminate is still `DELETE /pods/{id}`.
+- **Network volumes** use `/network-volumes` and send `dataCenter`.
+- **Not in v2, and not rebuilt:** spot (`interruptible`) and the host-quality filters
+  (`minDownloadMbps`, `minDiskBandwidthMBps`). They are absent from the v2 create schema.
+  `supportPublicIp` is gone; publishing `22/tcp` is what makes direct SSH appear.
+- **The account balance stays on GraphQL.** The v2 spec read on 2026-10-08 has no
+  balance field. Prices and stock stay on GraphQL in this change. GraphQL retires in
+  early 2027.
+- **A broken pod is terminated during the launch.** v2 `status` is the pod's actual
+  state. `PROVISIONING` and `STARTING` are progress. `ERROR`, and `EXITED` while the
+  launch is waiting, fail the launch and terminate the pod immediately, so it does
+  not bill until the ready timeout.
+- **A 429 on create is retried.** `POST /pods` waits for `Retry-After` and tries the
+  same GPU type again, up to 3 times and not past the plan deadline. The first 429
+  does not fail the launch, and it does not move on to the next GPU type.
+- **A failed live price check is reported.** The plan's GPU list is already
+  price-filtered. If the live lookup fails, that second check is skipped, a warning
+  is logged, and every listed type is still tried.
+- **A placement failure names every GPU type.** The error lists each type with the
+  reason RunPod returned. A 400 is not assumed to mean only "no capacity".
+
 - **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget and
   any running plans, then offers to set a new cap (confirmed first) or stop new spending.
   `--show` prints the one-line budget, and so does any run where stdout isn't a terminal.

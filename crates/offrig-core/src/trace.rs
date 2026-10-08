@@ -80,6 +80,13 @@ pub fn verbose(msg: &str) {
     }
 }
 
+/// A warning at the normal level, so it shows without `--verbose`.
+pub fn warn(msg: &str) {
+    if enabled(Level::Normal) {
+        eprintln!("[warn] {}", redact(msg));
+    }
+}
+
 /// A line for `--debug` only.
 pub fn debug(msg: &str) {
     if enabled(Level::Debug) {
@@ -152,10 +159,11 @@ mod tests {
             assert_eq!(enabled(Level::Debug), l >= Level::Debug);
         }
         // Printing at every level is safe (output goes to stderr and is redacted first).
-        for l in [Level::Quiet, Level::Verbose, Level::Debug] {
+        for l in [Level::Quiet, Level::Normal, Level::Verbose, Level::Debug] {
             set_level(l);
             verbose("runpod: list pods -> 200");
             debug("response body: {}");
+            warn("runpod: the live price check failed");
             api("list pods", 200, Instant::now());
         }
         set_level(before);
