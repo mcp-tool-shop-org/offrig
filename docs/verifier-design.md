@@ -12,7 +12,7 @@ whether the evidence supports it. Two modes share one engine:
 The project database gains search by meaning, so the verifier gets the right evidence,
 not just the evidence that shares its words. A jury of several models is a later phase.
 
-Status: design, 2026-10-08. Requested by the maintainer. Model selection is owned by the
+Status: design, 2026-10-08, revised after the R&D review the same day. Requested by the maintainer. Model selection is owned by the
 R&D session (calibration on a gold set). The build and release are owned by the
 Publisher. Grounded by a three-question study-swarm and a map of the existing code, both
 run the same day.
@@ -26,6 +26,9 @@ Scored 0 to 3 against the studio workflow standards.
   - the embedding model and its dimension;
   - a hash of the prompt template;
   - the ids of the retrieved evidence;
+  - the sampling settings: temperature, seed, `think` level, `num_ctx`, `num_predict`;
+  - the GPU type it ran on;
+  - the role-card hash and the ids of its worked examples;
   - the plan id.
 
   A change of embedding model is detected from the stored model name and dimension,
@@ -66,7 +69,7 @@ secondary summary and not re-checked; treat its numbers as approximate.
   within about 2 points of 70B general models. → **Grounded checks start small. Always
   send the evidence.**
 - Tan et al. 2024, JudgeBench (arXiv:2410.12784): judging objective correctness of
-  reasoning and code is hard; strong models scored near 57%, and small fine-tuned judges
+  reasoning and code is hard; strong models scored near 57%†, and small fine-tuned judges
   did worse. → **Reasoning checks (does this diff do what the PR says) are a separate
   check type, calibrated separately, starting at 27–32B.**
 - Kambhampati et al. 2024 (arXiv:2402.01817)†; Huang et al. 2023 (arXiv:2310.01798)†:
@@ -78,17 +81,33 @@ secondary summary and not re-checked; treat its numbers as approximate.
   study (arXiv:2605.29800)† found nine judges behaved like about two independent votes,
   with the best single judge matching the panel. → **The jury is a later, measured
   phase. It is used only if it beats the best single model on the gold set.**
-- Selection protocol (from the above). The gold set is JSONL, one claim per line, with
-  balanced true and false claims including subtle near-misses. For each model it
-  reports, per check type:
-  - balanced accuracy;
-  - the false-accept rate (a false claim passed) with a Wilson 95% CI;
-  - the abstain rate and the cost per claim;
+- Selection protocol (from the above, revised after R&D's review). The gold set is
+  JSONL, one claim per line, with balanced true and false claims including subtle
+  near-misses. There are three check types, each calibrated separately:
+  - `grounded`: a claim plus the evidence that decides it (a README or handbook line
+    against the code or schema), with planted near-misses (a changed number, a swapped
+    condition, a negation);
+  - `reasoning`: a claim about what a change does (a diff against its PR description);
+  - `knowledge`: a claim checked against the model's own knowledge, with no evidence
+    (R&D's natural-errors set). It is reported, but it is **not** part of the default
+    rule, because it measures something else and is the hardest for small models.
+
+  For each model it reports, per check type:
+  - **false-accept rate** = unsupported claims judged `supported` ÷ all unsupported
+    claims, where `cannot_tell` counts as not accepted, with a Wilson 95% CI. Subtle
+    near-misses get their own row;
+  - **abstain rate** = `cannot_tell` ÷ all claims;
+  - **balanced accuracy on decided claims** (claims not answered `cannot_tell`);
+  - the cost per claim, including the boot and model pull spread over the batch;
   - thinking on and off;
   - the evidence order swapped.
 
-  The default is **the cheapest model whose false-accept upper bound is under 10%**,
-  with at least 100 claims per check type.
+  The default is **the cheapest model that, on both `grounded` and `reasoning`, has a
+  false-accept upper bound under 10%, an abstain rate of at most 20%, and balanced
+  accuracy on decided claims of at least 0.80.** A Wilson upper bound under 10% needs
+  about 4 or fewer false accepts in 100, so each check type needs **at least 100
+  unsupported claims** (about 200 or more in total). The coverage floor stops a model
+  that always abstains from winning.
 
 **Retrieval**
 - Thakur et al. 2021, BEIR (arXiv:2104.08663): BM25 is a strong baseline out of domain,
@@ -114,7 +133,8 @@ secondary summary and not re-checked; treat its numbers as approximate.
   One-off mode uses fixed top-k.**
 
 **Pods**
-- RunPod pricing (runpod.io/pricing, seen 2026-10-08)†:
+- RunPod pricing (runpod.io/pricing, seen 2026-10-08)†. The plan always prices from
+  the v2 catalog at plan time, never from the pricing page:
   - A40 48 GB costs about $0.35/hr community and $0.49/hr secure. Serverless is 2–4×
     the pod rate per hour.
   - REST v1 retires on 2026-11-15, and GraphQL in early 2027 (docs.runpod.io, checked by
@@ -165,8 +185,15 @@ Missing today:
 - **Records:** active records are embedded when written, so memory search gets the same
   hybrid ranking.
 - **Embedding:**
-  - Done by the host's local Ollama with `num_gpu: 0`, so it runs on the CPU and never
-    touches the local GPU (the maintainer's decision).
+  - Done on the host CPU (the maintainer's decision) by a **dedicated CPU-only Ollama
+    instance**, never the shared one:
+    - It runs on its own port (default `127.0.0.1:11435`), started with
+      `CUDA_VISIBLE_DEVICES=-1`.
+    - `num_gpu: 0` is sent as well, as a second guard.
+    - On the shared instance, loading an embedding model can evict a GPU model mid-run,
+      and `num_gpu: 0` alone may still open a CUDA context (R&D's review).
+    - It is verified by `nvidia-smi` listing no process for it.
+    - offrig never falls back to the shared instance on its own.
   - Batched, and incremental by hash.
   - Missing the model is a clear error with the `ollama pull` line, not a silent fall
     back to keywords.
@@ -199,8 +226,14 @@ evidence_source}`, with reasoning first.
 The checks on each reply:
 - It is sent with a JSON-schema `format` where the model supports it, or as plain text
   with a parser where structured output collapses (measured per model in calibration).
-- `evidence_quote` must appear verbatim in the evidence, or the verdict becomes
-  `cannot_tell` with the reason `quote_not_found`.
+- The quote rule depends on the verdict. Whitespace and quote marks are normalised
+  before matching.
+  - `supported` needs a non-empty `evidence_quote` found verbatim in the evidence;
+    otherwise the verdict becomes `cannot_tell` with the reason `quote_not_found`.
+  - `unsupported` may quote the contradiction, or leave the quote empty when the
+    evidence is silent. A quote that is given must be found.
+- The role card's worked examples come from outside every gold set. Their ids and the
+  card's hash are recorded with each verdict.
 - A schema failure is retried once, then reported as an error.
 - Every verdict is marked untrusted model output and stored in the `verdicts` table with
   the pins listed under PIN_PER_STEP.
@@ -224,6 +257,9 @@ The checks on each reply:
   chat with the stored transcript), and `end` (harvest the transcript, shut down).
 - **Storage:** the transcript lives in the store, with turns as rows, so a restart or
   compaction loses nothing.
+- **Trust:** session transcripts, search results shown to the verifier and its replies
+  are all untrusted model output. A transcript is never written into the records store
+  as a decision or fact without an agent or human recording it deliberately.
 - **Searching:** the verifier can ask for a search with a `search` tool call. offrig runs
   hybrid search and returns passages, at most 3 per turn, and logs each query.
 - **Status:** a session pod shows in `offrig_status`. The watchdog ends it at the idle
@@ -240,9 +276,15 @@ The checks on each reply:
 ### 6. Calibration (with R&D)
 
 `offrig verify --calibrate gold.jsonl --models a,b` runs the gold set and writes the
-table described under Research grounding. R&D owns the gold sets:
-- grounded claims from `natural-errors`, tune half only, with g2 held out;
-- reasoning claims from merged PRs (origin `prs-2026-10-08`).
+table described under Research grounding. It runs twice: once with the gold evidence
+supplied (oracle context), which measures the verifier alone, and once end to end with
+hybrid retrieval. Both are reported, so a retrieval miss is never counted as a verifier
+error. R&D owns the gold sets:
+- `grounded`: project docs and code with planted near-misses, balanced;
+- `reasoning`: merged PRs (origin `prs-2026-10-08`, mined by the Publisher and
+  label-checked blind by R&D);
+- `knowledge`: natural-errors, tune half only, with g2 held out. Reported, not part of
+  the default rule.
 
 The profile's default is changed only by a PR that cites a calibration table.
 
@@ -287,7 +329,8 @@ the best single model on the gold set.
 
 ## Decisions (2026-10-08, the maintainer)
 
-- Embeddings are computed on the host CPU (Ollama, `num_gpu: 0`), never on the local GPU.
+- Embeddings are computed on the host CPU (a dedicated CPU-only Ollama instance), never
+  on the local GPU.
 - No network volume. Models are pulled at each launch, and one-offs are batched.
 - No verifier runs until calibration names the default model.
 - Paid API seats (OpenRouter) are not a verifier lane without the maintainer's go.
