@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use offrig_core::config::Config;
 use offrig_core::cost::now_unix;
@@ -202,6 +202,11 @@ pub fn failure_json(e: &Error, progress: &Value) -> Value {
     })
 }
 
+/// A delete that finds nothing: the launch wait already terminated this pod.
+fn delete_already_gone(e: &Error) -> bool {
+    matches!(e, Error::Api { status: 404, .. })
+}
+
 /// How often a capacity wait looks again: a minute. Tests shorten it (debug builds only).
 fn capacity_poll() -> Duration {
     #[cfg(debug_assertions)]
@@ -237,13 +242,23 @@ pub enum SshProbe {
 /// The step for a launch whose pod is booting, derived from the pod's state right now
 /// rather than read from the launch's last event, which goes stale on a slow host
 /// (issue #15). `created_ago` is seconds since the pod was created, when known.
+///
+/// v2 `status` is the pod's actual state. `PROVISIONING` and `STARTING` are a
+/// normal boot. `ERROR` and `EXITED` are stated as they are; the launch wait
+/// treats those two as terminal and terminates the pod.
 pub fn live_step(pod: &Pod, probe: SshProbe, created_ago: Option<i64>) -> String {
     let age = created_ago.map_or(String::new(), |s| format!(", {s}s after it was created"));
-    if !pod.is_running() && !pod.desired_status.is_empty() {
-        return format!(
-            "the pod is {} (not RUNNING){age}; the launch will fail if it does not start",
-            pod.desired_status
-        );
+    match pod.desired_status.as_str() {
+        "PROVISIONING" => {
+            return format!("the pod is PROVISIONING{age}; RunPod is placing it");
+        }
+        "STARTING" => {
+            return format!("the pod is STARTING{age}; the container is coming up");
+        }
+        status if !status.is_empty() && !pod.is_running() => {
+            return format!("the pod is {status}{age}");
+        }
+        _ => {}
     }
     match (pod.ssh_endpoint(), probe) {
         (None, _) => format!(
@@ -358,6 +373,9 @@ fn launch(
     let left = plan.deadline().map_or(0, |d| (d - now).max(0)) as u64;
     // The plan's own wait, else the profile's, kept inside the time the plan has left.
     // Nothing is rented while waiting, so the committed worst case is not touched by it.
+    // 429 retries on create run until the plan deadline, which can be later
+    // than the capacity wait. A rate limit must not end the launch early.
+    let until = (left > 0).then(|| Instant::now() + Duration::from_secs(left));
     let wait = Wait {
         limit: capacity_wait(
             store.plan_wait_minutes(plan_id)?,
@@ -365,6 +383,7 @@ fn launch(
             left,
         ),
         poll: capacity_poll(),
+        until,
     };
     progress.v["phase"] = json!("capacity");
     progress.v["wait_minutes"] = json!(wait.limit.as_secs() / 60);
@@ -480,6 +499,11 @@ fn launch(
             let outcome = match session.rp.delete_pod(&pod.id) {
                 Ok(()) => {
                     // The lane's ssh block pointed at this pod; it is gone now.
+                    let _ = offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, &pod.id);
+                    "terminated after a failed launch".to_string()
+                }
+                // The launch wait already terminated an ERROR or EXITED pod.
+                Err(d) if delete_already_gone(&d) => {
                     let _ = offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, &pod.id);
                     "terminated after a failed launch".to_string()
                 }
@@ -1380,8 +1404,35 @@ mod tests {
             s.contains("203.0.113.9:40022") && s.contains("not answering yet"),
             "{s}"
         );
-        // A pod that is not running is said to be so.
+        // A pod that is not running is said to be so, without predicting failure.
         let s = live_step(&booting("EXITED", false), SshProbe::NoEndpoint, Some(30));
         assert!(s.starts_with("the pod is EXITED"), "{s}");
+        assert!(!s.contains("will fail"), "{s}");
+        // A normal v2 boot is progress, not a warning that the launch will fail.
+        let s = live_step(
+            &booting("PROVISIONING", false),
+            SshProbe::NoEndpoint,
+            Some(12),
+        );
+        assert!(s.contains("PROVISIONING") && s.contains("placing"), "{s}");
+        assert!(!s.contains("will fail"), "{s}");
+        assert!(s.contains("12s after it was created"), "{s}");
+        let s = live_step(&booting("STARTING", false), SshProbe::NoEndpoint, None);
+        assert!(s.contains("STARTING") && s.contains("coming up"), "{s}");
+        assert!(!s.contains("will fail"), "{s}");
+    }
+
+    #[test]
+    fn a_missing_pod_on_delete_counts_as_already_terminated() {
+        assert!(delete_already_gone(&Error::Api {
+            what: "delete pod p1".into(),
+            status: 404,
+            body: "not found".into(),
+        }));
+        assert!(!delete_already_gone(&Error::Api {
+            what: "delete pod p1".into(),
+            status: 500,
+            body: "down".into(),
+        }));
     }
 }

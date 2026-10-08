@@ -58,6 +58,16 @@ impl Mock {
 /// Serve `handler(request, nth)` where `nth` counts earlier hits on the same route.
 /// The reply is `(status, body)`, sent as JSON with the connection closed.
 pub fn serve(handler: impl Fn(&Req, usize) -> (u16, String) + Send + 'static) -> Mock {
+    serve_headers(move |req, nth| {
+        let (status, body) = handler(req, nth);
+        (status, body, Vec::new())
+    })
+}
+
+/// `serve`, plus extra response headers (a `Retry-After` on a 429).
+pub fn serve_headers(
+    handler: impl Fn(&Req, usize) -> (u16, String, Vec<(String, String)>) + Send + 'static,
+) -> Mock {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
     let reqs = Arc::new(Mutex::new(Vec::<Req>::new()));
@@ -102,11 +112,18 @@ pub fn serve(handler: impl Fn(&Req, usize) -> (u16, String) + Send + 'static) ->
                 l.push(req.clone());
                 n
             };
-            let (status, text) = handler(&req, nth);
-            let resp = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            let (status, text, extra) = handler(&req, nth);
+            let mut resp = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n");
+            for (name, value) in &extra {
+                resp.push_str(name);
+                resp.push_str(": ");
+                resp.push_str(value);
+                resp.push_str("\r\n");
+            }
+            resp.push_str(&format!(
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
                 text.len()
-            );
+            ));
             let _ = reader.get_mut().write_all(resp.as_bytes());
         }
     });

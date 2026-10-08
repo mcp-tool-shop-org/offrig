@@ -4,7 +4,7 @@
 //! one query until it retires in early 2027.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -271,7 +271,9 @@ pub struct PodCreate {
     pub docker_start_cmd: Vec<String>,
     pub env: BTreeMap<String, String>,
     /// When set, an attempt whose live offer is above this price is not sent.
-    /// `None` on a profile launch that has no plan cap.
+    /// The plan's stored list is already price-filtered; this is a second look
+    /// at the live catalog. If that lookup fails, every listed id is still tried
+    /// and a warning is logged. `None` on a profile launch that has no plan cap.
     pub max_price_hr: Option<f64>,
 }
 
@@ -474,11 +476,35 @@ impl RunPod {
             .ok_or_else(|| Error::PodNotFound(id_or_name.to_string()))
     }
 
-    /// Create the pod, trying each GPU type in list order. A 400 means this type
-    /// could not be placed; the next id is tried. Any other status stops the loop.
-    /// An id whose live price is above `max_price_hr` is not sent. The list itself
-    /// is never extended.
+    /// Create the pod, trying each GPU type in list order.
+    ///
+    /// A 400 means this type could not be placed; the next id is tried. The
+    /// error names every type with the reason RunPod gave, because a 400 is not
+    /// promised to mean only "no capacity". Any other status stops the loop.
+    /// A 429 is retried on the same type after `Retry-After`, up to
+    /// [`CREATE_429_RETRIES`] times. With no deadline (a direct create, or
+    /// staging) that count is the only bound.
+    ///
+    /// An id whose live price is above `max_price_hr` is not sent. The plan's
+    /// list is already price-filtered when it was stored, so this is a second
+    /// look. If the live lookup fails, every listed id is still tried and a
+    /// warning is logged. The list itself is never extended.
     pub fn create_pod(&self, spec: &PodCreate) -> Result<Pod> {
+        self.create_pod_until(spec, None, &mut |_| {})
+    }
+
+    /// [`create_pod`](Self::create_pod), with the plan deadline and a warning sink.
+    ///
+    /// `deadline` is the plan deadline: a 429 is not retried past it, and the
+    /// next GPU type is not tried instead. `on_warn` receives the same text
+    /// that is logged when the live price lookup fails. The plan's GPU list is
+    /// already price-filtered; the lookup is a second check, not the only one.
+    pub fn create_pod_until(
+        &self,
+        spec: &PodCreate,
+        deadline: Option<Instant>,
+        on_warn: &mut dyn FnMut(String),
+    ) -> Result<Pod> {
         if spec.gpu_type_ids.is_empty() {
             return Err(Error::NoCapacity(format!(
                 "no GPU types listed for {}",
@@ -486,16 +512,25 @@ impl RunPod {
             )));
         }
         let offers = match spec.max_price_hr {
-            Some(_) => self
-                .gpu_offers_in(
-                    spec.gpu_count,
-                    spec.data_center_ids.first().map(String::as_str),
-                )
-                .ok(),
+            Some(_) => match self.gpu_offers_in(
+                spec.gpu_count,
+                spec.data_center_ids.first().map(String::as_str),
+            ) {
+                Ok(offers) => Some(offers),
+                Err(e) => {
+                    let msg = format!(
+                        "the live price check failed ({}); the plan's GPU list is already price-filtered, so every listed type will still be tried",
+                        crate::error::chain(&e)
+                    );
+                    trace::warn(&format!("runpod: {msg}"));
+                    on_warn(msg);
+                    None
+                }
+            },
             None => None,
         };
         let mut tried = Vec::new();
-        let mut last = String::new();
+        let mut refused: Vec<(String, String)> = Vec::new();
         for id in &spec.gpu_type_ids {
             if let (Some(cap), Some(offers)) = (spec.max_price_hr, offers.as_ref())
                 && let Some(price) = offers
@@ -514,10 +549,10 @@ impl RunPod {
                 spec.name, spec.gpu_count
             ));
             tried.push(id.as_str());
-            match self.post_pod(&spec.wire(id), &spec.name) {
+            match self.post_pod(&spec.wire(id), &spec.name, deadline) {
                 Ok(pod) => return Ok(pod),
                 Err(e) if placement_rejected(&e) => {
-                    last = e.to_string();
+                    refused.push((id.clone(), e.to_string()));
                     trace::verbose(&format!("runpod: {id} was not placed"));
                 }
                 Err(e) => return Err(e),
@@ -530,29 +565,66 @@ impl RunPod {
                 spec.max_price_hr.unwrap_or(0.0)
             )
         } else {
+            let reasons = refused
+                .iter()
+                .map(|(id, why)| format!("{id}: {why}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
             format!(
                 "RunPod could not place {} on [{}]{}",
                 spec.name,
                 tried.join(" | "),
-                if last.is_empty() {
+                if reasons.is_empty() {
                     String::new()
                 } else {
-                    format!(": {last}")
+                    format!(": {reasons}")
                 }
             )
         }))
     }
 
-    fn post_pod(&self, body: &serde_json::Value, name: &str) -> Result<Pod> {
-        let started = std::time::Instant::now();
-        let resp = self
-            .agent
-            .post(self.url("/pods"))
-            .header("Authorization", self.auth())
-            .send_json(body)
-            .map_err(|e| Error::http("create pod", e))?;
-        trace::api("create pod", resp.status().as_u16(), started);
-        read_json(resp, &format!("create pod {name}"))
+    fn post_pod(
+        &self,
+        body: &serde_json::Value,
+        name: &str,
+        deadline: Option<Instant>,
+    ) -> Result<Pod> {
+        let mut retries = 0u32;
+        loop {
+            let started = Instant::now();
+            let resp = self
+                .agent
+                .post(self.url("/pods"))
+                .header("Authorization", self.auth())
+                .send_json(body)
+                .map_err(|e| Error::http("create pod", e))?;
+            let status = resp.status().as_u16();
+            let delay = retry_after(resp.headers());
+            trace::api("create pod", status, started);
+            if status != 429 {
+                return read_json(resp, &format!("create pod {name}"));
+            }
+            let err = match read_json::<Pod>(resp, &format!("create pod {name}")) {
+                Ok(pod) => return Ok(pod),
+                Err(e) => e,
+            };
+            if !retry_fits(deadline, delay) {
+                trace::warn(&format!(
+                    "runpod: create {name} was rate limited; Retry-After of {}s does not fit before the plan deadline, so this GPU type is not retried and the next type is not tried",
+                    delay.as_secs()
+                ));
+                return Err(err);
+            }
+            if retries >= CREATE_429_RETRIES {
+                return Err(err);
+            }
+            retries += 1;
+            trace::warn(&format!(
+                "runpod: create {name} was rate limited; retry {retries} of {CREATE_429_RETRIES} after {}s",
+                delay.as_secs()
+            ));
+            std::thread::sleep(delay);
+        }
     }
 
     /// Terminate a pod. Its container disk is gone afterwards; a network volume is not.
@@ -772,10 +844,45 @@ pub fn sort_offers(offers: &mut [GpuOffer]) {
     });
 }
 
+/// How many times a 429 on `POST /pods` is retried on the same GPU type.
+/// The first request is not counted. A retry waits for `Retry-After` and does
+/// not run past the plan deadline. A missing or unreadable `Retry-After` waits
+/// one second. The next GPU type is not tried.
+pub const CREATE_429_RETRIES: u32 = 3;
+
 /// v2 create returns 400 when that GPU type cannot be placed. 422 is a bad body
-/// and must not move the loop on.
+/// and must not move the loop on. 429 is a rate limit, not a placement miss.
 fn placement_rejected(e: &Error) -> bool {
     matches!(e, Error::Api { status: 400, .. })
+}
+
+/// Delay-seconds from `Retry-After`. An HTTP-date or a missing header waits one second.
+fn retry_after(headers: &ureq::http::HeaderMap) -> Duration {
+    let Some(raw) = headers.get("retry-after").and_then(|v| v.to_str().ok()) else {
+        return Duration::from_secs(1);
+    };
+    let raw = raw.trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Duration::from_secs(secs);
+    }
+    if let Ok(secs) = raw.parse::<f64>()
+        && secs.is_finite()
+        && secs >= 0.0
+    {
+        return Duration::from_secs_f64(secs);
+    }
+    Duration::from_secs(1)
+}
+
+/// `None` has no plan clock, so the attempt cap is the only bound. A set deadline
+/// refuses a sleep that would end after it.
+fn retry_fits(deadline: Option<Instant>, delay: Duration) -> bool {
+    let Some(end) = deadline else {
+        return true;
+    };
+    Instant::now()
+        .checked_add(delay)
+        .is_some_and(|wake| wake <= end)
 }
 
 fn query_escape(s: &str) -> String {
@@ -912,6 +1019,37 @@ fn lenient_f64<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<f64, D::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_after_reads_delay_seconds_and_defaults_when_absent() {
+        let mut headers = ureq::http::HeaderMap::new();
+        assert_eq!(retry_after(&headers), Duration::from_secs(1));
+        headers.insert("retry-after", "0".parse().expect("header"));
+        assert_eq!(retry_after(&headers), Duration::ZERO);
+        headers.insert("retry-after", "30".parse().expect("header"));
+        assert_eq!(retry_after(&headers), Duration::from_secs(30));
+        headers.insert("retry-after", "1.5".parse().expect("header"));
+        assert_eq!(retry_after(&headers), Duration::from_millis(1500));
+        headers.insert(
+            "retry-after",
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().expect("header"),
+        );
+        assert_eq!(retry_after(&headers), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_retry_past_the_deadline_does_not_fit() {
+        assert!(retry_fits(None, Duration::from_secs(3600)));
+        assert!(retry_fits(
+            Some(Instant::now() + Duration::from_secs(5)),
+            Duration::ZERO
+        ));
+        assert!(!retry_fits(Some(Instant::now()), Duration::from_secs(30)));
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("instant");
+        assert!(!retry_fits(Some(past), Duration::ZERO));
+    }
 
     #[test]
     fn pod_parses_live_shape_and_finds_ssh_endpoint() {

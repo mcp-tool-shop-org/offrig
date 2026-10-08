@@ -3,11 +3,13 @@
 
 mod support;
 
+use std::time::{Duration, Instant};
+
 use offrig_core::config::Config;
 use offrig_core::error::Error;
-use offrig_core::runpod::RunPod;
+use offrig_core::runpod::{CREATE_429_RETRIES, RunPod};
 use offrig_core::spec;
-use support::{dead_url, serve};
+use support::{dead_url, serve, serve_headers};
 
 fn client(base: &str) -> RunPod {
     RunPod::new(
@@ -192,6 +194,101 @@ fn a_400_tries_the_next_gpu_and_stops_at_the_list() {
 }
 
 #[test]
+fn each_refused_gpu_keeps_its_own_reason() {
+    let m = serve(|req, nth| match req.route().as_str() {
+        "POST /pods" if nth == 0 => (
+            400,
+            r#"{"title":"Bad Request","status":400,"detail":"no H200 in that data center"}"#.into(),
+        ),
+        "POST /pods" => (
+            400,
+            r#"{"title":"Bad Request","status":400,"detail":"L4 rejected the image"}"#.into(),
+        ),
+        _ => (404, "{}".into()),
+    });
+    let err = client(&m.url)
+        .create_pod(&listed(&["NVIDIA H200", "NVIDIA L4"], None))
+        .expect_err("both refused");
+    let text = err.to_string();
+    assert!(text.contains("no H200 in that data center"), "{text}");
+    assert!(text.contains("L4 rejected the image"), "{text}");
+    assert!(text.contains("NVIDIA H200"), "{text}");
+    assert!(text.contains("NVIDIA L4"), "{text}");
+}
+
+fn too_many(delay: &str) -> (u16, String, Vec<(String, String)>) {
+    (
+        429,
+        r#"{"title":"Too Many Requests","status":429,"detail":"slow down"}"#.into(),
+        vec![("Retry-After".into(), delay.into())],
+    )
+}
+
+#[test]
+fn a_429_is_retried_on_the_same_gpu_after_retry_after() {
+    let m = serve_headers(|req, nth| match req.route().as_str() {
+        "POST /pods" if nth < 2 => too_many("0"),
+        "POST /pods" => (201, V2_POD.into(), Vec::new()),
+        _ => (404, "{}".into(), Vec::new()),
+    });
+    let pod = client(&m.url)
+        .create_pod_until(
+            &listed(&["NVIDIA H200", "NVIDIA L4"], None),
+            Some(Instant::now() + Duration::from_secs(30)),
+            &mut |_| {},
+        )
+        .expect("retried onto the same type");
+    assert_eq!(pod.id, "p1");
+    let sent = posts(&m);
+    assert_eq!(sent.len(), 3);
+    assert!(sent.iter().all(|r| gpu_id(&r.body) == "NVIDIA H200"));
+}
+
+#[test]
+fn a_429_stops_after_the_retry_cap_without_the_next_gpu() {
+    let m = serve_headers(|req, _| match req.route().as_str() {
+        "POST /pods" => too_many("0"),
+        _ => (404, "{}".into(), Vec::new()),
+    });
+    let err = client(&m.url)
+        .create_pod_until(
+            &listed(&["NVIDIA H200", "NVIDIA L4"], None),
+            Some(Instant::now() + Duration::from_secs(30)),
+            &mut |_| {},
+        )
+        .expect_err("still limited");
+    assert!(matches!(err, Error::Api { status: 429, .. }), "{err}");
+    let sent = posts(&m);
+    assert_eq!(sent.len(), 1 + CREATE_429_RETRIES as usize);
+    assert!(sent.iter().all(|r| gpu_id(&r.body) == "NVIDIA H200"));
+}
+
+#[test]
+fn a_429_past_the_plan_deadline_is_not_retried_or_moved_on() {
+    let m = serve_headers(|req, _| match req.route().as_str() {
+        "POST /pods" => too_many("30"),
+        _ => (404, "{}".into(), Vec::new()),
+    });
+    let started = Instant::now();
+    let err = client(&m.url)
+        .create_pod_until(
+            &listed(&["NVIDIA H200", "NVIDIA L4"], None),
+            Some(started),
+            &mut |_| {},
+        )
+        .expect_err("deadline");
+    assert!(matches!(err, Error::Api { status: 429, .. }), "{err}");
+    assert!(err.to_string().contains("slow down"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it slept for Retry-After"
+    );
+    let sent = posts(&m);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(gpu_id(&sent[0].body), "NVIDIA H200");
+}
+
+#[test]
 fn a_422_stops_the_loop_and_keeps_the_problem_detail() {
     let m = serve(|_, _| {
         (
@@ -340,11 +437,20 @@ fn a_failed_price_read_still_tries_every_listed_gpu() {
         "POST /pods" => (201, V2_POD.into()),
         _ => (404, "{}".into()),
     });
+    let mut notes = Vec::new();
     client(&m.url)
-        .create_pod(&listed(&["NVIDIA H200", "NVIDIA L4"], Some(1.0)))
+        .create_pod_until(
+            &listed(&["NVIDIA H200", "NVIDIA L4"], Some(1.0)),
+            None,
+            &mut |w| notes.push(w),
+        )
         .expect("create anyway");
     let ids: Vec<_> = posts(&m).iter().map(|r| gpu_id(&r.body)).collect();
     assert_eq!(ids, ["NVIDIA H200", "NVIDIA L4"]);
+    assert!(
+        notes.iter().any(|w| w.contains("already price-filtered")),
+        "{notes:?}"
+    );
 }
 
 #[test]
