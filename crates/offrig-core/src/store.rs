@@ -2337,6 +2337,35 @@ mod tests {
     }
 
     #[test]
+    fn a_held_completion_counts_in_the_cap_floor() {
+        let s = store();
+        s.set_budget_cap(4.50).expect("cap");
+        let c = s.commit_completion(new_completion(3.01)).expect("commit");
+        let b = s.budget().expect("budget");
+        assert!(
+            (b.floor() - 3.01).abs() < 1e-9,
+            "the held worst case is in the floor"
+        );
+        let err = s.set_budget_cap(3.00).expect_err("below the floor");
+        assert!(matches!(err, Error::Refused(_)), "{err}");
+        assert!(err.to_string().contains("$3.01"), "{err}");
+        s.set_budget_cap(3.01).expect("at the floor");
+        // Ended: the floor is the real charge, and the rest of the commitment is free.
+        s.close_completion(
+            c.id,
+            CompletionEnd {
+                cost: Some(0.30),
+                cost_source: Some("usage".into()),
+                ..Default::default()
+            },
+        )
+        .expect("close");
+        assert!((s.budget().expect("budget").floor() - 0.30).abs() < 1e-9);
+        s.set_budget_cap(0.30).expect("down to what was spent");
+        assert!(s.set_budget_cap(0.29).is_err());
+    }
+
+    #[test]
     fn a_completion_over_the_budget_left_is_refused_and_commits_nothing() {
         let s = store();
         s.set_budget_cap(4.50).expect("cap");
