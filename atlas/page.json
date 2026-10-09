@@ -42,48 +42,67 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 4,
-      "changed": 4,
+      "added": 2,
+      "changed": 18,
       "moved": 0,
-      "parts": 3,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
         "kind": "door",
-        "sentence": "ci now also runs crates/offrig-cli/tests/verify_calibrate.rs and crates/offrig-core/src/calibrate_run.rs.",
+        "sentence": "ci now also runs crates/offrig-core/src/balances.rs.",
         "subjects": [
           ".github/workflows/ci.yml",
-          "crates/offrig-cli/tests/verify_calibrate.rs",
-          "crates/offrig-core/src/calibrate_run.rs"
+          "crates/offrig-core/src/balances.rs"
         ]
       },
       {
-        "kind": "landing",
-        "sentence": "crates/offrig-core/tests/fixtures/calibrate-gold.jsonl is now read by crates/offrig-cli/tests/verify_calibrate.rs and crates/offrig-core/src/calibrate_run.rs.",
+        "kind": "sequence",
+        "sentence": "In crates/offrig-cli/src/main.rs, `main` gained a step, `report`, before `run`.",
         "subjects": [
-          "crates/offrig-core/tests/fixtures/calibrate-gold.jsonl",
-          "crates/offrig-cli/tests/verify_calibrate.rs",
-          "crates/offrig-core/src/calibrate_run.rs"
+          "crates/offrig-cli/src/main.rs"
+        ]
+      },
+      {
+        "kind": "sequence",
+        "sentence": "In crates/offrig-cli/src/main.rs, `main` lost a step, `line`.",
+        "subjects": [
+          "crates/offrig-cli/src/main.rs"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "4 files added and 4 changed content, across 3 parts.",
+        "sentence": "2 files added and 18 changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "76741034e6b7c46b1f535d6e3cb7e447d2d9e985",
-      "generatedAt": "2026-10-09T02:33:22.917Z"
+      "commit": "6ed81436a664dae677e941fec5e711e8e2be7c55",
+      "generatedAt": "2026-10-09T02:54:56.049Z"
     },
     "unchanged": false
   },
   "changesTogether": [
     {
+      "a": "crates/offrig-cli/src/verify_cmd.rs",
+      "b": "crates/offrig-core/src/calibrate_run.rs",
+      "either": 6,
+      "partLabels": [
+        "offrig-cli",
+        "offrig-core"
+      ],
+      "parts": [
+        "offrig-cli",
+        "offrig-core"
+      ],
+      "relation": "a-imports-b",
+      "shared": 4
+    },
+    {
       "a": "crates/offrig-core/src/lib.rs",
       "b": "crates/offrig-core/src/store.rs",
-      "either": 17,
+      "either": 18,
       "partLabels": [
         "offrig-core",
         "offrig-core"
@@ -93,12 +112,12 @@
         "offrig-core"
       ],
       "relation": "inside",
-      "shared": 10
+      "shared": 11
     },
     {
       "a": "crates/offrig-mcp/src/main.rs",
       "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 25,
+      "either": 26,
       "partLabels": [
         "offrig-mcp",
         "offrig-mcp"
@@ -139,31 +158,16 @@
       ],
       "relation": "b-imports-a",
       "shared": 9
-    },
-    {
-      "a": "crates/offrig-app/src/worker.rs",
-      "b": "crates/offrig-core/src/session.rs",
-      "either": 14,
-      "partLabels": [
-        "offrig-app",
-        "offrig-core"
-      ],
-      "parts": [
-        "offrig-app",
-        "offrig-core"
-      ],
-      "relation": "a-imports-b",
-      "shared": 7
     }
   ],
   "changesTogetherNote": [
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 9 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "6ed81436a664dae677e941fec5e711e8e2be7c55",
+  "commit": "d56f4584dad3c32fcebf10d609257e78d7ab78e3",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Rust (81 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
+  "derived": "5 parts, mostly Rust (82 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
     {
       "checks": [
@@ -203,7 +207,7 @@
         {
           "boundary": "offrig-core",
           "depth": 1,
-          "files": 33
+          "files": 34
         }
       ],
       "runs": [
@@ -222,13 +226,12 @@
     },
     {
       "checks": [
-        "crates/offrig-cli/src/main.rs",
         "crates/offrig-core/examples/fake_ssh.rs",
         "crates/offrig-core/src/lib.rs",
         "crates/offrig-mcp/src/main.rs"
       ],
-      "checksCount": 4,
-      "checksMore": 1,
+      "checksCount": 3,
+      "checksMore": 0,
       "file": ".github/workflows/ci.yml",
       "id": ".github/workflows/ci.yml",
       "landings": [],
@@ -248,7 +251,7 @@
         {
           "boundary": "offrig-core",
           "depth": 0,
-          "files": 47
+          "files": 48
         },
         {
           "boundary": "offrig-mcp",
@@ -263,9 +266,11 @@
         "crates/offrig-app/src/main.rs",
         "crates/offrig-app/src/worker/",
         "crates/offrig-cli/src/budget_menu.rs",
+        "crates/offrig-cli/src/main.rs",
         "crates/offrig-cli/tests/commands.rs",
         "crates/offrig-cli/tests/contract.rs",
         "crates/offrig-cli/tests/verify_calibrate.rs",
+        "crates/offrig-core/src/balances.rs",
         "crates/offrig-core/src/calibrate.rs",
         "crates/offrig-core/src/calibrate_run.rs",
         "crates/offrig-core/src/checks.rs",
@@ -327,8 +332,8 @@
         "crates/offrig-mcp/tests/sidecar_port.rs",
         "crates/offrig-mcp/tests/stdio.rs"
       ],
-      "runsCount": 69,
-      "runsMore": 66,
+      "runsCount": 71,
+      "runsMore": 68,
       "sends": [
         "uploads coverage to Codecov"
       ],
@@ -383,7 +388,7 @@
         {
           "boundary": "offrig-core",
           "depth": 1,
-          "files": 33
+          "files": 34
         }
       ],
       "runs": [
@@ -414,7 +419,7 @@
         {
           "boundary": "offrig-core",
           "depth": 1,
-          "files": 33
+          "files": 34
         }
       ],
       "runs": [
@@ -445,7 +450,7 @@
         {
           "boundary": "offrig-core",
           "depth": 1,
-          "files": 33
+          "files": 34
         }
       ],
       "runs": [
@@ -515,9 +520,9 @@
       ]
     }
   ],
-  "generatedAt": "2026-10-09T02:54:56.049Z",
+  "generatedAt": "2026-10-09T17:02:11.957Z",
   "limits": [
-    "10 writes and 6 reads use paths built at run time and are not named here.",
+    "11 writes and 6 reads use paths built at run time and are not named here.",
     "12 writes and 13 reads go to a path their caller passes, not to this repository.",
     "4 writes go to a temporary directory, not to this repository.",
     "21 files belong to no part: scripts/verify.ps1, scripts/verify.sh, site/astro.config.mjs and 18 more.",
@@ -543,11 +548,11 @@
   "startReason": "This path follows offrig (a command people run) from its entry, since ci runs only tests, scripts that import no code here and checks.",
   "summary": "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top.",
   "summaryFrom": "person",
-  "testFiles": 73,
+  "testFiles": 75,
   "testedBy": {
     "offrig-app": 4,
-    "offrig-cli": 4,
-    "offrig-core": 62,
+    "offrig-cli": 5,
+    "offrig-core": 63,
     "offrig-mcp": 17
   },
   "testedInside": [
@@ -555,7 +560,7 @@
     "offrig-cli",
     "offrig-mcp"
   ],
-  "unnamedWrites": 10,
+  "unnamedWrites": 11,
   "unread": [
     {
       "place": "crates/offrig-app/assets/icon/offrig.ico",
