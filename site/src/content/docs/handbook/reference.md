@@ -112,8 +112,10 @@ Runs each gold claim through offrig's verifier prompt on a local Ollama (loopbac
 cloud models are refused), with the claim's own evidence, and prints the false-accept
 rate, abstain rate and balanced accuracy per check type against the default rule. The run
 directory (`.offrig/out/calibrate-<model>-<time>`) holds `manifest.json`,
-`verdicts.jsonl` and `metrics.json`. Use `--resume <dir>` to continue a run with the same
-settings, and `--report-only <dir>` to rescore one. `--swap-evidence` reverses the
+`verdicts.jsonl` and `metrics.json`. A connection problem is never recorded as an answer:
+the run reports `incomplete` and `--resume <dir>` retries those claims with the same
+settings. A reply the model itself breaks counts against it. `--report-only <dir>` rescores
+a run. `--swap-evidence` reverses the
 evidence order to check for position bias; `--gpu-cost-hr` sets the cost per claim.
 
 ## Verify a build

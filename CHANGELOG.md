@@ -13,8 +13,11 @@ All notable changes to offrig are documented here. The format is based on
   bound of the false-accept rate under 10%, abstaining on at most 20% of claims, balanced
   accuracy on decided claims of at least 0.80, and at least 100 false claims per type.
   - Gold `cannot_tell` claims count as false accepts when a model calls them supported.
-  - Every outcome goes to `verdicts.jsonl` and the store, marked untrusted. A failed call
-    is counted as unusable and never scored.
+  - Every outcome goes to `verdicts.jsonl` and the store, marked untrusted. A reply the
+    model breaks (bad verdict, cut off, or timing out twice on the same claim) is counted as
+    unusable and counts against the model. A connection problem or a single timeout is not
+    recorded at all: `--resume` retries it, and until every claim has an answer the result
+    is `incomplete`, never a pass or fail.
   - Runs resume (`--resume`) only with the same model, digest, settings and gold files,
     and can be rescored from their directory (`--report-only`).
   - Local only: a loopback Ollama, and model names containing "cloud" are refused.
