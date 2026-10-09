@@ -47,10 +47,10 @@ prices and limits change.
   (48 GB) $1.75; A6000/A40 (48 GB) $1.22; RTX 4090 (24 GB) $1.10; L4/A5000/3090 (24 GB)
   $0.69. The page doesn't split flex and active pricing.
 
-**A rough cost per check:** gemma4:31b took about 7 s per claim on the local 5090 with
-thinking on (calibration, 2026-10-09). At $1.58/h that's about $0.003 of worker time per
-claim, before cold starts. That figure is an estimate from local timings; it's measured
-for real in step 4 below.
+**A rough cost per check:** in the 2026-10-09 calibration, gemma4:31b with thinking on
+averaged 11.0 s per grounded claim and 12.9 s per reasoning claim on the local 5090 (p95
+about 23 s). At $1.58/h that's about $0.005–0.006 of worker time per claim, before cold
+starts. These are local timings; serverless costs are measured for real in step 5 below.
 
 ## Design
 
@@ -84,11 +84,32 @@ It keeps the verdict contract unchanged:
 
 ### 3. Calibrate what is served
 
-A model's calibration is valid for one engine and one set of settings.
-- Moving the default from local Ollama to serverless llama-server is an engine change.
-- So the serverless endpoint is calibrated through the same `verify calibrate` (tune,
-  then one heldout look) before it serves verdicts. The default is per engine.
-- This is the same rule as quote rule 2: re-calibrate, never re-score.
+A model's calibration is valid for one engine and one set of settings. Moving from local
+Ollama to serverless llama-server is an engine change, and several things can move a
+temperature-0 verdict:
+- how the chat template is rendered (an Ollama Modelfile against the GGUF's own Jinja
+  template);
+- the thinking switch;
+- structured output (Ollama's `format` against a JSON-schema grammar);
+- kernel numerics.
+
+**A pre-registered render check comes first.** On a fixed claim sample, the served
+prompt must render the same as Ollama's, and the thinking setting and structured output
+must behave the same. The rendered template's hash goes into the manifest, and the
+OpenAI `reasoning_content` field is mapped so `--keep-thinking` works there too.
+
+**Then one full-gold run on the served endpoint,** pre-registered, with `--split all`:
+- Nothing is selected on the endpoint (the model was chosen on tune already), so there's
+  no tune-then-heldout two-step.
+- It must pass the default rule on heldout and on all claims.
+- The run doubles as the agreement check with the Ollama calibration. Verdict flips are
+  reported, with a McNemar test, as diagnostics.
+- A sample agreement check alone isn't enough: it can't bound the false-accept rate, and
+  engine flips cluster in the borderline claims a sample is likely to miss.
+
+At the measured timings, that's about 960 claims, roughly 3 h of worker time, about $5.
+The default is per engine, and so is each jury model's calibration. This is the same rule
+as quote rule 2: re-calibrate, never re-score.
 
 ### 4. Spend guards (the human sets the cap)
 
@@ -97,11 +118,16 @@ Instead:
 - **Max workers** fixed by offrig config, default 1 for one-off verify and N for an
   N-model jury. Active workers are always 0. offrig never sets them above 0, because idle
   active workers bill.
-- **Execution timeout** set from the calibrated reply budget: about three times the slowest
-  calibrated claim, never the 600 s default.
-- **Spend tracking:** offrig records each request's worker seconds, from the response or
-  the endpoint's billing view, against the project's budget cap. It refuses to call the
-  endpoint when the cap would be crossed.
+- **Execution timeout** set from the reply budget: `num_predict` × the measured time per
+  generated token, plus the prompt and a margin. Not the slowest calibrated claim, since
+  those were the truncated ones. Never the 600 s default.
+- **Spend tracking:** offrig records each request's worker seconds against the project's
+  budget cap, and refuses to call the endpoint when the cap would be crossed.
+  - It's still open whether a load-balancing endpoint's response reports worker seconds;
+    the measurement in step 5 settles it.
+  - If it doesn't, the cap is charged a conservative estimate per call: wall time plus a
+    cold-start allowance, at the GPU's listed rate. That's reconciled with the
+    endpoint's billing view when available.
 - **Endpoint lifecycle:** creating, updating and deleting the endpoint are explicit
   commands with a recorded undo (delete the endpoint). The endpoint is never created as a
   side effect of `verify`.
@@ -124,8 +150,9 @@ claim beats a pod's for the expected call pattern.
 2. **The Linux CUDA 13.4 `llama-server` build:** shared with the large-teacher pod path.
 3. **The OpenAI-compatible verify backend,** with tests: shared with that path.
 4. **The serverless endpoint commands, spend guards, and the measurement in step 5.**
-5. **Calibration of the served endpoint;** only then is it a default path.
-6. **The jury on top:** one endpoint per juror.
+5. **The render check, then the full-gold calibration of the served endpoint;** only
+   then is it a default path.
+6. **The jury on top:** one endpoint per juror, each with its own per-engine calibration.
 
 ## Standards compliance
 
