@@ -769,7 +769,7 @@ pub fn run(
             transport_run += 1;
             if transport_run >= MAX_CONSECUTIVE_TRANSPORT {
                 return Err(Error::Ollama(format!(
-                    "{transport_run} calls in a row could not reach the server; stopped (resume with --resume)",
+                    "{transport_run} transport or server (5xx) failures in a row: the server could not be reached or kept failing; stopped (resume with --resume)",
                 )));
             }
         } else {
@@ -1745,7 +1745,11 @@ mod tests {
         let dir = tmp("down");
         let chat = Fake::new(|_, _| Err(net_error()));
         let e = go(&settings(), &dir, false, &chat, &Srv::new()).expect_err("down");
-        assert!(e.to_string().contains("could not reach"), "{e}");
+        assert!(
+            e.to_string()
+                .contains("transport or server (5xx) failures in a row"),
+            "{e}"
+        );
         assert_eq!(chat.calls(), MAX_CONSECUTIVE_TRANSPORT);
         assert!(read_lines(&dir, false).expect("lines").is_empty());
 
