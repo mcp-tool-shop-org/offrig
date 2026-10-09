@@ -15,7 +15,11 @@ All notable changes to offrig are documented here. The format is based on
   read, the commit goes ahead under the project's caps with a note. A provider with no cap
   shows `(not set)` instead of `(overall cap)`, `--provider` without a provider and an
   amount says what it needs, and `offrig budget --show --json` prints the whole view as one
-  versioned object.
+  versioned object. Two projects committing at once are checked one after the other, and a
+  project whose records can't be read stops the check instead of being skipped. Pods
+  started by hand with `offrig up` or the app aren't counted against caps; `offrig budget`,
+  its JSON (`uncounted`) and `offrig up` itself say so. `offrig_status` now names the
+  project by its folder, and its notes use short codes instead of error text.
 - **A cap per provider.** RunPod and OpenRouter hold separate money, so each now has its
   own cap: `offrig budget --provider runpod <usd>` and `--provider openrouter <usd>`. A pod
   is checked against the RunPod cap, an OpenRouter completion against the OpenRouter cap,

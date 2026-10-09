@@ -48,16 +48,21 @@ promise more than the account holds. Before a pod or an OpenRouter completion is
 offrig also checks the account: this amount plus everything already committed, in this
 project and the others, must fit in the provider's live balance. That matters most on
 RunPod, which stops every pod on the account when the balance reaches zero. When the
-balance can't be read, the commit goes ahead under the project's own caps, with a note
-saying the account check was skipped.
+balance can't be read (no key, the provider unreachable), the commit goes ahead under the
+project's own caps, with a note saying the account check was skipped. That is deliberate: a
+provider outage shouldn't stop work that the project's caps already allow. A project whose
+records can't be read, on the other hand, stops the check: its commitments can't be
+counted, so nothing new is committed until it can be.
 
 A provider with no cap of its own and no overall ceiling shows `(not set)`: nothing can be
 spent there until a person sets it.
 
 These checks cover what an agent spends through the side-car (`offrig_launch`,
-`offrig_complete`). A pod started by hand with `offrig up` or the app is not on any
-project's ledger, so it isn't counted against a cap. `offrig up` has its own guard: it
-refuses when the runway with the pod running would be under one hour.
+`offrig_complete`). **A pod started by hand with `offrig up` or the app is not counted**
+against any project's cap or in the account totals. `offrig budget` says so in its last
+line, the JSON lists it under `uncounted`, and `offrig up` says so before it launches. Its
+own guard still applies: it refuses when the runway with the pod running would be under one
+hour.
 
 A project set up with one cap keeps working as before: that cap stays as the overall
 ceiling, and each provider's cap starts at the same amount. Set the real per-provider caps,
