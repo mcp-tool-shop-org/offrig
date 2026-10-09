@@ -934,8 +934,17 @@ pub fn verify_one(
     let mut last = String::new();
     for attempt in 1..=2 {
         let resp = chat.chat(&req)?;
-        if let Some(e) = context_overflow(cfg.num_ctx, &resp) {
-            return Err(e);
+        if resp.done_reason == "length" {
+            // The reply stopped at a limit: the window filling is the server's doing,
+            // reaching num_predict is the reply's own.
+            return Err(context_overflow(cfg.num_ctx, Some(cfg.num_predict), &resp)
+                .unwrap_or_else(|| {
+                    Error::truncated(format!(
+                        "{} stopped at its token limit after {} tokens; raise num_predict",
+                        cfg.model,
+                        resp.eval_count.unwrap_or(0)
+                    ))
+                }));
         }
         timing.attempts = attempt;
         timing.eval_count += resp.eval_count.unwrap_or(0);
@@ -1736,18 +1745,40 @@ mod tests {
         let full = ChatResponse {
             prompt_eval_count: Some(16_000),
             eval_count: Some(370),
+            done_reason: "length".into(),
             ..resp(&reply_json("supported", "text"))
         };
         let e = verify_one(&Fake::new(vec![Ok(full)]), &cfg, &c, &[]).expect_err("overflow");
         assert_eq!(e.code(), "context_overflow");
         assert!(e.to_string().contains("16000") && e.to_string().contains("370"));
-        // One token under the slack is fine.
+        // A reply that finished is fine, even in a full window.
         let ok = ChatResponse {
             prompt_eval_count: Some(16_000),
             eval_count: Some(367),
             ..resp(&reply_json("supported", "text"))
         };
         assert!(verify_one(&Fake::new(vec![Ok(ok)]), &cfg, &c, &[]).is_ok());
+        // num_ctx = prompt + num_predict and the reply used exactly num_predict tokens:
+        // the reply's own cap, so truncated, not an overflow.
+        cfg.num_predict = 400;
+        cfg.num_ctx = 16_400;
+        let capped = ChatResponse {
+            prompt_eval_count: Some(16_000),
+            eval_count: Some(400),
+            done_reason: "length".into(),
+            ..resp("{")
+        };
+        let e = verify_one(&Fake::new(vec![Ok(capped)]), &cfg, &c, &[]).expect_err("capped");
+        assert_eq!(e.code(), "truncated");
+        // Stopped short of num_predict with the window full: overflow.
+        let short = ChatResponse {
+            prompt_eval_count: Some(16_000),
+            eval_count: Some(390),
+            done_reason: "length".into(),
+            ..resp("{")
+        };
+        let e = verify_one(&Fake::new(vec![Ok(short)]), &cfg, &c, &[]).expect_err("short");
+        assert_eq!(e.code(), "context_overflow");
     }
 
     #[test]

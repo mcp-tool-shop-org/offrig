@@ -810,10 +810,13 @@ fn resolve_ctx(
         });
     }
 
-    let model_max = server.model_max_context(&s.model).ok().flatten();
-    let cap = model_max.unwrap_or(DEFAULT_MODEL_MAX_CTX);
-
     if let Some(old) = old {
+        // A resume asks the server nothing: the model's maximum comes from the manifest.
+        let cap = old
+            .ctx
+            .as_ref()
+            .and_then(|z| z.model_max_context)
+            .unwrap_or(DEFAULT_MODEL_MAX_CTX);
         let n = old.settings["num_ctx"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
@@ -831,6 +834,8 @@ fn resolve_ctx(
         });
     }
 
+    let model_max = server.model_max_context(&s.model).ok().flatten();
+    let cap = model_max.unwrap_or(DEFAULT_MODEL_MAX_CTX);
     let mut z = CtxSizing::new(CtxMode::Auto, 0, "estimate");
     z.model_max_context = model_max;
     z.estimated_max_prompt_tokens = longest_est;
@@ -1958,6 +1963,8 @@ mod tests {
         installed: bool,
         max_ctx: Option<u32>,
         loaded: Option<Loaded>,
+        /// Calls to `model_max_context` and `loaded`: what a no-op resume must not make.
+        asked: std::cell::Cell<u32>,
     }
 
     impl Srv {
@@ -1968,15 +1975,18 @@ mod tests {
                 installed: true,
                 max_ctx: None,
                 loaded: None,
+                asked: std::cell::Cell::new(0),
             }
         }
     }
 
     impl Server for Srv {
         fn model_max_context(&self, _: &str) -> Result<Option<u32>> {
+            self.asked.set(self.asked.get() + 1);
             Ok(self.max_ctx)
         }
         fn loaded(&self, _: &str) -> Result<Option<Loaded>> {
+            self.asked.set(self.asked.get() + 1);
             Ok(self.loaded.clone())
         }
         fn version(&self) -> Result<String> {
@@ -3316,6 +3326,7 @@ mod tests {
                 return Ok(ChatResponse {
                     prompt_eval_count: Some(n - 100),
                     eval_count: Some(100),
+                    done_reason: "length".into(),
                     ..resp(&reply("supported", QUOTE))
                 });
             }
@@ -3356,6 +3367,7 @@ mod tests {
                 let n = u64::from(req.num_ctx.expect("ctx"));
                 return Ok(ChatResponse {
                     prompt_eval_count: Some(n),
+                    done_reason: "length".into(),
                     ..resp("{}")
                 });
             }
@@ -3582,6 +3594,120 @@ mod tests {
             (rep.status.as_str(), rep.context_overflow),
             ("incomplete", 1)
         );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn an_auto_resume_with_nothing_pending_loads_no_model_and_measures_nothing() {
+        let dir = tmp("auto-noop");
+        let mut srv = Srv::new();
+        srv.max_ctx = Some(40_960);
+        srv.loaded = Some(Loaded {
+            name: "judge".into(),
+            size_vram: 100,
+            size: 100,
+            context_length: None,
+        });
+        go_with(&auto_settings(), &gold(), &dir, false, &probing(2000), &srv).expect("first");
+        let before = srv.asked.get();
+        assert!(before > 0);
+        let chat = probing(2000);
+        let rep = go_with(&auto_settings(), &gold(), &dir, true, &chat, &srv).expect("noop");
+        assert_eq!(rep.status, "complete");
+        assert_eq!(chat.calls(), 0, "no probe and no scored call");
+        assert_eq!(srv.asked.get(), before, "no show or ps either");
+        cleanup(&[&dir]);
+    }
+
+    /// Every request offrig builds goes through `ChatRequest::body`; this drives every
+    /// chat path through a recording fake and checks the body each one would send. A new
+    /// path that forgets `shift` or `truncate` fails here.
+    #[test]
+    fn every_chat_path_sends_shift_false_and_truncate_false() {
+        let dir = tmp("invariant");
+        let inner = probing(2000);
+        // g1 answers garbage once, so the schema-retry path is driven too.
+        let first = RefCell::new(true);
+        let chat = Fake::new(move |id, req| {
+            if id == "g1" && req.num_predict != Some(1) && first.replace(false) {
+                return Ok(resp("not json at all"));
+            }
+            (inner.answer)(id, req)
+        });
+        go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("calibrate");
+        // A one-off check in auto mode.
+        let files = gold();
+        let entries = read_gold(&files).expect("gold");
+        let one = &entries[0].claim;
+        let mut est = TokenEstimator::default();
+        crate::verify::verify_one_auto(
+            &chat,
+            &VerifyConfig::new("judge"),
+            one,
+            &[],
+            None,
+            &mut est,
+        )
+        .expect("one-off");
+        let seen = chat.seen.borrow();
+        assert!(seen.iter().any(|r| r.num_predict == Some(1)), "probes ran");
+        assert!(seen.iter().any(|r| r.messages.len() > 2), "the retry ran");
+        assert!(seen.len() > 10);
+        for r in seen.iter() {
+            let b = r.body();
+            assert_eq!(b["shift"], json!(false), "{b}");
+            assert_eq!(b["truncate"], json!(false), "{b}");
+        }
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn every_record_carries_the_resolved_number_never_the_word_auto() {
+        let dir = tmp("resolved");
+        let rep = go_with(
+            &auto_settings(),
+            &gold(),
+            &dir,
+            false,
+            &probing(6000),
+            &Srv::new(),
+        )
+        .expect("run");
+        let table = render_table(&rep);
+        assert!(table.contains("num_ctx 12288"), "{table}");
+        for bad in ["num_ctx: auto", "num_ctx auto", "num_ctx=auto"] {
+            assert!(!table.contains(bad), "{bad}: {table}");
+        }
+        let num = |v: &Value| v.as_u64() == Some(12_288);
+        let metrics: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("metrics.json")).expect("metrics"),
+        )
+        .expect("json");
+        assert!(
+            num(&metrics["settings"]["num_ctx"]),
+            "{}",
+            metrics["settings"]
+        );
+        assert!(num(&metrics["ctx"]["num_ctx"]));
+        assert_eq!(metrics["settings"]["num_ctx_mode"], "auto");
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("manifest.json")).expect("manifest"),
+        )
+        .expect("json");
+        assert!(num(&manifest["settings"]["num_ctx"]) && num(&manifest["ctx"]["num_ctx"]));
+        for line in read_lines(&dir, false).expect("lines") {
+            assert_eq!(line.pins.expect("pins").num_ctx, 12_288);
+        }
+        for f in ["metrics.json", "manifest.json", "verdicts.jsonl"] {
+            let t = std::fs::read_to_string(dir.join(f)).expect("file");
+            for bad in [
+                "\"num_ctx\":\"auto\"",
+                "\"num_ctx\": \"auto\"",
+                "\"num_ctx\":null",
+            ] {
+                assert!(!t.contains(bad), "{f}: {bad}");
+            }
+        }
         cleanup(&[&dir]);
     }
 }
