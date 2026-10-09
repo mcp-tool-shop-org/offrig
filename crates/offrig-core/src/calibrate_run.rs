@@ -905,6 +905,7 @@ pub fn run(
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Attempt {
     timeouts: u32,
+    /// 5xx answers and replies whose connection dropped: one failure, one count.
     #[serde(default)]
     server_errors: u32,
     last_error: String,
