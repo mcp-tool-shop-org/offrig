@@ -6,6 +6,7 @@
 //! tunnel is down a request fails instead of landing on this machine. `guard` checks
 //! that this still holds.
 
+pub mod balances;
 pub mod calibrate;
 pub mod calibrate_run;
 pub mod checks;

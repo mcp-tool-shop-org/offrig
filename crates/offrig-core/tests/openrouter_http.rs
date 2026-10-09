@@ -207,3 +207,44 @@ fn the_key_comes_from_the_environment_only() {
         &["OPENROUTER_API_KEY"],
     );
 }
+
+#[test]
+fn the_credits_read_carries_the_key_and_the_balance_is_credits_minus_usage() {
+    let m = serve(|req, _| match req.route().as_str() {
+        "GET /credits" => (
+            200,
+            r#"{"data":{"total_credits":10.5,"total_usage":2.25}}"#.to_string(),
+        ),
+        _ => (404, "{}".into()),
+    });
+    let or = OpenRouter::new(KEY, &m.url);
+    let c = or.credits().expect("credits");
+    assert_eq!(c.total_credits, 10.5);
+    assert_eq!(c.total_usage, 2.25);
+    assert!((c.balance() - 8.25).abs() < 1e-9);
+    assert_eq!(
+        m.last().header("authorization"),
+        Some(format!("Bearer {KEY}").as_str())
+    );
+}
+
+#[test]
+fn a_failed_or_odd_credits_read_is_an_error_not_a_balance() {
+    let m = serve(|req, _| match req.route().as_str() {
+        "GET /credits" => (401, format!(r#"{{"error":"bad key {KEY}"}}"#)),
+        _ => (404, "{}".into()),
+    });
+    let or = OpenRouter::new(KEY, &m.url);
+    let e = or.credits().expect_err("401");
+    assert!(matches!(e, Error::OpenRouter { status: 401, .. }), "{e}");
+    assert!(!e.to_string().contains(KEY), "the key is redacted: {e}");
+
+    let odd = serve(|_, _| (200, r#"{"data":{}}"#.to_string()));
+    let e = OpenRouter::new(KEY, &odd.url)
+        .credits()
+        .expect_err("no fields");
+    assert!(matches!(e, Error::OpenRouter { .. }), "{e}");
+
+    let down = OpenRouter::new(KEY, &dead_url());
+    assert!(down.credits().is_err());
+}

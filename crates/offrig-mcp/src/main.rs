@@ -103,6 +103,28 @@ fn budget_json(b: &store::Budget) -> Value {
     })
 }
 
+/// One provider's budget with the balance the provider itself reports, or "unknown"
+/// and why. The balance is a reading, never a cap; no tool can set either.
+fn provider_budget_json(b: &store::Budget, balance: Option<f64>, why_unknown: &str) -> Value {
+    let mut v = budget_json(b);
+    v["balance"] = match balance {
+        Some(x) => json!(round2(x)),
+        None => json!("unknown"),
+    };
+    if balance.is_none() {
+        v["balance_note"] = json!(why_unknown);
+    }
+    if let Some(x) = balance
+        && b.cap > x + 1e-9
+    {
+        v["warning"] = json!(format!(
+            "the cap ${:.2} is above the ${:.2} the provider reports",
+            b.cap, x
+        ));
+    }
+    v
+}
+
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -659,6 +681,11 @@ impl Sidecar {
                 .collect();
             Ok((
                 s.budget()?,
+                [
+                    s.budget_for(store::Provider::RunPod)?,
+                    s.budget_for(store::Provider::OpenRouter)?,
+                ],
+                s.has_overall_ceiling()?,
                 s.handoffs()?,
                 s.unfinished_journal()?,
                 s.ready()?,
@@ -667,7 +694,17 @@ impl Sidecar {
                 completions,
             ))
         });
-        let (budget, handoffs, journal, ready, open_plans, has_brief, completions) = match local {
+        let (
+            budget,
+            provider_budgets,
+            has_ceiling,
+            handoffs,
+            journal,
+            ready,
+            open_plans,
+            has_brief,
+            completions,
+        ) = match local {
             Ok(v) => v,
             Err(e) => return fail_err(&e, "check the project database at .offrig/offrig.db"),
         };
@@ -676,6 +713,12 @@ impl Sidecar {
             Ok::<_, offrig_core::Error>((rp.account().ok(), rp.list_pods()?))
         })
         .await;
+        // The OpenRouter balance is best effort too: no key or a failed call is "unknown".
+        let or_balance = tokio::task::spawn_blocking(|| {
+            offrig_core::balances::read(store::Provider::OpenRouter)
+        })
+        .await
+        .unwrap_or_else(|e| offrig_core::balances::Balance::Unknown(e.to_string()));
         let (account, pods, remote_note) = match remote {
             Ok(Ok((a, p))) => (a, p, None),
             Ok(Err(e)) => (None, Vec::new(), Some(chain(&e))),
@@ -756,6 +799,25 @@ impl Sidecar {
                 "sidecar_port": l.sidecar_port(),
             })),
             "budget": budget_json(&budget),
+            "budgets": {
+                "runpod": provider_budget_json(
+                    &provider_budgets[0],
+                    account.as_ref().map(|a| a.client_balance),
+                    remote_note.as_deref().unwrap_or("RunPod did not answer"),
+                ),
+                "openrouter": provider_budget_json(
+                    &provider_budgets[1],
+                    or_balance.known(),
+                    &or_balance.text(),
+                ),
+                "overall": {
+                    "ceiling": has_ceiling,
+                    "cap": round2(budget.cap),
+                    "committed": round2(budget.committed),
+                    "spent": round2(budget.spent),
+                    "remaining": round2(budget.remaining),
+                },
+            },
             "runpod": {
                 "balance": account.as_ref().map(|a| round2(a.client_balance)),
                 "spend_per_hr": account.as_ref().map(|a| round2(a.current_spend_per_hr)),

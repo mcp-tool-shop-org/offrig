@@ -321,6 +321,54 @@ fn budget_shows_the_cap_for_a_project_directory() {
 }
 
 #[test]
+fn budget_sets_provider_caps_shows_a_line_each_and_clears_the_overall() {
+    let (rig, _) = rig_with("budget-providers", vec![], 50.0);
+    let proj = rig.dir.join("proj-providers");
+    std::fs::create_dir_all(&proj).expect("proj");
+    let p = proj.to_str().expect("utf8");
+    assert_eq!(
+        rig.run(&["budget", "40", "--project", p]).status.code(),
+        Some(0)
+    );
+    // The overall ceiling can't go while a provider has no cap of its own.
+    let early = rig.run(&["budget", "--clear-overall", "--project", p]);
+    assert_eq!(early.status.code(), Some(1), "{}", err(&early));
+    assert!(err(&early).contains("openrouter") || err(&early).contains("runpod"));
+    let bad = rig.run(&["budget", "--provider", "aws", "5", "--project", p]);
+    assert_ne!(bad.status.code(), Some(0));
+    for (prov, usd) in [("runpod", "30"), ("openrouter", "8")] {
+        let o = rig.run(&["budget", "--provider", prov, usd, "--project", p]);
+        assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    }
+    let show = rig.run(&["budget", "--show", "--project", p]);
+    let text = out(&show);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].starts_with("runpod") && lines[0].contains("cap $30.00"),
+        "{text}"
+    );
+    assert!(
+        lines[1].starts_with("openrouter") && lines[1].contains("cap $8.00"),
+        "{text}"
+    );
+    assert!(
+        lines[1].contains("balance unknown"),
+        "no key, so unknown: {text}"
+    );
+    assert!(
+        lines[2].starts_with("overall") && lines[2].contains("cap $40.00"),
+        "{text}"
+    );
+    let clear = rig.run(&["budget", "--clear-overall", "--project", p]);
+    assert_eq!(clear.status.code(), Some(0), "{}", err(&clear));
+    let after = out(&rig.run(&["budget", "--show", "--project", p]));
+    assert!(
+        after.contains("no ceiling") && after.contains("cap $38.00"),
+        "{after}"
+    );
+}
+
+#[test]
 fn index_embeds_incrementally_reports_status_and_rebuilds() {
     // A fixed tunnel port keeps the mock embed server (an ephemeral port) clear of it.
     let rig = Rig::new(

@@ -52,6 +52,7 @@ fn offrig(name: &str, key: Option<&str>, base: Option<&str>, args: &[&str]) -> O
         .current_dir(&dir)
         .env("OFFRIG_CONFIG_DIR", dir.join("cfg"))
         .env_remove("RUNPOD_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
         .env_remove("RUST_BACKTRACE");
     if let Some(k) = key {
         c.env("RUNPOD_API_KEY", k);

@@ -371,6 +371,54 @@ impl OpenRouter {
             provider: d["provider_name"].as_str().map(str::to_string),
         }))
     }
+
+    /// The account's credits (`GET /credits`, with the key). Read-only, spends nothing.
+    pub fn credits(&self) -> Result<Credits> {
+        let what = "the account credits";
+        let mut resp = self
+            .agent
+            .get(format!("{}/credits", self.base))
+            .header("Authorization", &format!("Bearer {}", self.key))
+            .call()
+            .map_err(|e| Error::http(what, e))?;
+        let status = resp.status().as_u16();
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| Error::http(what, e))?;
+        if status != 200 {
+            return Err(self.api_error(what, status, &text));
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|e| Error::decode(what, e))?;
+        parse_credits(&v).ok_or_else(|| Error::OpenRouter {
+            what: what.into(),
+            status,
+            body: "no total_credits and total_usage in the reply".into(),
+        })
+    }
+}
+
+/// The account's credits: what was bought, what was used.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Credits {
+    pub total_credits: f64,
+    pub total_usage: f64,
+}
+
+impl Credits {
+    /// What is left to spend, in dollars.
+    pub fn balance(&self) -> f64 {
+        self.total_credits - self.total_usage
+    }
+}
+
+/// Read `GET /credits`'s `data.total_credits` and `data.total_usage`.
+pub fn parse_credits(v: &Value) -> Option<Credits> {
+    let d = &v["data"];
+    Some(Credits {
+        total_credits: d["total_credits"].as_f64()?,
+        total_usage: d["total_usage"].as_f64()?,
+    })
 }
 
 /// The dearest prompt, completion (or internal reasoning) and request price across the
