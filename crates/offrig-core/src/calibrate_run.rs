@@ -46,9 +46,10 @@ const MAX_CONSECUTIVE_TRANSPORT: usize = 5;
 const TIMED_OUT_TWICE: &str = "timed out twice; long think or stuck server";
 
 /// The note on a claim whose second server error (5xx) was recorded as its outcome. A
-/// server that fails the same claim twice at temperature 0 is failing on that model's
-/// reply (Ollama cancels the task mid-generation), so it counts against the model, as a
-/// repeated timeout does. A server that is down fails every claim and stops the run first.
+/// server that fails the same claim twice at temperature 0, while it still answers a claim
+/// it answered before, is failing on that model's reply (Ollama cancels the task
+/// mid-generation), so it counts against the model, as a repeated timeout does. A server
+/// that is down or out of memory fails the check too, so nothing is charged to the model.
 const SERVER_ERROR_TWICE: &str = "server error (5xx) twice on this claim; the reply, not the wire";
 
 /// What the default rule counts against the model, stated wherever its result shows.
@@ -695,6 +696,24 @@ pub fn run(
         ));
     }
 
+    // Claims with a real answer, in run order: the health check for a repeated server error
+    // asks the first of them again.
+    let ok_ids: HashSet<&str> = prior
+        .iter()
+        .filter(|l| l.is_ok())
+        .map(|l| l.claim_id.as_str())
+        .collect();
+    let mut answered: Vec<usize> = (0..picked.len())
+        .filter(|&j| ok_ids.contains(picked[j].claim.id.as_str()))
+        .collect();
+    let server_answers = |j: usize, cfg: &VerifyConfig| {
+        let mut c = picked[j].claim.clone();
+        if s.swap_evidence {
+            c.context.reverse();
+        }
+        verify_one(chat, cfg, &c, &[]).is_ok()
+    };
+
     let mut transport_run = 0usize;
     for (i, entry) in picked.iter().enumerate() {
         if done.contains(&entry.claim.id) {
@@ -722,6 +741,7 @@ pub fn run(
         let line = match result {
             Ok(v) => {
                 settled = true;
+                answered.push(i);
                 args.store.save_verdict(&v)?;
                 let found = quote_found(&v.evidence_quote, &evidence);
                 Some(Line::from_verdict(sel, order, wall, &v, found))
@@ -740,7 +760,18 @@ pub fn run(
                 if e.is_client_timeout() || server {
                     let a = attempts.entry(sel.id.clone()).or_default();
                     let (count, note, code) = if server {
-                        a.server_errors += 1;
+                        // A repeat counts only while the server still answers a claim it
+                        // answered before; otherwise the server, not this reply, is failing.
+                        let healthy = a.server_errors >= 1
+                            && answered.first().is_some_and(|&j| server_answers(j, &cfg));
+                        if a.server_errors == 0 || healthy {
+                            a.server_errors += 1;
+                        } else {
+                            progress(&format!(
+                                "{}: a second server error, but the server failed its health check too; not recorded",
+                                sel.id
+                            ));
+                        }
                         (a.server_errors, SERVER_ERROR_TWICE, "server_error")
                     } else {
                         a.timeouts += 1;
@@ -761,6 +792,11 @@ pub fn run(
             }
             Err(e) => Some(Line::from_error(sel, order, wall, &e)),
         };
+        if line.is_some() {
+            // A recorded outcome, even a repeated timeout or server error, is not a
+            // transport failure: it does not count toward stopping the run.
+            transport_note = None;
+        }
         let shown = match (&line, transport_note) {
             (Some(l), _) => l.final_verdict.map_or_else(
                 || format!("unusable:{}", l.error_code.as_deref().unwrap_or("?")),
@@ -1936,6 +1972,61 @@ mod tests {
         let rep = go(&settings(), &dir, true, &chat, &Srv::new()).expect("resume");
         assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
         assert!(rep.unusable.is_empty());
+        let att: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("attempts.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(
+            (
+                att["g2"]["timeouts"].as_u64(),
+                att["g2"]["server_errors"].as_u64()
+            ),
+            (Some(1), Some(1))
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_server_that_stays_down_is_never_charged_to_the_model() {
+        // Every claim gets 500 (an out-of-memory load, say): the run stops, and a resume
+        // against the same broken server records nothing. No claim has an answer to
+        // re-ask, so no repeat can be shown to be the model's.
+        let dir = tmp("all-500");
+        let chat = Fake::new(|_, _| Err(Error::Ollama("chat: http 500: out of memory".into())));
+        assert!(go(&settings(), &dir, false, &chat, &Srv::new()).is_err());
+        assert!(go(&settings(), &dir, true, &chat, &Srv::new()).is_err());
+        let rep = report_dir(&dir, None).expect("report only");
+        assert_eq!(rep.status.as_str(), "incomplete");
+        assert!(rep.unusable.is_empty());
+        assert!(read_lines(&dir, false).expect("lines").is_empty());
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_repeat_while_the_server_fails_its_health_check_is_not_recorded() {
+        // g2 gets 500 in the first run. On resume the whole server is broken: the
+        // health check (re-asking an answered claim) fails, so g2 is not charged.
+        let dir = tmp("broken-on-resume");
+        let first = Fake::new(|id, _| {
+            if id == "g2" {
+                return Err(Error::Ollama("chat: http 500: cancelled".into()));
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        go(&settings(), &dir, false, &first, &Srv::new()).expect("run");
+        let broken = Fake::new(|_, _| Err(Error::Ollama("chat: http 500: out of memory".into())));
+        let rep = go(&settings(), &dir, true, &broken, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        assert!(rep.unusable.is_empty());
+        let att: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("attempts.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(att["g2"]["server_errors"].as_u64(), Some(1));
+        // Once the server is back, the next repeat is the model's.
+        let rep = go(&settings(), &dir, true, &first, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("complete", 0));
+        assert_eq!(rep.unusable.get("grounded"), Some(&1));
         cleanup(&[&dir]);
     }
 
