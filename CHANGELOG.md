@@ -18,6 +18,12 @@ All notable changes to offrig are documented here. The format is based on
     unusable and counts against the model. A connection problem or a single timeout is not
     recorded at all: `--resume` retries it, and until every claim has an answer the result
     is `incomplete`, never a pass or fail.
+  - A server error (HTTP 5xx) on the same claim twice is recorded as unusable
+    (`server_error`) and counts against the model, like a repeated timeout. Ollama can
+    cancel a reply mid-generation with a 500 on every try for one model and claim, which
+    used to leave the run `incomplete` for good. A single 5xx is still retried, and a repeat
+    counts only if the server still answers a claim it answered before, so a server that is
+    down or out of memory is never charged to the model.
   - Wilson intervals have exact edges: no events gives a lower bound of exactly 0, and every
     claim an upper bound of exactly 1, not a rounding error away. `verify calibrate --help`
     now describes failed calls the way the command treats them.
