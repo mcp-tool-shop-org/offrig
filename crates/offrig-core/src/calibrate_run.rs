@@ -45,8 +45,14 @@ const MAX_CONSECUTIVE_TRANSPORT: usize = 5;
 /// The note on a claim whose second timeout was recorded as its outcome.
 const TIMED_OUT_TWICE: &str = "timed out twice; long think or stuck server";
 
+/// The note on a claim whose second server error (5xx) was recorded as its outcome. A
+/// server that fails the same claim twice at temperature 0 is failing on that model's
+/// reply (Ollama cancels the task mid-generation), so it counts against the model, as a
+/// repeated timeout does. A server that is down fails every claim and stops the run first.
+const SERVER_ERROR_TWICE: &str = "server error (5xx) twice on this claim; the reply, not the wire";
+
 /// What the default rule counts against the model, stated wherever its result shows.
-pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
+pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
 
 // ---- Settings
 
@@ -723,21 +729,30 @@ pub fn run(
             Err(e) if is_transport(&e) => {
                 // Not an outcome: the server, not the model, failed. Nothing is
                 // recorded, so a resume tries the claim again.
+                let server = is_server_error(&e);
                 transport_note = Some(if e.is_client_timeout() {
                     "timeout"
+                } else if server {
+                    "server (5xx)"
                 } else {
                     "network"
                 });
-                if e.is_client_timeout() {
+                if e.is_client_timeout() || server {
                     let a = attempts.entry(sel.id.clone()).or_default();
-                    a.timeouts += 1;
+                    let (count, note, code) = if server {
+                        a.server_errors += 1;
+                        (a.server_errors, SERVER_ERROR_TWICE, "server_error")
+                    } else {
+                        a.timeouts += 1;
+                        (a.timeouts, TIMED_OUT_TWICE, "timeout")
+                    };
                     a.last_error = crate::error::chain(&e);
-                    let twice = a.timeouts >= 2;
                     let last = a.last_error.clone();
                     write_json(&attempts_path, &attempts)?;
-                    twice.then(|| {
+                    (count >= 2).then(|| {
                         let mut l = Line::from_error(sel, order, wall, &e);
-                        l.error = Some(format!("{TIMED_OUT_TWICE} (last: {last})"));
+                        l.error_code = Some(code.to_string());
+                        l.error = Some(format!("{note} (last: {last})"));
                         l
                     })
                 } else {
@@ -782,10 +797,13 @@ pub fn run(
     report_dir(dir, None)
 }
 
-/// Per-claim timeout history, kept beside the outcomes. Not part of the manifest.
+/// Per-claim timeout and server-error history, kept beside the outcomes. Not part of the
+/// manifest. A file written before server errors were counted reads them as 0.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Attempt {
     timeouts: u32,
+    #[serde(default)]
+    server_errors: u32,
     last_error: String,
 }
 
@@ -797,15 +815,17 @@ fn read_attempts(path: &Path) -> Result<BTreeMap<String, Attempt>> {
     }
 }
 
-/// A failure of the server or the wire, not of the model: no outcome is recorded.
+/// A failure of the server or the wire, not of the model: no outcome is recorded the
+/// first time. A repeated timeout or server error on one claim is recorded (see above).
 fn is_transport(e: &Error) -> bool {
-    match e {
-        Error::Http { .. } => true,
-        Error::Ollama(m) => m
-            .split_once(": http ")
-            .is_some_and(|(_, rest)| rest.starts_with('5')),
-        _ => false,
-    }
+    matches!(e, Error::Http { .. }) || is_server_error(e)
+}
+
+/// An HTTP 5xx answer from the model server.
+fn is_server_error(e: &Error) -> bool {
+    matches!(e, Error::Ollama(m) if m
+        .split_once(": http ")
+        .is_some_and(|(_, rest)| rest.starts_with('5')))
 }
 
 fn label_str(l: Label) -> &'static str {
@@ -1848,6 +1868,85 @@ mod tests {
         // The recorded timeout counts against the model.
         assert_eq!(rep.rows[0].missing, 1);
         assert_eq!(rep.default_result, "fail");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_second_server_error_on_one_claim_is_recorded_as_unusable() {
+        // Ollama returning 500 on the same claim every time (it cancels the task
+        // mid-reply) used to leave the run incomplete forever.
+        let dir = tmp("five-hundred");
+        let chat = Fake::new(|id, _| {
+            if id == "g2" {
+                return Err(Error::Ollama("chat: http 500: cancelled".into()));
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        assert!(rep.unusable.is_empty());
+        let att: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("attempts.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(
+            (
+                att["g2"]["server_errors"].as_u64(),
+                att["g2"]["timeouts"].as_u64()
+            ),
+            (Some(1), Some(0))
+        );
+
+        let rep = go(&settings(), &dir, true, &chat, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("complete", 0));
+        let lines = read_lines(&dir, false).expect("lines");
+        let g2 = lines.iter().find(|l| l.claim_id == "g2").expect("g2");
+        assert_eq!(
+            (g2.status.as_str(), g2.error_code.as_deref()),
+            ("unusable", Some("server_error"))
+        );
+        let err = g2.error.as_deref().expect("value");
+        assert!(
+            err.contains("server error (5xx) twice") && err.contains("http 500"),
+            "{err}"
+        );
+        assert_eq!(rep.unusable.get("grounded"), Some(&1));
+        assert_eq!(rep.rows[0].missing, 1);
+        assert_eq!(rep.default_result, "fail");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_timeout_then_a_server_error_are_counted_apart() {
+        // One of each is two different one-off failures, not a repeat: still retryable.
+        let dir = tmp("mixed");
+        let calls = RefCell::new(0u32);
+        let chat = Fake::new(move |id, _| {
+            if id == "g2" {
+                *calls.borrow_mut() += 1;
+                return Err(if *calls.borrow() == 1 {
+                    timeout_error()
+                } else {
+                    Error::Ollama("chat: http 502: bad gateway".into())
+                });
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        let rep = go(&settings(), &dir, true, &chat, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        assert!(rep.unusable.is_empty());
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn attempts_written_before_server_errors_were_counted_still_read() {
+        let dir = tmp("old-attempts");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("attempts.json");
+        std::fs::write(&path, r#"{"g2":{"timeouts":1,"last_error":"x"}}"#).expect("write");
+        let att = read_attempts(&path).expect("read");
+        assert_eq!((att["g2"].timeouts, att["g2"].server_errors), (1, 0));
         cleanup(&[&dir]);
     }
 
