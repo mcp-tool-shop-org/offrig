@@ -38,6 +38,7 @@ async fn start(project: &Path, cfg: &Path, url: &str) -> Client {
         c.env("OFFRIG_CONFIG_DIR", cfg);
         c.env("OFFRIG_TEST_RUNPOD_BASE", url);
         c.env("OFFRIG_TEST_NO_WATCHDOG", "1");
+        c.env_remove("OPENROUTER_API_KEY");
     });
     ().serve(TokioChildProcess::new(cmd).expect("spawn"))
         .await
@@ -107,6 +108,12 @@ fn pod(id: &str, name: &str, price: f64) -> String {
 fn snapshot(project: &Path) -> Vec<(String, u64, Vec<u8>)> {
     let mut out: Vec<(String, u64, Vec<u8>)> = std::fs::read_dir(project.join(".offrig"))
         .expect("read dir")
+        .filter(|e| {
+            // Reading through SQLite's normal locking may add -wal and -shm files.
+            let n = e.as_ref().expect("entry").file_name();
+            let n = n.to_string_lossy();
+            !(n.ends_with("-wal") || n.ends_with("-shm"))
+        })
         .map(|e| {
             let e = e.expect("entry");
             let bytes = std::fs::read(e.path()).unwrap_or_default();
@@ -194,7 +201,7 @@ async fn a_sibling_lanes_pod_appears_with_its_plan_and_foreign_pods_are_only_cou
     );
 
     // Reading the sibling changed nothing in its store folder: every file is
-    // byte-identical, and no side file appeared.
+    // byte-identical, and no side file but SQLite's own -wal and -shm appeared.
     let names = |v: &[(String, u64, Vec<u8>)]| {
         v.iter()
             .map(|(n, len, _)| format!("{n}:{len}"))
@@ -338,6 +345,54 @@ async fn a_plans_pod_is_created_with_lane_plan_and_deadline_in_its_env() {
     assert!(
         env["OFFRIG_JOB_DIR"].is_string() && env["HF_HOME"].is_string(),
         "the profile's own env stays: {sent}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn status_carries_codes_not_paths_and_the_uncounted_disclaimer() {
+    // The sentinel is in the name of the directory everything lives in.
+    let root = temp("sentinelxyz-status");
+    let cfg = root.join("cfg");
+    let me = root.join("me");
+    std::fs::create_dir_all(&me).expect("me");
+    let reg = offrig_core::account::ProjectsRegistry::at(&cfg);
+    // A registered project with no store at all.
+    reg.add(&root.join("gone")).expect("gone");
+    // A registered project whose store is not a database.
+    let junk = root.join("junk");
+    std::fs::create_dir_all(junk.join(".offrig")).expect("dir");
+    std::fs::write(
+        db(&junk),
+        b"this is not an sqlite database, not even close, not at all",
+    )
+    .expect("junk");
+    reg.add(&junk).expect("junk reg");
+    // RunPod answers 500, so its balance is unknown; there is no OpenRouter key.
+    let (url, _h) = mock(move |route, _b, _| match route {
+        "GET /pods" => (200, "[]".into()),
+        _ => (500, "{}".into()),
+    });
+    let client = start(&me, &cfg, &url).await;
+    let r = call(&client, "offrig_status", json!({})).await;
+    assert_eq!(r.is_error, Some(false), "{:?}", body(&r));
+    let st = body(&r);
+    client.cancel().await.expect("shutdown");
+    let text = st.to_string().to_lowercase();
+    assert!(!text.contains("sentinelxyz"), "no path in status: {st}");
+    assert!(!text.contains("\\\\"), "no windows path in status: {st}");
+    for p in ["runpod", "openrouter"] {
+        let notes = st["account"][p]["notes"].as_array().expect("notes");
+        let notes: Vec<&str> = notes.iter().filter_map(Value::as_str).collect();
+        assert!(notes.contains(&"gone: no_store"), "{p}: {notes:?}");
+        assert!(notes.contains(&"junk: unreadable"), "{p}: {notes:?}");
+    }
+    assert_eq!(st["budgets"]["openrouter"]["balance_note"], "no_key");
+    assert_eq!(st["budgets"]["runpod"]["balance_note"], "http_error");
+    assert_eq!(
+        st["uncounted"],
+        json!(["manual pods (offrig up, the app)"]),
+        "{st}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

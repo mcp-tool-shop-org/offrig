@@ -274,6 +274,9 @@ The checks on each reply:
   (`--num-ctx auto`), and Ollama is told never to shift or trim the context. A reply that
   would still run past the window is a `context_overflow`: offrig's sizing failure, not
   the model's. It's recorded, never scored, and leaves a calibration run incomplete.
+  The measuring calls load the model, so they happen inside a card grant like the run
+  itself. A resume reuses the window already chosen and measures nothing, and a resume
+  with nothing left to do never loads the model.
 - Every verdict is marked untrusted model output and stored in the `verdicts` table with
   the pins listed under PIN_PER_STEP.
 
