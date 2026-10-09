@@ -1574,7 +1574,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1603,10 +1603,11 @@ impl Sidecar {
         {
             let created = progress["pod_created_at"].as_i64();
             match tokio::task::spawn_blocking(move || ops::live_progress(&pod_id, created)).await {
-                Ok(Ok(step)) => {
+                Ok(Ok(view)) => {
                     progress["launch_step"] = progress["step"].take();
                     progress["launch_step_at"] = progress["at"].take();
-                    progress["step"] = json!(step);
+                    progress["step"] = json!(view.step);
+                    progress["pod_status"] = json!(view.pod_status);
                     progress["at"] = json!(now);
                     progress["step_source"] = json!("the pod's state, checked just now");
                 }

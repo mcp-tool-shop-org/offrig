@@ -6,6 +6,25 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **Prices and stock come from the v2 catalog.**
+  `GET /catalog/gpus?include=AVAILABILITY&product=POD` replaces the GraphQL price
+  query. The listed secure-cloud price is per GPU and is multiplied by the GPU count.
+  Stock is `NONE`, `LOW`, `MEDIUM` or `HIGH`, and a pinned data center uses that
+  center's own level. `NONE`, a max count below the request, or a data center that
+  does not list the type, is not free. The public pricing page is not used.
+- **The catalog's CUDA list wins at plan time.** Each GPU type's `cudaVersions` is
+  what a plan checks against the floor. A version marked unavailable does not count,
+  and a version newer than the copied list does. `CUDA_VERSIONS` is only the fallback
+  when the catalog omits that list, and it is still what config validation accepts.
+- **The account balance stays on GraphQL until early 2027.** The v2 spec read on
+  2026-10-08 has no balance field. Billing history is spend, not the balance. Listing
+  data centers stays on GraphQL too; nothing in the CLI, the app or the side-car calls it.
+- **A debug build can force an unplaceable GPU first.** `OFFRIG_UNPLACEABLE_GPU`
+  (debug builds only, off unless set) is tried before the plan's list, even above the
+  price cap, so a live test can see the 400 fallback. A release build ignores it.
+- **`offrig_job` reports `progress.pod_status`.** While a pod boots, that field is the
+  raw v2 status (`PROVISIONING`, `STARTING`, `RUNNING`, and the rest).
+
 - **The verifier's verdict contract (schema v6).** The groundwork for `offrig verify`; no
   command uses it yet.
   - The verifier sees the claim and the evidence, never how the claim was made. It replies
@@ -61,9 +80,9 @@ All notable changes to offrig are documented here. The format is based on
 - **Not in v2, and not rebuilt:** spot (`interruptible`) and the host-quality filters
   (`minDownloadMbps`, `minDiskBandwidthMBps`). They are absent from the v2 create schema.
   `supportPublicIp` is gone; publishing `22/tcp` is what makes direct SSH appear.
-- **The account balance stays on GraphQL.** The v2 spec read on 2026-10-08 has no
-  balance field. Prices and stock stay on GraphQL in this change. GraphQL retires in
-  early 2027.
+- **The account balance stayed on GraphQL in the v2 client.** The v2 spec read on
+  2026-10-08 has no balance field. Prices and stock moved to the catalog in the
+  change above. GraphQL retires in early 2027.
 - **A broken pod is terminated during the launch.** v2 `status` is the pod's actual
   state. `PROVISIONING` and `STARTING` are progress. `ERROR`, and `EXITED` while the
   launch is waiting, fail the launch and terminate the pod immediately, so it does

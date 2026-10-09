@@ -861,8 +861,9 @@ fn stage_cmd(name: &str, dc: Option<String>, remove: bool, yes: bool) -> Result<
 
 fn preflight(s: &Session, p: &Profile, yes: bool) -> Result<()> {
     s.plan_check(p)?;
-    // Prices and the balance come from RunPod's GraphQL API. Launching needs only
-    // REST, so if GraphQL is down or retired, warn and launch without the estimate.
+    // Prices come from the v2 catalog. The balance is still GraphQL, until early
+    // 2027. Launching needs only the pod API, so if either read fails, warn and
+    // launch without the estimate.
     let offers = match s.rp.gpu_offers_in(p.gpu_count, p.data_center_id.as_deref()) {
         Ok(o) => o,
         Err(e) => {

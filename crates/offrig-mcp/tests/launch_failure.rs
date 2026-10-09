@@ -30,9 +30,9 @@ fn graphql(body: &str, free: bool) -> String {
         return r#"{"data":{"myself":{"clientBalance":50.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#
             .into();
     }
-    let price = if free { "2.09" } else { "null" };
+    let availability = if free { "HIGH" } else { "NONE" };
     format!(
-        r#"{{"data":{{"gpuTypes":[{{"id":"{RTX_S}","displayName":"RTX PRO 6000","memoryInGb":96,"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":{price},"stockStatus":null}}}}]}}}}"#
+        r#"{{"gpus":[{{"id":"{RTX_S}","name":"RTX PRO 6000","memory":96,"secure":true,"price":{{"secure":2.09}},"maxCount":{{"secure":8}},"availability":"{availability}"}}]}}"#
     )
 }
 
@@ -100,6 +100,7 @@ async fn until_job_state(client: &Client, plan_id: i64, states: &[&str]) -> Valu
 #[tokio::test]
 async fn a_pod_that_never_got_ready_is_pod_not_ready_rented_billed_and_terminated() {
     let (url, hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", true)),
         "POST /graphql" => (200, graphql(b, true)),
         "GET /pods" => (200, "[]".into()),
         // The create reply names the GPU and price; the pod never gets an ssh address.
@@ -167,6 +168,7 @@ async fn a_pod_that_never_got_ready_is_pod_not_ready_rented_billed_and_terminate
 #[tokio::test]
 async fn a_launch_that_rented_nothing_stays_no_capacity_with_nothing_spent() {
     let (url, hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", false)),
         "POST /graphql" => (200, graphql(b, false)),
         "GET /pods" => (200, "[]".into()),
         _ => (404, "{}".into()),
@@ -216,6 +218,7 @@ async fn rented_is_filled_when_the_pod_exists_even_if_only_a_later_read_names_th
     let named = Arc::new(AtomicBool::new(false));
     let seen = Arc::clone(&named);
     let (url, hits) = mock(move |route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", true)),
         "POST /graphql" => (200, graphql(b, true)),
         "GET /pods" => (200, "[]".into()),
         "POST /pods" => (200, POD_BARE.into()),
@@ -262,6 +265,7 @@ async fn rented_is_filled_when_the_pod_exists_even_if_only_a_later_read_names_th
 #[tokio::test]
 async fn a_job_id_that_is_really_a_plan_id_is_answered_with_the_plans_job() {
     let (url, _hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("", true)),
         "POST /graphql" => (200, graphql(b, true)),
         "GET /pods" => (200, "[]".into()),
         _ => (404, "{}".into()),

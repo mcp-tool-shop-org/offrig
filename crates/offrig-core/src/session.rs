@@ -294,7 +294,7 @@ impl Session {
     }
 
     /// Whether any of the body's GPU types is free at its count. `None` when the
-    /// price API cannot say (it is GraphQL, which RunPod may retire).
+    /// catalog cannot say.
     fn capacity_free(&self, body: &crate::runpod::PodCreate) -> Option<bool> {
         let offers = self
             .rp
@@ -327,7 +327,7 @@ impl Session {
             if cancel.load(Ordering::SeqCst) {
                 return Err(Error::Cancelled(format!("waiting for {what}")));
             }
-            // Ask the price API first so a full market costs no create calls; if it
+            // Ask the catalog first so a full market costs no create calls; if it
             // cannot answer, try the create and let RunPod say no.
             if self.capacity_free(body) != Some(false) {
                 on(Event::Step(format!("creating {} on {what}", body.name)));
@@ -747,7 +747,7 @@ mod tests {
     }
 
     /// A tiny HTTP server standing in for RunPod. `handler` gets the route
-    /// ("POST /graphql", "POST /pods") and how many times that route was hit.
+    /// ("GET /catalog/gpus", "POST /pods") and how many times that route was hit.
     struct Mock {
         url: String,
         hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -817,9 +817,11 @@ mod tests {
     }
 
     fn offers(free: bool) -> String {
-        let price = if free { "8.36" } else { "null" };
+        // Frontier asks for 4 GPUs. 2.09 is the per-GPU secure price, so a free
+        // card totals 8.36. NONE discards that listed price.
+        let availability = if free { "HIGH" } else { "NONE" };
         format!(
-            r#"{{"data":{{"gpuTypes":[{{"id":"NVIDIA RTX PRO 6000 Blackwell Server Edition","displayName":"RTX PRO 6000","memoryInGb":96,"secureCloud":true,"lowestPrice":{{"uninterruptablePrice":{price},"stockStatus":null}}}}]}}}}"#
+            r#"{{"gpus":[{{"id":"NVIDIA RTX PRO 6000 Blackwell Server Edition","name":"RTX PRO 6000","memory":96,"secure":true,"price":{{"secure":2.09}},"maxCount":{{"secure":8}},"availability":"{availability}"}}]}}"#
         )
     }
 
@@ -890,7 +892,7 @@ mod tests {
     #[test]
     fn waits_without_renting_until_the_gpus_free_up() {
         let m = mock(|route, nth| match route {
-            "POST /graphql" => (200, offers(nth >= 2)),
+            "GET /catalog/gpus" => (200, offers(nth >= 2)),
             "POST /pods" => (200, POD.into()),
             _ => (404, "{}".into()),
         });
@@ -905,7 +907,11 @@ mod tests {
             )
             .expect("the pod is created once the GPUs are free");
         assert_eq!(pod.id, "p1");
-        assert_eq!(m.count("POST /graphql"), 3, "two full answers, then free");
+        assert_eq!(
+            m.count("GET /catalog/gpus"),
+            3,
+            "two full answers, then free"
+        );
         assert_eq!(
             m.count("POST /pods"),
             1,
@@ -955,7 +961,7 @@ mod tests {
     #[test]
     fn gives_up_at_the_limit_having_rented_nothing() {
         let m = mock(|route, _| match route {
-            "POST /graphql" => (200, offers(false)),
+            "GET /catalog/gpus" => (200, offers(false)),
             _ => (200, POD.into()),
         });
         let s = session_on(&m);
@@ -969,7 +975,7 @@ mod tests {
     #[test]
     fn without_the_price_api_it_retries_the_create() {
         let m = mock(|route, nth| match route {
-            "POST /graphql" => (500, "{}".into()),
+            "GET /catalog/gpus" => (500, "{}".into()),
             "POST /pods" if nth < 2 => (500, NO_INSTANCES.into()),
             "POST /pods" => (200, POD.into()),
             _ => (404, "{}".into()),
@@ -990,7 +996,7 @@ mod tests {
     #[test]
     fn other_create_errors_stop_at_once() {
         let m = mock(|route, _| match route {
-            "POST /graphql" => (200, offers(true)),
+            "GET /catalog/gpus" => (200, offers(true)),
             _ => (401, "unauthorized".into()),
         });
         let s = session_on(&m);
@@ -1073,7 +1079,7 @@ mod tests {
     #[test]
     fn a_rate_limit_past_the_plan_deadline_does_not_try_the_next_gpu() {
         let m = mock(|route, _| match route {
-            "POST /graphql" => (200, offers(true)),
+            "GET /catalog/gpus" => (200, offers(true)),
             "POST /pods" => (
                 429,
                 r#"{"title":"Too Many Requests","status":429,"detail":"slow down"}"#.into(),
@@ -1106,7 +1112,7 @@ mod tests {
     #[test]
     fn a_failed_live_price_check_is_warned_and_the_create_still_runs() {
         let m = mock(|route, _| match route {
-            "POST /graphql" => (500, "down".into()),
+            "GET /catalog/gpus" => (500, "down".into()),
             "POST /pods" => (200, POD.into()),
             _ => (404, "{}".into()),
         });
@@ -1132,7 +1138,7 @@ mod tests {
     #[test]
     fn cancel_stops_the_wait() {
         let m = mock(|route, _| match route {
-            "POST /graphql" => (200, offers(false)),
+            "GET /catalog/gpus" => (200, offers(false)),
             _ => (200, POD.into()),
         });
         let s = session_on(&m);
@@ -1237,7 +1243,7 @@ mod tests {
     fn launch_with_no_free_gpus_and_no_wait_rents_nothing() {
         let m = mock(|route, _| match route {
             "GET /pods" => (200, "[]".into()),
-            "POST /graphql" => (200, offers(false)),
+            "GET /catalog/gpus" => (200, offers(false)),
             _ => (404, "{}".into()),
         });
         let s = session_on(&m);

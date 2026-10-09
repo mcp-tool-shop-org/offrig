@@ -1,7 +1,8 @@
-//! RunPod API client: REST v2 (`api.runpod.io/v2`) for pods and network volumes,
-//! GraphQL (`api.runpod.io/graphql`) for GPU prices, stock and the account balance.
-//! The v2 spec (read 2026-10-08) has no balance field. GraphQL stays for that
-//! one query until it retires in early 2027.
+//! RunPod API client: REST v2 (`api.runpod.io/v2`) for pods, network volumes and the
+//! GPU catalog (listed price, stock, per-data-center availability, per-GPU CUDA).
+//! GraphQL (`api.runpod.io/graphql`) remains for the account balance, until early
+//! 2027, and for listing data centers. The v2 spec read on 2026-10-08 has no
+//! balance field. Billing history is spend, not the balance.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -275,6 +276,13 @@ pub struct PodCreate {
     /// at the live catalog. If that lookup fails, every listed id is still tried
     /// and a warning is logged. `None` on a profile launch that has no plan cap.
     pub max_price_hr: Option<f64>,
+    /// Tried once, before [`Self::gpu_type_ids`], and not subject to the price cap.
+    /// Not sent on the wire. Tests set it. A debug build also reads
+    /// `OFFRIG_UNPLACEABLE_GPU` when this is unset, so a live test can put a
+    /// known-unplaceable type first and see the 400 fallback. A release build
+    /// ignores that variable. An empty `gpu_type_ids` is still an error; this
+    /// field does not fill the list in.
+    pub try_first: Option<String>,
 }
 
 impl Serialize for PodCreate {
@@ -340,8 +348,20 @@ pub struct NetworkVolume {
     pub data_center_id: String,
 }
 
+/// One CUDA version the catalog lists for a GPU type. `available` is false when
+/// the version is offered but currently full. A version absent from a non-empty
+/// list is not offered on that type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogCuda {
+    pub version: String,
+    pub available: bool,
+}
+
 /// One GPU type's offer for a given GPU count. `price_per_hr` is the total for all
-/// GPUs, and `None` means no machine has that many free right now.
+/// GPUs (the catalog's per-GPU secure price times the count), and `None` means none
+/// are free at that count right now. `stock` is the catalog level (`NONE`, `LOW`,
+/// `MEDIUM`, `HIGH`) for the scope that was asked: the whole secure cloud, or the
+/// one pinned data center.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuOffer {
     pub id: String,
@@ -350,11 +370,28 @@ pub struct GpuOffer {
     pub gpu_count: u32,
     pub price_per_hr: Option<f64>,
     pub stock: Option<String>,
+    /// The catalog's `cudaVersions` for this type. Empty means the catalog omitted
+    /// the list, and the hand-copied CUDA list is the fallback.
+    pub cuda: Vec<CatalogCuda>,
 }
 
 impl GpuOffer {
     pub fn total_vram_gb(&self) -> u32 {
         self.memory_gb * self.gpu_count
+    }
+
+    /// Whether this type can take a pod whose host CUDA floor is `floor`.
+    /// An empty [`Self::cuda`] list means the catalog omitted `cudaVersions`, so
+    /// the hand-copied list is the fallback: the floor passes when config would
+    /// have accepted it. A non-empty list wins. A version with `available: false`
+    /// does not count, and a version newer than the copied list does.
+    pub fn meets_cuda_floor(&self, floor: &str) -> bool {
+        if self.cuda.is_empty() {
+            return crate::config::cuda_at_least(floor).is_some();
+        }
+        self.cuda
+            .iter()
+            .any(|c| c.available && crate::config::cuda_meets(&c.version, floor) == Some(true))
     }
 }
 
@@ -488,7 +525,10 @@ impl RunPod {
     /// An id whose live price is above `max_price_hr` is not sent. The plan's
     /// list is already price-filtered when it was stored, so this is a second
     /// look. If the live lookup fails, every listed id is still tried and a
-    /// warning is logged. The list itself is never extended.
+    /// warning is logged. The stored list is not extended. A debug build may
+    /// prepend one extra id (`try_first`, or `OFFRIG_UNPLACEABLE_GPU`) so a
+    /// live test can watch a 400 move the loop on. That id skips the price cap.
+    /// A release build ignores the variable.
     pub fn create_pod(&self, spec: &PodCreate) -> Result<Pod> {
         self.create_pod_until(spec, None, &mut |_| {})
     }
@@ -529,10 +569,17 @@ impl RunPod {
             },
             None => None,
         };
+        // The plan's list is still required. The hook only reorders attempts.
+        let forced = forced_gpu(spec);
+        let ids = attempt_ids(&spec.gpu_type_ids, forced.as_deref());
         let mut tried = Vec::new();
         let mut refused: Vec<(String, String)> = Vec::new();
-        for id in &spec.gpu_type_ids {
-            if let (Some(cap), Some(offers)) = (spec.max_price_hr, offers.as_ref())
+        for (i, id) in ids.iter().enumerate() {
+            // The prepended id exists to draw a 400. Skipping it for price would
+            // hide the fallback the live test is there to see.
+            let forced_attempt = i == 0 && forced.is_some();
+            if !forced_attempt
+                && let (Some(cap), Some(offers)) = (spec.max_price_hr, offers.as_ref())
                 && let Some(price) = offers
                     .iter()
                     .find(|o| o.id == *id)
@@ -734,6 +781,9 @@ impl RunPod {
         })
     }
 
+    /// The account balance. The v2 spec has no field for it (billing history is
+    /// spend, not this balance), so this one query stays on GraphQL until that
+    /// API retires in early 2027.
     pub fn account(&self) -> Result<Account> {
         #[derive(Deserialize)]
         struct Data {
@@ -752,68 +802,30 @@ impl RunPod {
     }
 
     /// Offers in one data center (a profile pinned to a staged volume can only rent
-    /// there), or across all of them.
+    /// there), or across all of them. The catalog has no data-center query parameter,
+    /// so the id is applied to the availability the response already lists.
     pub fn gpu_offers_in(
         &self,
         gpu_count: u32,
         data_center: Option<&str>,
     ) -> Result<Vec<GpuOffer>> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Price {
-            uninterruptable_price: Option<f64>,
-            stock_status: Option<String>,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct GpuType {
-            id: String,
-            #[serde(default)]
-            display_name: String,
-            #[serde(default)]
-            memory_in_gb: u32,
-            #[serde(default)]
-            secure_cloud: bool,
-            lowest_price: Option<Price>,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Data {
-            gpu_types: Vec<GpuType>,
-        }
-        let query = format!(
-            "query {{ gpuTypes {{ id displayName memoryInGb secureCloud \
-             lowestPrice(input: {{gpuCount: {gpu_count}, secureCloud: true{dc}}}) \
-             {{ uninterruptablePrice stockStatus }} }} }}",
-            dc = data_center
-                .filter(|d| d.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-                .map(|d| format!(", dataCenterId: \"{d}\""))
-                .unwrap_or_default()
+        let path = format!(
+            "/catalog/gpus?include=AVAILABILITY&product=POD&count={gpu_count}&cloud=SECURE"
         );
-        let d: Data = self.graphql(&query, "gpu offers")?;
-        let mut offers: Vec<GpuOffer> = d
-            .gpu_types
-            .into_iter()
-            .filter(|g| g.secure_cloud && g.memory_in_gb > 0 && usable_gpu(&g.id))
-            .map(|g| {
-                let (price, stock) = match g.lowest_price {
-                    Some(p) => (p.uninterruptable_price, p.stock_status),
-                    None => (None, None),
-                };
-                GpuOffer {
-                    id: g.id,
-                    display_name: g.display_name,
-                    memory_gb: g.memory_in_gb,
-                    gpu_count,
-                    price_per_hr: price,
-                    stock,
-                }
-            })
-            .collect();
-        sort_offers(&mut offers);
-        Ok(offers)
+        let started = std::time::Instant::now();
+        let resp = self
+            .agent
+            .get(self.url(&path))
+            .header("Authorization", self.auth())
+            .call()
+            .map_err(|e| Error::http("gpu offers", e))?;
+        trace::api("gpu offers", resp.status().as_u16(), started);
+        let text = read_text(resp, "gpu offers")?;
+        offers_from_catalog(&text, gpu_count, data_center)
     }
 
+    /// Data centers, still from GraphQL. Nothing in the CLI, the app or the
+    /// side-car calls this; a v2 catalog route exists and is left for later.
     pub fn data_centers(&self) -> Result<Vec<DataCenter>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -825,6 +837,164 @@ impl RunPod {
             "data centers",
         )?;
         Ok(d.data_centers)
+    }
+}
+
+/// `try_first` wins. Otherwise a debug build reads `OFFRIG_UNPLACEABLE_GPU`.
+fn forced_gpu(spec: &PodCreate) -> Option<String> {
+    spec.try_first
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(debug_unplaceable_gpu)
+}
+
+fn debug_unplaceable_gpu() -> Option<String> {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("OFFRIG_UNPLACEABLE_GPU")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(not(debug_assertions))]
+    None
+}
+
+/// The plan's ids, with `forced` prepended once when it is set.
+fn attempt_ids(listed: &[String], forced: Option<&str>) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(id) = forced {
+        ids.push(id.to_string());
+    }
+    for id in listed {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
+}
+
+#[derive(Deserialize)]
+struct CatalogList {
+    #[serde(default)]
+    gpus: Vec<CatalogGpu>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogGpu {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    memory: u32,
+    #[serde(default)]
+    secure: bool,
+    #[serde(default)]
+    price: Option<CatalogPrice>,
+    #[serde(default)]
+    max_count: Option<CatalogMax>,
+    #[serde(default)]
+    availability: Option<String>,
+    #[serde(default)]
+    data_centers: Vec<CatalogDc>,
+    #[serde(default)]
+    cuda_versions: Vec<CatalogCudaRaw>,
+}
+
+#[derive(Deserialize)]
+struct CatalogPrice {
+    #[serde(default)]
+    secure: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct CatalogMax {
+    #[serde(default)]
+    secure: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct CatalogDc {
+    id: String,
+    #[serde(default)]
+    availability: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CatalogCudaRaw {
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    available: bool,
+}
+
+fn offers_from_catalog(
+    text: &str,
+    gpu_count: u32,
+    data_center: Option<&str>,
+) -> Result<Vec<GpuOffer>> {
+    let list: CatalogList =
+        serde_json::from_str(text).map_err(|e| Error::decode("gpu offers", e))?;
+    let mut offers: Vec<GpuOffer> = list
+        .gpus
+        .into_iter()
+        .filter(|g| g.secure && g.memory > 0 && usable_gpu(&g.id))
+        .map(|g| {
+            let level = catalog_level(&g, data_center);
+            let ceiling_ok = match g.max_count.as_ref().and_then(|c| c.secure) {
+                Some(max) => max >= gpu_count,
+                None => true,
+            };
+            let placeable =
+                ceiling_ok && matches!(level.as_deref(), Some("LOW" | "MEDIUM" | "HIGH"));
+            let per_gpu = g.price.as_ref().and_then(|p| p.secure);
+            let price = if placeable {
+                per_gpu.map(|p| p * f64::from(gpu_count))
+            } else {
+                None
+            };
+            let cuda = g
+                .cuda_versions
+                .into_iter()
+                .filter(|c| !c.version.is_empty())
+                .map(|c| CatalogCuda {
+                    version: c.version,
+                    available: c.available,
+                })
+                .collect();
+            GpuOffer {
+                display_name: if g.name.is_empty() {
+                    g.id.clone()
+                } else {
+                    g.name
+                },
+                id: g.id,
+                memory_gb: g.memory,
+                gpu_count,
+                price_per_hr: price,
+                stock: level,
+                cuda,
+            }
+        })
+        .collect();
+    sort_offers(&mut offers);
+    Ok(offers)
+}
+
+/// The availability that applies. No pinned data center uses the top-level level,
+/// and a missing one stays missing (unknown stock is not treated as free). A pinned
+/// data center uses that center's own level. A center the type does not list is
+/// `NONE`, so a list price on some other center is not used.
+fn catalog_level(g: &CatalogGpu, data_center: Option<&str>) -> Option<String> {
+    match data_center {
+        None => g.availability.clone(),
+        Some(want) => match g.data_centers.iter().find(|d| d.id == want) {
+            Some(dc) => dc.availability.clone(),
+            None => Some("NONE".into()),
+        },
     }
 }
 
@@ -1100,8 +1270,15 @@ mod tests {
             docker_start_cmd: vec!["echo".into()],
             env: BTreeMap::new(),
             max_price_hr: None,
+            try_first: Some("UNPLACEABLE".into()),
         };
         let v = serde_json::to_value(&spec).expect("spec should serialize");
+        let text = v.to_string();
+        assert!(!text.contains("UNPLACEABLE"), "{text}");
+        assert!(
+            !text.contains("try_first") && !text.contains("tryFirst"),
+            "{text}"
+        );
         assert_eq!(v["image"], "ollama/ollama:0.35.0");
         assert_eq!(v["gpu"]["id"], "NVIDIA H200");
         assert_eq!(v["gpu"]["count"], 2);
@@ -1162,6 +1339,7 @@ mod tests {
             gpu_count: 1,
             price_per_hr: price,
             stock: None,
+            cuda: Vec::new(),
         };
         let mut v = vec![
             mk("b", 141, None),
@@ -1199,5 +1377,86 @@ mod tests {
             spend_limit: None,
         };
         assert_eq!(idle.runway_hours(0.0), None);
+    }
+
+    #[test]
+    fn the_unplaceable_hook_is_prepended_once_and_try_first_wins() {
+        let listed = vec!["NVIDIA L4".into(), "NVIDIA H200".into()];
+        assert_eq!(
+            attempt_ids(&listed, Some("NVIDIA H200")),
+            ["NVIDIA H200", "NVIDIA L4"]
+        );
+        assert_eq!(attempt_ids(&listed, None), listed);
+        let spec = PodCreate {
+            try_first: Some("  ".into()),
+            gpu_type_ids: listed.clone(),
+            ..bare_create()
+        };
+        assert_eq!(forced_gpu(&spec), None);
+        let spec = PodCreate {
+            try_first: Some("NVIDIA H200".into()),
+            ..spec
+        };
+        assert_eq!(forced_gpu(&spec).as_deref(), Some("NVIDIA H200"));
+    }
+
+    #[test]
+    fn an_empty_catalog_cuda_list_falls_back_and_a_live_list_wins() {
+        let mut offer = GpuOffer {
+            id: "NVIDIA L4".into(),
+            display_name: "L4".into(),
+            memory_gb: 24,
+            gpu_count: 1,
+            price_per_hr: Some(0.4),
+            stock: Some("HIGH".into()),
+            cuda: Vec::new(),
+        };
+        assert!(offer.meets_cuda_floor("13.0"));
+        assert!(!offer.meets_cuda_floor("9.0"), "not on the copied list");
+        offer.cuda = vec![
+            CatalogCuda {
+                version: "13.0".into(),
+                available: false,
+            },
+            CatalogCuda {
+                version: "12.8".into(),
+                available: true,
+            },
+        ];
+        assert!(
+            !offer.meets_cuda_floor("13.0"),
+            "unavailable does not count"
+        );
+        offer.cuda.push(CatalogCuda {
+            version: "13.1".into(),
+            available: true,
+        });
+        assert!(
+            offer.meets_cuda_floor("13.0"),
+            "a newer live version counts"
+        );
+    }
+
+    fn bare_create() -> PodCreate {
+        PodCreate {
+            name: "t".into(),
+            image_name: "ollama/ollama:0.35.0".into(),
+            gpu_type_ids: vec!["NVIDIA L4".into()],
+            gpu_count: 1,
+            cloud_type: "SECURE".into(),
+            support_public_ip: true,
+            ports: vec!["22/tcp".into()],
+            container_disk_in_gb: 40,
+            volume_in_gb: None,
+            network_volume_id: None,
+            volume_mount_path: "/workspace".into(),
+            data_center_ids: vec![],
+            min_cuda_version: None,
+            docker_entrypoint: vec!["bash".into(), "-c".into()],
+            docker_start_cmd: vec!["echo".into()],
+            env: BTreeMap::new(),
+            max_price_hr: None,
+            try_first: None,
+        }
     }
 }

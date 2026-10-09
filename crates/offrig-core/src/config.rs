@@ -145,8 +145,8 @@ pub struct Job {
 /// Host CUDA versions offrig accepts as a floor, newest first. v2 create sends the
 /// floor itself as `gpu.minCudaVersion` (open-ended), not this whole list. The list
 /// was copied from RunPod's v1 `allowedCudaVersions` on 2026-10-07. A version that is
-/// not in it is rejected at config time; the catalog's own list replaces this in a
-/// later phase.
+/// not in it is rejected at config time. At plan time the catalog's per-GPU
+/// `cudaVersions` wins; this list is the fallback when the catalog omits that field.
 pub const CUDA_VERSIONS: [&str; 12] = [
     "13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8",
 ];

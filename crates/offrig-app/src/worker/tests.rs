@@ -14,7 +14,7 @@ const CHILD: &str = "OFFRIG_APP_TEST_CHILD";
 const POD: &str = r#"{"id":"p1","name":"offrig-small","desiredStatus":"RUNNING","costPerHr":0.5,"publicIp":"203.0.113.9","portMappings":{"22":22022},"ports":["22/tcp"],"gpuCount":1}"#;
 const ACCOUNT: &str =
     r#"{"data":{"myself":{"clientBalance":20.0,"currentSpendPerHr":0.5,"spendLimit":null}}}"#;
-const OFFERS: &str = r#"{"data":{"gpuTypes":[{"id":"NVIDIA RTX 2000 Ada Generation","displayName":"RTX 2000 Ada","memoryInGb":16,"secureCloud":true,"lowestPrice":{"uninterruptablePrice":0.3,"stockStatus":"High"}}]}}"#;
+const OFFERS: &str = r#"{"gpus":[{"id":"NVIDIA RTX 2000 Ada Generation","name":"RTX 2000 Ada","memory":16,"secure":true,"price":{"secure":0.5},"maxCount":{"secure":8},"availability":"HIGH"}]}"#;
 const MODELS: &str = r#"{"data":[{"id":"podonly:1b"}]}"#;
 
 // --- tests that run in a child process with their own environment -----------
@@ -288,7 +288,7 @@ fn runpod_reply(route: &str, body: &str, pods: &str) -> (u16, String) {
         "GET /pods/p1" | "POST /pods" => (200, POD.to_string()),
         "DELETE /pods/p1" => (200, "{}".into()),
         "POST /graphql" if body.contains("myself") => (200, ACCOUNT.into()),
-        "POST /graphql" => (200, OFFERS.into()),
+        "GET /catalog/gpus" => (200, OFFERS.into()),
         _ => (404, "{}".into()),
     }
 }
@@ -587,7 +587,7 @@ fn offers_arrive_tagged_with_their_gpu_count_or_fail_loudly() {
     w.do_cmd(Cmd::Offers(2));
     let us = drain(&rx);
     assert!(matches!(&us[..], [Update::Offers(2, o)]
-        if o.len() == 1 && o[0].id == "NVIDIA RTX 2000 Ada Generation" && o[0].price_per_hr == Some(0.3)));
+        if o.len() == 1 && o[0].id == "NVIDIA RTX 2000 Ada Generation" && o[0].price_per_hr == Some(1.0)));
     bad.store(true, Ordering::SeqCst);
     w.do_cmd(Cmd::Offers(2));
     assert_eq!(kinds(&drain(&rx)), ["Error"]);

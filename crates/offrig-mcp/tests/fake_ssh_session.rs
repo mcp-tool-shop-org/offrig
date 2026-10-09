@@ -35,12 +35,12 @@ fn offers_json() -> String {
         .iter()
         .map(|id| {
             json!({
-                "id": id, "displayName": id, "memoryInGb": 24, "secureCloud": true,
-                "lowestPrice": {"uninterruptablePrice": 0.25, "stockStatus": "High"}
+                "id": id, "name": id, "memory": 24, "secure": true,
+                "price": {"secure": 0.25}, "maxCount": {"secure": 8}, "availability": "HIGH"
             })
         })
         .collect();
-    json!({"data": {"gpuTypes": types}}).to_string()
+    json!({"gpus": types}).to_string()
 }
 
 type Pods = Arc<Mutex<Vec<Value>>>;
@@ -55,7 +55,7 @@ fn runpod(pods: Pods, gpu: String) -> impl Fn(&str, &str, usize) -> (u16, String
                 r#"{"data":{"myself":{"clientBalance":40.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#
                     .into(),
             ),
-            "POST /graphql" => (200, offers_json()),
+            "GET /catalog/gpus" => (200, offers_json()),
             "GET /pods" => (200, Value::Array(pods.clone()).to_string()),
             "POST /pods" => {
                 let want: Value = serde_json::from_str(body).unwrap_or_default();

@@ -23,8 +23,9 @@ A **profile** is a tier: which GPUs to rent, in priority order, and what runs on
 | `job` | 1 × RTX PRO 6000 (96 GB); A100 or H100 80 GB if none is free | no model server: your own work (see [job pods](../lanes-and-jobs/#job-pods)) | $2.09/hr |
 | `jam` | 1 × A40 (48 GB) first; A6000, A5000, 3090, L4 or 4090 if none is free | no model server: singing renders for ai-jam-sessions | $0.49/hr |
 
-Prices are RunPod's secure-cloud prices, read live; RunPod's pricing page is not the
-available price. `offrig gpus` shows what is free now.
+Prices are the v2 catalog's secure-cloud list prices, read live: per GPU, times the GPU
+count. A type at NONE is not free. RunPod's pricing page is not the available price.
+`offrig gpus` shows what is free now.
 
 ## Engine recipes
 

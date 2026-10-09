@@ -273,10 +273,27 @@ pub fn live_step(pod: &Pod, probe: SshProbe, created_ago: Option<i64>) -> String
     }
 }
 
+/// The boot step, plus the pod's raw v2 status (`PROVISIONING`, `STARTING`,
+/// `RUNNING`, and the rest). `desired_status` is that field: v2 fills it from
+/// JSON `status`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveView {
+    pub step: String,
+    pub pod_status: String,
+}
+
+/// [`live_step`](live_step) together with the raw status, for `offrig_job`.
+pub fn live_view(pod: &Pod, probe: SshProbe, created_ago: Option<i64>) -> LiveView {
+    LiveView {
+        step: live_step(pod, probe, created_ago),
+        pod_status: pod.desired_status.clone(),
+    }
+}
+
 /// Look at the launch's pod now: ask RunPod for it, try its ssh port, and say what that
-/// means for the step. `None` when RunPod could not be asked (the launch's own step is
-/// kept then, with the reason beside it).
-pub fn live_progress(pod_id: &str, created_at: Option<i64>) -> Result<String> {
+/// means for the step. `Err` when RunPod could not be asked (the launch's own step is
+/// kept then, with the reason beside it). The caller's `pod_status` is left as it was.
+pub fn live_progress(pod_id: &str, created_at: Option<i64>) -> Result<LiveView> {
     let pod = RunPod::from_env()?.get_pod(pod_id)?;
     let probe = match pod.ssh_endpoint() {
         None => SshProbe::NoEndpoint,
@@ -288,7 +305,7 @@ pub fn live_progress(pod_id: &str, created_at: Option<i64>) -> Result<String> {
             }
         }
     };
-    Ok(live_step(
+    Ok(live_view(
         &pod,
         probe,
         created_at.map(|t| (now_unix() - t).max(0)),
@@ -406,6 +423,7 @@ fn launch(
     store.attach_pod(plan_id, &pod.id)?;
     progress.v["pod_id"] = json!(pod.id);
     progress.v["pod_created_at"] = json!(now_unix());
+    progress.v["pod_status"] = json!(pod.desired_status);
     // What RunPod assigned is known now, before ssh is up: show it, so a launch that
     // never gets ready still says what it rented and at what price. The create reply
     // carries the GPU type; if it did not, ask once. The nvidia-smi CUDA measurement
@@ -1420,6 +1438,13 @@ mod tests {
         let s = live_step(&booting("STARTING", false), SshProbe::NoEndpoint, None);
         assert!(s.contains("STARTING") && s.contains("coming up"), "{s}");
         assert!(!s.contains("will fail"), "{s}");
+        let view = live_view(
+            &booting("PROVISIONING", false),
+            SshProbe::NoEndpoint,
+            Some(4),
+        );
+        assert_eq!(view.pod_status, "PROVISIONING");
+        assert!(view.step.contains("placing"), "{}", view.step);
     }
 
     #[test]
