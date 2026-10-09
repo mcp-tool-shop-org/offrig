@@ -286,6 +286,10 @@ fn native_chat_sends_messages_schema_and_options_and_reads_the_counts() {
     assert_eq!(sent["think"], true);
     assert_eq!(sent["format"]["type"], "object");
     assert_eq!(sent["options"]["num_ctx"], 16384);
+    assert_eq!(
+        (sent["shift"].as_bool(), sent["truncate"].as_bool()),
+        (Some(false), Some(false))
+    );
     // Truncation is a structured error with its own code, never a short answer.
     let e = o.chat_messages(&req).expect_err("length");
     assert_eq!(e.code(), "truncated");
@@ -301,4 +305,29 @@ fn native_chat_sends_messages_schema_and_options_and_reads_the_counts() {
         ("x", None, "")
     );
     assert!(o.chat_messages(&req).is_err(), "a 500 is an error");
+}
+
+#[test]
+fn an_ollama_context_error_becomes_context_overflow() {
+    let m = serve(|_, n| {
+        match n {
+        0 => (400, r#"{"error":"the input length exceeds the context length"}"#.into()),
+        1 => (200, r#"{"error":"the prompt is longer than the context length currently available to the model"}"#.into()),
+        _ => (400, r#"{"error":"model not found"}"#.into()),
+    }
+    });
+    let o = Ollama::new(&m.url);
+    let req = ChatRequest {
+        model: "a:1".into(),
+        messages: vec![Msg::new("user", "claim")],
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let e = o.chat_messages(&req).expect_err("overflow");
+        assert_eq!(e.code(), "context_overflow", "{e}");
+    }
+    assert_eq!(
+        o.chat_messages(&req).expect_err("other").code(),
+        "model_server"
+    );
 }

@@ -73,12 +73,16 @@ fn calibrate_runs_resumes_reports_and_refuses() {
     let text = out(&r);
     assert!(text.contains("default rule overall: FAIL"), "{text}");
     assert!(text.contains("false-accept (unsup+ct)"), "{text}");
-    assert_eq!(count(&hits, "POST /api/chat"), 7);
+    // Seven measurement calls (num_predict 1) and seven scored ones.
+    assert_eq!(count(&hits, "POST /api/chat"), 14);
     let m: Value =
         serde_json::from_str(&std::fs::read_to_string(o.join("metrics.json")).expect("m"))
             .expect("json");
     assert_eq!(m["model_digest"], "sha256:feed");
     assert_eq!(m["claims_selected"], 7);
+    assert_eq!(m["settings"]["num_ctx_mode"], "auto");
+    assert_eq!(m["ctx"]["method"], "measured");
+    assert_eq!(m["ctx"]["num_ctx"], m["settings"]["num_ctx"]);
     let man = std::fs::read_to_string(o.join("manifest.json")).expect("manifest");
     assert!(
         man.contains("gold.jsonl") && !man.contains(p),
@@ -101,7 +105,7 @@ fn calibrate_runs_resumes_reports_and_refuses() {
         ],
     );
     assert_eq!(r.status.code(), Some(0), "{}", err(&r));
-    assert_eq!(count(&hits, "POST /api/chat"), 7);
+    assert_eq!(count(&hits, "POST /api/chat"), 14);
     let r = offrig(
         &dir,
         &[
@@ -125,7 +129,7 @@ fn calibrate_runs_resumes_reports_and_refuses() {
     let r = offrig(&dir, &["--report-only", os, "--gpu-cost-hr", "2"]);
     assert_eq!(r.status.code(), Some(0), "{}", err(&r));
     assert!(out(&r).contains("default rule"), "{}", out(&r));
-    assert_eq!(count(&hits, "POST /api/chat"), 7);
+    assert_eq!(count(&hits, "POST /api/chat"), 14);
 
     // The default output directory is under the project's .offrig/out.
     let r = offrig(

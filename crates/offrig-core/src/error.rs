@@ -81,6 +81,11 @@ pub enum Error {
     #[error("truncated: {message}")]
     Truncated { message: String, thinking: String },
 
+    /// The prompt and the reply together filled the context window, so the server may have
+    /// dropped the start of the prompt. offrig's sizing failed, not the model.
+    #[error("context overflow: {0}")]
+    ContextOverflow(String),
+
     /// A verifier reply that failed its schema, twice. Never reported as a verdict.
     #[error("bad verdict reply: {0}")]
     BadVerdict(String),
@@ -186,6 +191,7 @@ impl Error {
             Error::Timeout(_) => "timeout",
             Error::Ollama(_) | Error::Engine(_) => "model_server",
             Error::Truncated { .. } => "truncated",
+            Error::ContextOverflow(_) => "context_overflow",
             Error::BadVerdict(_) => "bad_verdict",
             Error::Cancelled(_) => "cancelled",
             Error::NoCapacity(_) => "no_capacity",

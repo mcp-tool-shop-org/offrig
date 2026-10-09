@@ -42,6 +42,9 @@ pub struct Loaded {
     pub name: String,
     #[serde(default)]
     pub size_vram: u64,
+    /// Total bytes the loaded model occupies (VRAM plus any CPU share).
+    #[serde(default)]
+    pub size: u64,
     #[serde(default)]
     pub context_length: Option<u32>,
 }
@@ -378,6 +381,10 @@ impl ChatRequest {
             "model": self.model,
             "stream": false,
             "messages": self.messages,
+            // Never let the server drop history or shift the window silently: a prompt
+            // or reply that does not fit is an error (`context_overflow`).
+            "shift": false,
+            "truncate": false,
         });
         if let Some(f) = &self.format {
             body["format"] = f.clone();
@@ -418,29 +425,105 @@ pub struct ChatResponse {
     pub total_duration: Option<u64>,
 }
 
+/// Whether an Ollama error message says the prompt or reply did not fit the window.
+/// Texts from the Ollama source (server/routes.go, llm/llama_server.go): "the prompt is
+/// longer than the context length ...", "the input length exceeds the context length",
+/// "input after truncation exceeds maximum context length", "input exceeds maximum
+/// context length and cannot be truncated further", "... exceeds the available context".
+pub fn is_context_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    (m.contains("context length") && (m.contains("longer than") || m.contains("exceeds")))
+        || m.contains("exceeds the available context")
+}
+
+/// Fallback for wording that changes between Ollama versions: an HTTP 400 whose body
+/// mentions "context" at all.
+fn is_bad_request_about_context(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains(": http 400:") && m.contains("context")
+}
+
+fn as_context_error(e: Error) -> Error {
+    match e {
+        Error::Ollama(m) if is_context_error(&m) || is_bad_request_about_context(&m) => {
+            Error::ContextOverflow(m)
+        }
+        other => other,
+    }
+}
+
+/// Headroom below `num_ctx` that counts as full: prompt tokens plus reply tokens at or
+/// above `num_ctx - CTX_FULL_SLACK` mean the window was used up.
+pub const CTX_FULL_SLACK: u64 = 16;
+
+/// `Some(ContextOverflow)` when a reply was cut off because the window filled, not
+/// because it reached its own token cap.
+///
+/// A reply that stops with `done_reason: length` at `num_predict` tokens is the model's
+/// budget running out ([`Error::Truncated`]), however full the window is. It is a context
+/// overflow only when it stopped short of `num_predict` (`eval_count < num_predict`; a
+/// `num_predict` of zero or less is no cap) and prompt plus reply reached
+/// `num_ctx - CTX_FULL_SLACK`. A reply that finished (`stop`) is never flagged. A
+/// prompt-only heuristic (a prompt count far below the estimate) is deliberately not
+/// used: `prompt_eval_count` also drops when Ollama reuses a cached prefix.
+pub fn context_overflow(
+    num_ctx: u32,
+    num_predict: Option<i32>,
+    resp: &ChatResponse,
+) -> Option<Error> {
+    if resp.done_reason != "length" {
+        return None;
+    }
+    let (p, e) = (resp.prompt_eval_count?, resp.eval_count.unwrap_or(0));
+    if num_predict.is_some_and(|n| n > 0 && e >= n as u64) {
+        return None;
+    }
+    (p + e >= u64::from(num_ctx).saturating_sub(CTX_FULL_SLACK)).then(|| {
+        Error::ContextOverflow(format!(
+            "prompt_eval_count {p} + eval_count {e} = {} reached num_ctx {num_ctx}; the server may have dropped the start of the prompt",
+            p + e
+        ))
+    })
+}
+
 impl Ollama {
-    /// A non-streamed multi-message chat through the native API. A reply that stopped
-    /// at the token limit (`done_reason: length`) is a `Truncated` error, never a
-    /// short answer.
-    pub fn chat_messages(&self, req: &ChatRequest) -> Result<ChatResponse> {
+    /// One non-streamed chat through the native API, returned as the server answered it,
+    /// including a reply cut at the token limit. Used to measure a prompt with
+    /// `num_predict: 1`, where the cut is expected.
+    pub fn chat_raw(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let what = "chat";
-        let v = self.post("/api/chat", &req.body(), what)?;
+        let v = self
+            .post("/api/chat", &req.body(), what)
+            .map_err(as_context_error)?;
         if let Some(err) = v.get("error") {
-            return Err(Error::Ollama(format!("{what}: {err}")));
+            return Err(as_context_error(Error::Ollama(format!("{what}: {err}"))));
         }
         let message = &v["message"];
         let content = message["content"]
             .as_str()
             .ok_or_else(|| Error::Ollama(format!("{what}: the reply carried no message")))?;
-        let resp = ChatResponse {
+        Ok(ChatResponse {
             content: content.to_string(),
             thinking: message["thinking"].as_str().unwrap_or_default().to_string(),
             done_reason: v["done_reason"].as_str().unwrap_or_default().to_string(),
             eval_count: v["eval_count"].as_u64(),
             prompt_eval_count: v["prompt_eval_count"].as_u64(),
             total_duration: v["total_duration"].as_u64(),
-        };
+        })
+    }
+
+    /// A non-streamed multi-message chat through the native API. A reply that stopped
+    /// at the token limit (`done_reason: length`) is a `Truncated` error, never a
+    /// short answer, unless the window was full: then it is a `ContextOverflow`.
+    pub fn chat_messages(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        let resp = self.chat_raw(req)?;
         if resp.done_reason == "length" {
+            if let Some(e) = req
+                .num_ctx
+                .and_then(|n| context_overflow(n, req.num_predict, &resp))
+            {
+                return Err(e);
+            }
             return Err(Error::Truncated {
                 message: format!(
                     "{} stopped at its token limit after {} tokens; raise num_predict",
@@ -624,6 +707,27 @@ mod tests {
         assert_eq!(b["messages"][0]["role"], "user");
         assert!(b.get("format").is_none() && b.get("think").is_none());
         assert!(b.get("options").is_none());
+        // Never shift or truncate: a window that fills is an error, not a silent edit.
+        assert_eq!(
+            (b["shift"].as_bool(), b["truncate"].as_bool()),
+            (Some(false), Some(false))
+        );
+        assert!(is_context_error(
+            "chat: http 400: {\"error\":\"the input length exceeds the context length\"}"
+        ));
+        assert!(is_context_error(
+            "the prompt is longer than the context length currently available to the model"
+        ));
+        assert!(is_context_error(
+            "input exceeds maximum context length and cannot be truncated further"
+        ));
+        assert!(!is_context_error("model not found") && !is_context_error("timed out"));
+        assert!(matches!(
+            as_context_error(Error::Ollama(
+                "chat: http 400: the input length exceeds the context length".into()
+            )),
+            Error::ContextOverflow(_)
+        ));
         let full = ChatRequest {
             format: Some(json!({"type": "object"})),
             think: Some(ThinkLevel::High),
@@ -680,5 +784,47 @@ v0.35.1"
 v0.35.1"
         );
         assert_eq!(strip_thinking("<think>hmm</think>"), "");
+    }
+
+    #[test]
+    fn a_full_window_is_an_overflow_and_a_loaded_model_reports_its_split() {
+        let r = |p, e| ChatResponse {
+            prompt_eval_count: Some(p),
+            eval_count: Some(e),
+            ..Default::default()
+        };
+        let cut = |p, e| ChatResponse {
+            done_reason: "length".into(),
+            ..r(p, e)
+        };
+        assert!(context_overflow(1000, Some(500), &cut(900, 84)).is_some());
+        assert!(context_overflow(1000, Some(500), &cut(900, 83)).is_none());
+        assert!(context_overflow(1000, Some(500), &ChatResponse::default()).is_none());
+        // A reply that finished, however full the window, is not an overflow.
+        assert!(context_overflow(1000, Some(500), &r(900, 84)).is_none());
+        // Reaching num_predict is the reply's own cap: truncated, not overflow.
+        assert!(context_overflow(1000, Some(100), &cut(900, 100)).is_none());
+        assert!(context_overflow(1000, Some(100), &cut(900, 99)).is_some());
+        // A model-wide "no cap" setting never counts as reached.
+        assert!(context_overflow(1000, Some(-1), &cut(900, 100)).is_some());
+        // The 400 fallback.
+        assert!(matches!(
+            as_context_error(Error::Ollama(
+                "chat: http 400: {\"error\":\"Context is full\"}".into()
+            )),
+            Error::ContextOverflow(_)
+        ));
+        assert!(matches!(
+            as_context_error(Error::Ollama("chat: http 500: context".into())),
+            Error::Ollama(_)
+        ));
+        assert!(matches!(
+            as_context_error(Error::Ollama("chat: http 400: bad json".into())),
+            Error::Ollama(_)
+        ));
+        let l: Loaded =
+            serde_json::from_value(json!({"name": "m:1", "size": 100, "size_vram": 60}))
+                .expect("loaded");
+        assert_eq!((l.size, l.size_vram), (100, 60));
     }
 }

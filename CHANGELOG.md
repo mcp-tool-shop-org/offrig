@@ -6,6 +6,20 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **The verifier sizes its own context window, and never lets it overflow silently.**
+  `--num-ctx` now defaults to `auto`.
+  - `verify calibrate` measures the longest prompts in the claim set (a handful of one-token
+    calls), takes the larger of the measured and estimated length, and picks one window for
+    the whole run: the prompt plus the full reply budget (`num_predict`) plus a margin,
+    capped at the model's own maximum. If even that can't fit, it refuses before any
+    scored call, naming the claim.
+  - Every request tells Ollama never to shift or trim the context (`shift: false`,
+    `truncate: false`). A reply that would run past the window becomes a clean
+    `context_overflow`: it isn't charged to the model, and the run stays `incomplete`
+    with a hint to rerun with a larger window. A resume reuses the window the run chose.
+  - A model that doesn't fit fully on the GPU at that window is reported as offloaded.
+  - The chosen window, how it was chosen and the longest prompt are recorded in the run's
+    manifest. A fixed `--num-ctx <n>` still works as before.
 - **Caps add up across projects.** `offrig budget --show` prints an `account` line per
   provider: the caps across every known project, what they have committed and still
   unspent, beside the provider's balance, with a warning when the projects together

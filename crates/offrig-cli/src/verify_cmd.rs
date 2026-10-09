@@ -62,9 +62,12 @@ pub struct CalibrateArgs {
     seed: i64,
     #[arg(long, default_value_t = 0.0)]
     temperature: f64,
-    /// Context window (default 16384)
-    #[arg(long)]
-    num_ctx: Option<u32>,
+    /// Context window: `auto` (default) sizes one window for the whole run from the longest
+    /// prompt (measured with a few num_predict-1 calls) plus num_predict plus a margin,
+    /// capped at the model's maximum; a number (say 16384) is sent as given. A resume
+    /// reuses the window the run chose.
+    #[arg(long, default_value = "auto")]
+    num_ctx: String,
     /// Reply token limit (default 4096)
     #[arg(long)]
     num_predict: Option<i32>,
@@ -123,7 +126,9 @@ fn calibrate(a: CalibrateArgs) -> Result<()> {
     s.swap_evidence = a.swap_evidence;
     s.seed = a.seed;
     s.temperature = a.temperature;
-    s.num_ctx = a.num_ctx.unwrap_or(s.num_ctx);
+    let (mode, fixed) = calibrate_run::parse_num_ctx(&a.num_ctx)?;
+    s.ctx_mode = mode;
+    s.num_ctx = fixed.unwrap_or(s.num_ctx);
     s.num_predict = a.num_predict.unwrap_or(s.num_predict);
     s.gpu_cost_hr = a.gpu_cost_hr;
     // Refuse before reading anything: no file is touched for a cloud model.

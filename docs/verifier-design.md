@@ -26,7 +26,8 @@ Scored 0 to 3 against the studio workflow standards.
   - the embedding model and its dimension;
   - a hash of the prompt template;
   - the ids of the retrieved evidence;
-  - the sampling settings: temperature, seed, `think` level, `num_ctx`, `num_predict`;
+  - the sampling settings: temperature, seed, `think` level, `num_ctx` (and whether it was
+    sized automatically), `num_predict`;
   - the GPU type it ran on;
   - the role-card hash and the ids of its worked examples;
   - the plan id.
@@ -269,6 +270,13 @@ The checks on each reply:
 - The role card's worked examples come from outside every gold set. Their ids and the
   card's hash are recorded with each verdict.
 - A schema failure is retried once, then reported as an error.
+- The context window is sized so the prompt plus the full reply budget always fits
+  (`--num-ctx auto`), and Ollama is told never to shift or trim the context. A reply that
+  would still run past the window is a `context_overflow`: offrig's sizing failure, not
+  the model's. It's recorded, never scored, and leaves a calibration run incomplete.
+  The measuring calls load the model, so they happen inside a card grant like the run
+  itself. A resume reuses the window already chosen and measures nothing, and a resume
+  with nothing left to do never loads the model.
 - Every verdict is marked untrusted model output and stored in the `verdicts` table with
   the pins listed under PIN_PER_STEP.
 

@@ -32,11 +32,12 @@ use crate::calibrate::{
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
 use crate::index::sha256_hex;
-use crate::ollama::{ChatRequest, ChatResponse, Ollama, Tag, ThinkLevel};
+use crate::ollama::{ChatRequest, ChatResponse, Loaded, Ollama, Tag, ThinkLevel};
 use crate::store::Store;
 use crate::verify::{
-    ChatBackend, CheckType, Claim, Label, Pins, Timing, Verdict, VerdictKind, VerifyConfig,
-    evidence_list, quote_found, verify_one,
+    ChatBackend, CheckType, Claim, CtxMode, DEFAULT_MODEL_MAX_CTX, Label, Pins, Timing,
+    TokenEstimator, Verdict, VerdictKind, VerifyConfig, build_request, ctx_margin,
+    estimate_claim_tokens, evidence_list, quote_found, round_ctx, verify_one,
 };
 
 /// Consecutive transport failures after which the run stops (and stays resumable)
@@ -55,7 +56,7 @@ const SERVER_ERROR_TWICE: &str =
     "server error or dropped reply twice on this claim; the reply, not the wire";
 
 /// What the default rule counts against the model, stated wherever its result shows.
-pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error or dropped reply) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
+pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error or dropped reply) count as missing answers and fail the rule; a fail can come from those, not only from false accepts. context_overflow outcomes are offrig's sizing failure, not the model's: they are not counted against it and leave the run incomplete";
 
 // ---- Settings
 
@@ -157,6 +158,9 @@ pub struct Settings {
     pub swap_evidence: bool,
     pub seed: i64,
     pub temperature: f64,
+    /// How the window is chosen. In `Auto` mode `num_ctx` is unused: the run sizes it.
+    pub ctx_mode: CtxMode,
+    /// The window in `Fixed` mode.
     pub num_ctx: u32,
     pub num_predict: i32,
     pub gpu_cost_hr: f64,
@@ -176,14 +180,16 @@ impl Settings {
             swap_evidence: false,
             seed: 0,
             temperature: 0.0,
+            ctx_mode: CtxMode::Auto,
             num_ctx: d.num_ctx,
             num_predict: d.num_predict,
             gpu_cost_hr: 0.0,
         }
     }
 
-    /// The part of the settings that must not change across a resume.
-    fn record(&self) -> Value {
+    /// The part of the settings that must not change across a resume. `num_ctx` is the
+    /// window actually used: the fixed number, or the one an `auto` run chose.
+    fn record(&self, num_ctx: u32) -> Value {
         serde_json::json!({
             "model": self.model,
             "url": self.url,
@@ -195,7 +201,11 @@ impl Settings {
             "swap_evidence": self.swap_evidence,
             "seed": self.seed,
             "temperature": self.temperature,
-            "num_ctx": self.num_ctx,
+            // Sent on every chat so Ollama errors instead of shifting or truncating.
+            "shift": false,
+            "truncate": false,
+            "num_ctx_mode": self.ctx_mode.as_str(),
+            "num_ctx": num_ctx,
             "num_predict": self.num_predict,
             "quote_rule": crate::verify::QUOTE_RULE,
         })
@@ -382,6 +392,10 @@ pub struct Manifest {
     pub gold: Vec<GoldInfo>,
     pub skipped_unlabelled: usize,
     pub selected: Vec<Selected>,
+    /// How the window was sized, and what the model's load looked like. Not part of the
+    /// resume identity (the chosen `num_ctx` in `settings` is). Absent in older runs.
+    #[serde(default)]
+    pub ctx: Option<CtxSizing>,
 }
 
 /// One line of `verdicts.jsonl`: one claim's outcome. `status` is `ok` (a verdict) or
@@ -564,6 +578,14 @@ fn check_resume(m: &Manifest, now: &Manifest) -> Result<()> {
 pub trait Server {
     fn version(&self) -> Result<String>;
     fn tags(&self) -> Result<Vec<Tag>>;
+    /// The model's own maximum window (`/api/show`), when the server says.
+    fn model_max_context(&self, _model: &str) -> Result<Option<u32>> {
+        Ok(None)
+    }
+    /// The loaded model's memory split (`/api/ps`), when it is loaded and the server says.
+    fn loaded(&self, _model: &str) -> Result<Option<Loaded>> {
+        Ok(None)
+    }
 }
 
 impl Server for Ollama {
@@ -573,6 +595,15 @@ impl Server for Ollama {
     fn tags(&self) -> Result<Vec<Tag>> {
         Ollama::tags(self)
     }
+    fn model_max_context(&self, model: &str) -> Result<Option<u32>> {
+        Ok(self.info(model)?.context_length)
+    }
+    fn loaded(&self, model: &str) -> Result<Option<Loaded>> {
+        let latest = format!("{model}:latest");
+        Ok(Ollama::loaded(self)?
+            .into_iter()
+            .find(|l| l.name == model || (!model.contains(':') && l.name == latest)))
+    }
 }
 
 /// The installed tag for `model`: a name without a tag means `:latest`.
@@ -580,6 +611,389 @@ fn find_tag<'a>(tags: &'a [Tag], model: &str) -> Option<&'a Tag> {
     let latest = format!("{model}:latest");
     tags.iter()
         .find(|t| t.name == model || (!model.contains(':') && t.name == latest))
+}
+
+// ---- Sizing the context window
+
+/// Parse `--num-ctx`: `auto`, or a number of tokens.
+pub fn parse_num_ctx(s: &str) -> Result<(CtxMode, Option<u32>)> {
+    if s == "auto" {
+        return Ok((CtxMode::Auto, None));
+    }
+    match s.parse::<u32>() {
+        Ok(n) if n >= 512 => Ok((CtxMode::Fixed, Some(n))),
+        _ => Err(Error::Refused(format!(
+            "--num-ctx must be auto or a number of tokens (512 or more), not {s:?}"
+        ))),
+    }
+}
+
+/// The most claims the measurement pass sends.
+pub const MEASURE_CAP: usize = 20;
+
+/// Which claims to measure: those whose estimate is within two margins of the largest
+/// (margin = max(512, 10% of the largest)), highest first, at most [`MEASURE_CAP`]. The
+/// estimator's error can exceed the gaps near the top, so the longest claim by estimate
+/// is not necessarily the longest by count. Returns indexes into `estimates`.
+pub fn measure_band(estimates: &[u64]) -> Vec<usize> {
+    let Some(&top) = estimates.iter().max() else {
+        return vec![];
+    };
+    let floor = top.saturating_sub(2 * ctx_margin(top, 10));
+    let mut idx: Vec<usize> = (0..estimates.len())
+        .filter(|&i| estimates[i] >= floor)
+        .collect();
+    idx.sort_by(|&a, &b| estimates[b].cmp(&estimates[a]).then(a.cmp(&b)));
+    idx.truncate(MEASURE_CAP);
+    idx
+}
+
+/// One claim sent with `num_predict: 1` to read its real prompt count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Measured {
+    pub claim_id: String,
+    pub estimated: u64,
+    pub prompt_eval_count: u64,
+}
+
+/// How a run's context window was chosen, kept in the manifest so a report can state the
+/// window a model was calibrated at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CtxSizing {
+    /// `auto` or `fixed`.
+    pub mode: String,
+    /// The window every call used (the resolved number, never "auto").
+    pub num_ctx: u32,
+    /// `measured`, `estimate` (the measurement pass failed) or `fixed`.
+    pub method: String,
+    pub model_max_context: Option<u32>,
+    /// The longest prompt, in tokens, the window was sized for: measured when it could
+    /// be, else estimated.
+    pub max_prompt_tokens: Option<u64>,
+    /// The largest estimate, for comparison with the measurement.
+    pub estimated_max_prompt_tokens: Option<u64>,
+    pub margin_tokens: Option<u64>,
+    pub measured: Vec<Measured>,
+    pub notes: Vec<String>,
+    /// Set once the model has loaded and the server reported its memory split.
+    pub offloaded: Option<bool>,
+    pub vram_fraction: Option<f64>,
+    /// The window the measurement calls ran at (it follows the estimate). When it differs
+    /// from `num_ctx`, Ollama reloads the model once when the scored calls start.
+    #[serde(default)]
+    pub probe_num_ctx: Option<u32>,
+    #[serde(default)]
+    pub reloaded_after_measurement: bool,
+}
+
+impl CtxSizing {
+    fn new(mode: CtxMode, num_ctx: u32, method: &str) -> Self {
+        Self {
+            mode: mode.as_str().into(),
+            num_ctx,
+            method: method.into(),
+            model_max_context: None,
+            max_prompt_tokens: None,
+            estimated_max_prompt_tokens: None,
+            margin_tokens: None,
+            measured: vec![],
+            notes: vec![],
+            offloaded: None,
+            vram_fraction: None,
+            probe_num_ctx: None,
+            reloaded_after_measurement: false,
+        }
+    }
+}
+
+/// The window for a longest prompt of `max_prompt` tokens: prompt plus `num_predict` plus
+/// a margin of max(512, `pct`%), rounded up to a multiple of 2048, never above `cap`.
+/// `Err` carries the tokens needed when even `cap` cannot hold prompt plus reply.
+pub fn size_window(
+    max_prompt: u64,
+    num_predict: i32,
+    pct: u64,
+    cap: u32,
+) -> std::result::Result<(u32, u64), u64> {
+    let need = max_prompt + u64::try_from(num_predict).unwrap_or(0);
+    if need > u64::from(cap) {
+        return Err(need);
+    }
+    let margin = ctx_margin(need, pct);
+    let ctx = round_ctx(need + margin).min(u64::from(cap));
+    Ok((u32::try_from(ctx).unwrap_or(cap), margin))
+}
+
+struct Resolved {
+    num_ctx: u32,
+    /// Present for a fresh run; a resume keeps the original run's record.
+    sizing: Option<CtxSizing>,
+}
+
+/// The claim as the model will be shown it.
+fn shown(entry: &GoldEntry, swap: bool) -> Claim {
+    let mut c = entry.claim.clone();
+    if swap {
+        c.context.reverse();
+    }
+    c
+}
+
+/// Decide the window for the whole run, before the first scored call.
+///
+/// Fixed: the caller's number. Auto, fresh: estimate every claim's prompt (rendered as
+/// `verify_one` renders it), send the claims within two margins of the longest estimate
+/// once each with `num_predict: 1`, read their real prompt counts and size from the
+/// largest. If the pass fails, size from the estimate with a 10% margin. Auto, resume:
+/// reuse the number the run chose.
+fn resolve_ctx(
+    s: &Settings,
+    picked: &[GoldEntry],
+    cfg: &VerifyConfig,
+    chat: &dyn ChatBackend,
+    server: &dyn Server,
+    old: Option<&Manifest>,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Resolved> {
+    let est: Vec<Option<u64>> = picked
+        .iter()
+        .map(|e| estimate_claim_tokens(cfg, &shown(e, s.swap_evidence), &[]).ok())
+        .collect();
+    let ranked: Vec<(usize, u64)> = est
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| e.map(|e| (i, e)))
+        .collect();
+    let longest = ranked
+        .iter()
+        .copied()
+        .max_by_key(|&(i, e)| (e, usize::MAX - i));
+    let longest_est = longest.map(|(_, e)| e);
+    let np = s.num_predict;
+
+    if let Some(old) = old {
+        let was = old
+            .settings
+            .get("num_ctx_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("fixed");
+        if was != s.ctx_mode.as_str() {
+            return Err(Error::Refused(format!(
+                "cannot resume: the run used num_ctx mode {was} (num_ctx {}), this one asks for {}; pass --num-ctx {}",
+                old.settings["num_ctx"],
+                s.ctx_mode.as_str(),
+                if was == "auto" {
+                    "auto".to_string()
+                } else {
+                    old.settings["num_ctx"].to_string()
+                }
+            )));
+        }
+    }
+
+    if s.ctx_mode == CtxMode::Fixed {
+        let mut z = CtxSizing::new(CtxMode::Fixed, s.num_ctx, "fixed");
+        z.estimated_max_prompt_tokens = longest_est;
+        if let Some(l) =
+            longest_est.filter(|l| l + u64::try_from(np).unwrap_or(0) > u64::from(s.num_ctx))
+        {
+            let note = format!(
+                "the longest estimated prompt ({l} tokens) plus num_predict {np} exceeds the fixed num_ctx {}; expect context_overflow, or use --num-ctx auto",
+                s.num_ctx
+            );
+            progress(&format!("warning: {note}"));
+            z.notes.push(note);
+        }
+        return Ok(Resolved {
+            num_ctx: s.num_ctx,
+            sizing: Some(z),
+        });
+    }
+
+    if let Some(old) = old {
+        // A resume asks the server nothing: the model's maximum comes from the manifest.
+        let cap = old
+            .ctx
+            .as_ref()
+            .and_then(|z| z.model_max_context)
+            .unwrap_or(DEFAULT_MODEL_MAX_CTX);
+        let n = old.settings["num_ctx"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| Error::Refused("cannot resume: the manifest has no num_ctx".into()))?;
+        let fresh = longest_est.and_then(|l| size_window(l, np, 10, cap).ok());
+        progress(&match fresh {
+            Some((f, _)) if f != n => format!(
+                "resuming at num_ctx {n}, chosen by the original run (a fresh estimate would give {f}; not used, so the run stays comparable)"
+            ),
+            _ => format!("resuming at num_ctx {n}, chosen by the original run"),
+        });
+        return Ok(Resolved {
+            num_ctx: n,
+            sizing: None,
+        });
+    }
+
+    let model_max = server.model_max_context(&s.model).ok().flatten();
+    let cap = model_max.unwrap_or(DEFAULT_MODEL_MAX_CTX);
+    let mut z = CtxSizing::new(CtxMode::Auto, 0, "estimate");
+    z.model_max_context = model_max;
+    z.estimated_max_prompt_tokens = longest_est;
+    if model_max.is_none() {
+        let note = format!(
+            "the server did not report the model's maximum context; capped at {DEFAULT_MODEL_MAX_CTX}"
+        );
+        progress(&format!("note: {note}"));
+        z.notes.push(note);
+    }
+    let Some((top_i, top_est)) = longest else {
+        // No claim can be rendered; each will fail on its own. Size for the reply alone.
+        let (n, m) = size_window(0, np, 10, cap)
+            .map_err(|need| too_big("(none)", 0, "no prompt", np, need, cap, model_max))?;
+        z.num_ctx = n;
+        z.margin_tokens = Some(m);
+        return Ok(Resolved {
+            num_ctx: n,
+            sizing: Some(z),
+        });
+    };
+
+    // The measurement pass: the model loads here, at the window the estimate asks for.
+    let band = measure_band(&ranked.iter().map(|&(_, e)| e).collect::<Vec<_>>());
+    let probe_ctx = size_window(top_est, np, 5, cap).map_or(cap, |(n, _)| n);
+    let mut probe_cfg = cfg.clone();
+    probe_cfg.num_ctx = probe_ctx;
+    probe_cfg.num_predict = 1;
+    progress(&format!(
+        "measuring {} claim(s) near the longest estimate ({top_est} tokens) with num_predict 1",
+        band.len()
+    ));
+    let mut failed: Option<String> = None;
+    for &b in &band {
+        let (i, e) = ranked[b];
+        let entry = &picked[i];
+        let sent = build_request(&probe_cfg, &shown(entry, s.swap_evidence), &[])
+            .and_then(|(req, _)| chat.probe(&req));
+        match sent {
+            Ok(r) => match r.prompt_eval_count {
+                // A count that reaches the probe's own window was cut short by it.
+                Some(p) if p + 16 < u64::from(probe_ctx) => z.measured.push(Measured {
+                    claim_id: entry.claim.id.clone(),
+                    estimated: e,
+                    prompt_eval_count: p,
+                }),
+                other => {
+                    failed = Some(format!(
+                        "claim {} came back with prompt_eval_count {other:?} at num_ctx {probe_ctx}",
+                        entry.claim.id
+                    ));
+                    break;
+                }
+            },
+            Err(err) => {
+                failed = Some(format!("claim {}: {err}", entry.claim.id));
+                break;
+            }
+        }
+    }
+    let (max_prompt, pct, longest_id, how) = match (
+        &failed,
+        // The larger of the measured count and the estimate, per claim: a cached prefix
+        // can make Ollama's prompt_eval_count lower than the real prompt, never higher.
+        z.measured
+            .iter()
+            .max_by_key(|m| m.prompt_eval_count.max(m.estimated)),
+    ) {
+        (None, Some(m)) => {
+            z.method = "measured".into();
+            z.notes.push(
+                "sized from max(measured prompt_eval_count, estimate) per claim: a cached prefix can lower the count Ollama reports"
+                    .into(),
+            );
+            (
+                m.prompt_eval_count.max(m.estimated),
+                5,
+                m.claim_id.clone(),
+                "measured",
+            )
+        }
+        _ => {
+            let note = format!(
+                "measurement pass failed ({}); sized from the estimate with a 10% margin",
+                failed.as_deref().unwrap_or("nothing measured")
+            );
+            progress(&format!("warning: {note}"));
+            z.notes.push(note);
+            z.method = "estimate".into();
+            (top_est, 10, picked[top_i].claim.id.clone(), "estimated")
+        }
+    };
+    let (n, m) = size_window(max_prompt, np, pct, cap)
+        .map_err(|need| too_big(&longest_id, max_prompt, how, np, need, cap, model_max))?;
+    z.max_prompt_tokens = Some(max_prompt);
+    z.margin_tokens = Some(m);
+    z.num_ctx = n;
+    z.probe_num_ctx = Some(probe_ctx);
+    if !z.measured.is_empty() && n != probe_ctx {
+        z.reloaded_after_measurement = true;
+        z.notes.push(format!(
+            "the measurement ran at num_ctx {probe_ctx}, the run at {n}: the model reloads once"
+        ));
+    }
+    progress(&format!(
+        "num_ctx {n} (longest prompt {max_prompt} tokens {how}, num_predict {np}, margin {m})"
+    ));
+    Ok(Resolved {
+        num_ctx: n,
+        sizing: Some(z),
+    })
+}
+
+fn too_big(
+    id: &str,
+    prompt: u64,
+    how: &str,
+    np: i32,
+    need: u64,
+    cap: u32,
+    known: Option<u32>,
+) -> Error {
+    Error::Refused(format!(
+        "claim {id} has a prompt of {prompt} tokens ({how}); with num_predict {np} that needs {need}, but the model's maximum context is {cap}{}; lower --num-predict (at most {} fits) or drop the claim",
+        if known.is_some() {
+            ""
+        } else {
+            " (assumed: the server did not report it)"
+        },
+        u64::from(cap).saturating_sub(prompt)
+    ))
+}
+
+/// Read the loaded model's memory split once and record it. A model partly on the CPU
+/// runs slowly and, in a calibration, makes timings unrepresentative: warn, never block.
+fn note_offload(
+    server: &dyn Server,
+    model: &str,
+    sizing: &mut CtxSizing,
+    progress: &mut dyn FnMut(&str),
+) -> bool {
+    let Ok(Some(l)) = server.loaded(model) else {
+        return false;
+    };
+    if l.size == 0 {
+        return false;
+    }
+    let frac = l.size_vram as f64 / l.size as f64;
+    let off = l.size_vram < l.size;
+    sizing.offloaded = Some(off);
+    sizing.vram_fraction = Some(frac);
+    if off {
+        progress(&format!(
+            "warning: {model} is partly offloaded to the CPU ({:.0}% of it in VRAM); runs will be slow. Not blocking.",
+            frac * 100.0
+        ));
+    }
+    true
 }
 
 // ---- Running
@@ -662,6 +1076,25 @@ pub fn run(
     }
     let digest = (!tag.digest.is_empty()).then(|| tag.digest.clone());
     let selected: Vec<Selected> = picked.iter().map(Selected::from_entry).collect();
+    let dir = args.out_dir;
+    let old = if args.resume {
+        Some(read_manifest(dir)?)
+    } else if dir.join("manifest.json").exists() {
+        return Err(Error::Refused(format!(
+            "{} already holds a run; use --resume to continue it",
+            dir.display()
+        )));
+    } else {
+        None
+    };
+    let mut cfg = VerifyConfig::new(&s.model);
+    cfg.model_digest = digest.clone();
+    cfg.temperature = s.temperature;
+    cfg.seed = s.seed;
+    cfg.think = s.think;
+    cfg.num_predict = s.num_predict;
+    cfg.structured = s.structured != Structured::Off;
+    let resolved = resolve_ctx(s, &picked, &cfg, chat, server, old.as_ref(), progress)?;
     let mut manifest = Manifest {
         offrig_version: env!("CARGO_PKG_VERSION").to_string(),
         started_at: now_unix(),
@@ -669,26 +1102,33 @@ pub fn run(
         model: s.model.clone(),
         model_digest: digest.clone(),
         ollama_version,
-        settings: s.record(),
+        settings: s.record(resolved.num_ctx),
         gpu_cost_hr: s.gpu_cost_hr,
         gold: files,
         skipped_unlabelled: skipped,
         selected: selected.clone(),
+        ctx: resolved.sizing,
     };
-    let dir = args.out_dir;
-    if args.resume {
-        let old = read_manifest(dir)?;
+    if let Some(old) = old {
         check_resume(&old, &manifest)?;
         manifest = Manifest {
             resumes: [old.resumes.clone(), vec![now_unix()]].concat(),
             gpu_cost_hr: s.gpu_cost_hr,
             ..old
         };
-    } else if dir.join("manifest.json").exists() {
-        return Err(Error::Refused(format!(
-            "{} already holds a run; use --resume to continue it",
-            dir.display()
-        )));
+    }
+    let mut offload_noted = false;
+    if manifest.ctx.is_none() {
+        manifest.ctx = Some(CtxSizing::new(s.ctx_mode, resolved.num_ctx, "fixed"));
+    }
+    if s.ctx_mode == CtxMode::Auto && !args.resume {
+        // The measurement pass has loaded the model (when it ran).
+        if let Some(z) = manifest.ctx.as_mut()
+            && !z.measured.is_empty()
+        {
+            note_offload(server, &s.model, z, progress);
+            offload_noted = true;
+        }
     }
     std::fs::create_dir_all(dir).map_err(|e| Error::io("creating the output directory", e))?;
     write_json(&dir.join("manifest.json"), &manifest)?;
@@ -703,13 +1143,8 @@ pub fn run(
         .open(dir.join("verdicts.jsonl"))
         .map_err(|e| Error::io("opening verdicts.jsonl", e))?;
 
-    let mut cfg = VerifyConfig::new(&s.model);
-    cfg.model_digest = digest;
-    cfg.temperature = s.temperature;
-    cfg.seed = s.seed;
-    cfg.think = s.think;
-    cfg.num_ctx = s.num_ctx;
-    cfg.num_predict = s.num_predict;
+    cfg.num_ctx = resolved.num_ctx;
+    cfg.num_ctx_mode = s.ctx_mode;
     // Auto starts structured; a resume carries on in whatever mode the run settled on.
     let last_ok = prior.iter().rev().find_map(|l| l.pins.as_ref());
     let mut settled = last_ok.is_some();
@@ -763,6 +1198,8 @@ pub fn run(
     };
 
     let mut transport_run = 0usize;
+    let mut overflow_run = 0usize;
+    let mut estimator = TokenEstimator::default();
     for (i, entry) in picked.iter().enumerate() {
         if done.contains(&entry.claim.id) {
             continue;
@@ -773,6 +1210,20 @@ pub fn run(
             claim.context.reverse();
         }
         let evidence = evidence_list(&claim, &[]);
+        // The conservative estimate, corrected by the worst real/estimated ratio seen so far.
+        let raw_estimate = estimate_claim_tokens(&cfg, &claim, &[]).ok();
+        if let Some(raw) = raw_estimate {
+            let need = estimator.correct(raw) + u64::try_from(cfg.num_predict).unwrap_or(0);
+            if need + 16 >= u64::from(cfg.num_ctx) {
+                progress(&format!(
+                    "warning: {} may overflow num_ctx {} (estimated prompt {} + num_predict {})",
+                    sel.id,
+                    cfg.num_ctx,
+                    estimator.correct(raw),
+                    cfg.num_predict
+                ));
+            }
+        }
         let started = Instant::now();
         recorder.seen.borrow_mut().clear();
         let mut result = verify_one(chat, &cfg, &claim, &[]);
@@ -804,6 +1255,17 @@ pub fn run(
         let line = match result {
             Ok(v) => {
                 settled = true;
+                if let (Some(raw), 1) = (raw_estimate, v.timing.attempts) {
+                    estimator.observe(raw, v.timing.prompt_eval_count);
+                }
+                if !offload_noted {
+                    offload_noted = true;
+                    if let Some(z) = manifest.ctx.as_mut()
+                        && note_offload(server, &s.model, z, progress)
+                    {
+                        write_json(&dir.join("manifest.json"), &manifest)?;
+                    }
+                }
                 answered.push(i);
                 args.store.save_verdict(&v)?;
                 let found = quote_found(&v.evidence_quote, &evidence);
@@ -883,6 +1345,21 @@ pub fn run(
             shown,
             wall
         ));
+        let overflowed = line.as_ref().is_some_and(is_overflow);
+        if overflowed {
+            overflow_run += 1;
+            if overflow_run >= MAX_CONSECUTIVE_TRANSPORT {
+                if let Some(l) = line.as_ref() {
+                    append_line(&mut file, l)?;
+                }
+                return Err(Error::ContextOverflow(format!(
+                    "{overflow_run} claims in a row overflowed num_ctx {}; stopped. Start a new run with a larger --num-ctx (or --num-ctx auto)",
+                    cfg.num_ctx
+                )));
+            }
+        } else {
+            overflow_run = 0;
+        }
         if transport_note.is_some() {
             transport_run += 1;
             if transport_run >= MAX_CONSECUTIVE_TRANSPORT {
@@ -930,6 +1407,12 @@ fn is_server_error(e: &Error) -> bool {
     matches!(e, Error::Ollama(m) if m
         .split_once(": http ")
         .is_some_and(|(_, rest)| rest.starts_with('5')))
+}
+
+/// An outcome recorded because the window was too small. It is offrig's sizing failure:
+/// it is neither scored nor counted against the model.
+fn is_overflow(l: &Line) -> bool {
+    l.error_code.as_deref() == Some("context_overflow")
 }
 
 fn label_str(l: Label) -> &'static str {
@@ -1018,6 +1501,11 @@ pub struct Report {
     pub default_result: String,
     /// What counts against the model in the default rule.
     pub rule_note: String,
+    /// Claims whose prompt and reply filled the window. Sizing failures, not the model's:
+    /// they are not in `unusable`, they count as pending.
+    pub context_overflow: usize,
+    /// How the window was chosen (absent for runs made before it was recorded).
+    pub ctx: Option<CtxSizing>,
 }
 
 fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
@@ -1034,7 +1522,8 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         .collect();
     let rows = calibrate::metrics(&gold, &outcomes);
     let mut unusable: BTreeMap<String, usize> = BTreeMap::new();
-    for l in lines.iter().filter(|l| !l.is_ok()) {
+    let overflow = lines.iter().filter(|l| is_overflow(l)).count();
+    for l in lines.iter().filter(|l| !l.is_ok() && !is_overflow(l)) {
         *unusable
             .entry(l.check_type.as_str().to_string())
             .or_default() += 1;
@@ -1076,7 +1565,12 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         note: "gpu_cost_hr x wall seconds / 3600; boot and model pull time are not included and are the caller's to add".into(),
     };
     let rule = rule_report(&rows);
-    let recorded: HashSet<&str> = lines.iter().map(|l| l.claim_id.as_str()).collect();
+    // An overflowed claim has no answer the model could have given: it stays pending.
+    let recorded: HashSet<&str> = lines
+        .iter()
+        .filter(|l| !is_overflow(l))
+        .map(|l| l.claim_id.as_str())
+        .collect();
     let pending = m
         .selected
         .iter()
@@ -1098,9 +1592,19 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         }
         .into(),
         pending,
-        hint: (pending > 0).then(|| "rerun with --resume <dir>".to_string()),
+        hint: (pending > 0).then(|| match (pending - overflow, overflow) {
+            (_, 0) => "rerun with --resume <dir>".to_string(),
+            (0, n) => format!(
+                "{n} claim(s) overflowed num_ctx (offrig's sizing, not charged to the model); resume reuses the same window, so start a new run with a larger --num-ctx"
+            ),
+            (p, n) => format!(
+                "{p} claim(s) have no outcome (rerun with --resume <dir>); {n} overflowed num_ctx (offrig's sizing, not charged to the model: start a new run with a larger --num-ctx)"
+            ),
+        }),
         default_result: default_result.into(),
         rule_note: RULE_NOTE.into(),
+        context_overflow: overflow,
+        ctx: m.ctx.clone(),
         model: m.model.clone(),
         model_digest: m.model_digest.clone(),
         ollama_version: m.ollama_version.clone(),
@@ -1260,10 +1764,33 @@ pub fn render_table(r: &Report) -> String {
         c.per_claim_usd
             .map_or("n/a".to_string(), |v| format!("${v:.5}")),
     ));
+    if let Some(z) = &r.ctx {
+        out.push_str(&format!(
+            "context window: num_ctx {} ({}, {}){}\n",
+            z.num_ctx,
+            z.mode,
+            z.method,
+            z.max_prompt_tokens
+                .map_or(String::new(), |p| format!(", longest prompt {p} tokens")),
+        ));
+        if z.offloaded == Some(true) {
+            out.push_str(&format!(
+                "warning: the model was partly offloaded to the CPU ({:.0}% in VRAM)\n",
+                z.vram_fraction.unwrap_or(0.0) * 100.0
+            ));
+        }
+    }
+    if r.context_overflow > 0 {
+        out.push_str(&format!(
+            "context_overflow (offrig's sizing, not counted against the model): {}\n",
+            r.context_overflow
+        ));
+    }
     if r.pending > 0 {
         out.push_str(&format!(
-            "status: incomplete, {} claims pending (no recorded outcome); rerun with --resume <dir>\n",
-            r.pending
+            "status: incomplete, {} claims pending (no recorded outcome); {}\n",
+            r.pending,
+            r.hint.as_deref().unwrap_or("rerun with --resume <dir>")
         ));
     }
     out.push_str("default rule (grounded and reasoning; knowledge reported only):\n");
@@ -1434,6 +1961,10 @@ mod tests {
         digest: String,
         remote: String,
         installed: bool,
+        max_ctx: Option<u32>,
+        loaded: Option<Loaded>,
+        /// Calls to `model_max_context` and `loaded`: what a no-op resume must not make.
+        asked: std::cell::Cell<u32>,
     }
 
     impl Srv {
@@ -1442,11 +1973,22 @@ mod tests {
                 digest: "sha256:abc".into(),
                 remote: String::new(),
                 installed: true,
+                max_ctx: None,
+                loaded: None,
+                asked: std::cell::Cell::new(0),
             }
         }
     }
 
     impl Server for Srv {
+        fn model_max_context(&self, _: &str) -> Result<Option<u32>> {
+            self.asked.set(self.asked.get() + 1);
+            Ok(self.max_ctx)
+        }
+        fn loaded(&self, _: &str) -> Result<Option<Loaded>> {
+            self.asked.set(self.asked.get() + 1);
+            Ok(self.loaded.clone())
+        }
         fn version(&self) -> Result<String> {
             Ok("0.35.0".into())
         }
@@ -1476,7 +2018,14 @@ mod tests {
         d
     }
 
+    /// Fixed window: the tests that predate the adaptive window keep their call counts.
     fn settings() -> Settings {
+        let mut s = Settings::new("judge", "http://127.0.0.1:11434");
+        s.ctx_mode = CtxMode::Fixed;
+        s
+    }
+
+    fn auto_settings() -> Settings {
         Settings::new("judge", "http://127.0.0.1:11434")
     }
 
@@ -2526,6 +3075,7 @@ mod tests {
             gold: vec![],
             skipped_unlabelled: 0,
             selected,
+            ctx: None,
         };
         let rep = build_report(&m, &lines, 0.0);
         assert!(rep.passes_default);
@@ -2538,5 +3088,626 @@ mod tests {
         assert!(!rep.passes_default);
         assert!(!rep.rule[0].criteria[0].pass);
         assert_eq!(rep.rule[0].pass, rep.rows[0].passes_default_rule);
+    }
+
+    // ---- Adaptive context window
+
+    /// A model whose probes (num_predict 1) report `probe` prompt tokens and whose real
+    /// replies are `scripted`.
+    fn probing(probe: u64) -> Fake {
+        let inner = scripted();
+        Fake::new(move |id, req| {
+            if req.num_predict == Some(1) {
+                return Ok(ChatResponse {
+                    prompt_eval_count: Some(probe),
+                    eval_count: Some(1),
+                    done_reason: "length".into(),
+                    ..Default::default()
+                });
+            }
+            (inner.answer)(id, req)
+        })
+    }
+
+    fn probes(chat: &Fake) -> usize {
+        chat.seen
+            .borrow()
+            .iter()
+            .filter(|r| r.num_predict == Some(1))
+            .count()
+    }
+
+    fn manifest_ctx(dir: &Path) -> CtxSizing {
+        read_manifest(dir).expect("manifest").ctx.expect("ctx")
+    }
+
+    #[test]
+    fn num_ctx_flag_is_auto_or_a_number() {
+        assert_eq!(parse_num_ctx("auto").expect("auto"), (CtxMode::Auto, None));
+        assert_eq!(
+            parse_num_ctx("16384").expect("n"),
+            (CtxMode::Fixed, Some(16384))
+        );
+        assert!(parse_num_ctx("big").is_err() && parse_num_ctx("0").is_err());
+    }
+
+    #[test]
+    fn window_is_prompt_plus_reply_plus_margin_rounded_to_2048() {
+        // 5000 + 12288 = 17288; margin max(512, 5%) = 864; 18152 rounds up to 18432.
+        assert_eq!(size_window(5000, 12288, 5, 131_072), Ok((18_432, 864)));
+        // Small totals get the 512 floor: 1000 + 100 + 512 = 1612 -> 2048.
+        assert_eq!(size_window(1000, 100, 5, 131_072), Ok((2048, 512)));
+        // 10% margin for the estimate fallback.
+        assert_eq!(size_window(5000, 12288, 10, 131_072), Ok((20_480, 1728)));
+        // Capped at the model's maximum when the margin does not fit but the need does.
+        assert_eq!(size_window(28_000, 4096, 5, 32_768), Ok((32_768, 1604)));
+        // Refused when even the cap cannot hold prompt plus reply.
+        assert_eq!(size_window(30_000, 4096, 5, 32_768), Err(34_096));
+    }
+
+    #[test]
+    fn measurement_band_is_within_two_margins_of_the_top_and_capped() {
+        // Top 10000: margin 1000, floor 8000.
+        let e = [3000, 9500, 10_000, 8000, 7999, 9900];
+        assert_eq!(measure_band(&e), vec![2, 5, 1, 3]);
+        assert!(measure_band(&[]).is_empty());
+        // Small values use the 512 margin: top 1000, floor 1000 - 1024 -> 0, all in.
+        assert_eq!(measure_band(&[10, 1000, 500]).len(), 3);
+        // Thirty near-equal claims: only the first twenty, highest first.
+        let many: Vec<u64> = (0..30).map(|i| 10_000 - i).collect();
+        let band = measure_band(&many);
+        assert_eq!(band.len(), MEASURE_CAP);
+        assert_eq!(band[0], 0);
+        assert_eq!(band[19], 19);
+    }
+
+    #[test]
+    fn auto_measures_the_longest_claims_and_sizes_one_window() {
+        let dir = tmp("auto-size");
+        let chat = probing(6000);
+        let s = auto_settings();
+        let files = gold();
+        let (picked, _) = select(read_gold(&files).expect("gold"), &s).expect("select");
+        let cfg = VerifyConfig::new("judge");
+        let ests: Vec<u64> = picked
+            .iter()
+            .map(|e| estimate_claim_tokens(&cfg, &e.claim, &[]).expect("est"))
+            .collect();
+        let rep = go_with(&s, &files, &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!(rep.status, "complete");
+        assert_eq!(probes(&chat), measure_band(&ests).len());
+        // 6000 + 4096 = 10096; margin max(512, 504) = 512; 10608 -> 12288.
+        let z = manifest_ctx(&dir);
+        assert_eq!((z.num_ctx, z.method.as_str()), (12_288, "measured"));
+        assert_eq!(z.max_prompt_tokens, Some(6000));
+        assert_eq!(z.margin_tokens, Some(512));
+        assert_eq!(z.estimated_max_prompt_tokens, ests.iter().copied().max());
+        assert_eq!(z.measured.len(), probes(&chat));
+        // The resolved number, not "auto", is the identity; every scored call used it.
+        let m = read_manifest(&dir).expect("m");
+        assert_eq!(m.settings["num_ctx"], 12_288);
+        assert_eq!(m.settings["num_ctx_mode"], "auto");
+        let seen = chat.seen.borrow();
+        assert!(
+            seen.iter()
+                .filter(|r| r.num_predict != Some(1))
+                .all(|r| r.num_ctx == Some(12_288))
+        );
+        // One window for every scored call (the probes ran at the estimate's window).
+        drop(seen);
+        let line = &read_lines(&dir, false).expect("lines")[0];
+        let pins = line.pins.as_ref().expect("pins");
+        assert_eq!((pins.num_ctx, pins.num_ctx_mode.as_str()), (12_288, "auto"));
+        assert_eq!(rep.ctx.as_ref().map(|c| c.num_ctx), Some(12_288));
+        assert!(render_table(&rep).contains("context window: num_ctx 12288 (auto, measured)"));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn auto_caps_at_the_models_maximum_window() {
+        let dir = tmp("auto-cap");
+        let mut srv = Srv::new();
+        srv.max_ctx = Some(11_000);
+        // 6000 + 4096 = 10096 fits 11000; with the margin it rounds to 12288, which does not.
+        let chat = probing(6000);
+        go_with(&auto_settings(), &gold(), &dir, false, &chat, &srv).expect("run");
+        let z = manifest_ctx(&dir);
+        assert_eq!((z.num_ctx, z.model_max_context), (11_000, Some(11_000)));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn auto_without_a_reported_maximum_caps_at_131072_and_says_so() {
+        let dir = tmp("auto-nomax");
+        let mut said = vec![];
+        let store = Store::open_in_memory().expect("store");
+        let files = gold();
+        let s = auto_settings();
+        let args = RunArgs {
+            settings: &s,
+            gold: &files,
+            store: &store,
+            out_dir: &dir,
+            resume: false,
+            keep_thinking: false,
+        };
+        run(&args, &probing(1000), &Srv::new(), &mut |m| {
+            said.push(m.to_string())
+        })
+        .expect("run");
+        assert!(
+            said.iter().any(|m| m.contains("capped at 131072")),
+            "{said:?}"
+        );
+        let z = manifest_ctx(&dir);
+        assert_eq!(z.model_max_context, None);
+        assert!(z.notes.iter().any(|n| n.contains("131072")));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn auto_refuses_before_any_scored_call_when_prompt_and_reply_cannot_fit() {
+        let dir = tmp("auto-refuse");
+        let mut srv = Srv::new();
+        srv.max_ctx = Some(8192);
+        let chat = probing(6000);
+        let e = go_with(&auto_settings(), &gold(), &dir, false, &chat, &srv).expect_err("refuse");
+        let msg = e.to_string();
+        assert!(matches!(e, Error::Refused(_)), "{msg}");
+        // Names a claim id, its tokens, num_predict and the model's maximum, and the fix.
+        assert!(msg.contains("claim ") && msg.contains("6000"), "{msg}");
+        assert!(
+            msg.contains("num_predict 4096") && msg.contains("8192"),
+            "{msg}"
+        );
+        assert!(msg.contains("lower --num-predict"), "{msg}");
+        assert_eq!(
+            chat.calls(),
+            probes(&chat),
+            "only measurement probes were sent"
+        );
+        assert!(!dir.join("manifest.json").exists());
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_failed_measurement_falls_back_to_the_estimate_with_a_ten_percent_margin() {
+        let dir = tmp("auto-fallback");
+        let inner = scripted();
+        let chat = Fake::new(move |id, req| {
+            if req.num_predict == Some(1) {
+                return Err(Error::Ollama("chat: connection reset".into()));
+            }
+            (inner.answer)(id, req)
+        });
+        let rep = go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!(rep.status, "complete");
+        assert_eq!(probes(&chat), 1, "the pass stops at the first failure");
+        let z = manifest_ctx(&dir);
+        assert_eq!(z.method, "estimate");
+        let est = z.estimated_max_prompt_tokens.expect("estimate");
+        let (n, m) = size_window(est, 4096, 10, DEFAULT_MODEL_MAX_CTX).expect("fits");
+        assert_eq!((z.num_ctx, z.margin_tokens), (n, Some(m)));
+        assert_eq!(z.max_prompt_tokens, Some(est));
+        assert!(
+            z.notes
+                .iter()
+                .any(|n| n.contains("measurement pass failed"))
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_probe_that_filled_its_window_counts_as_a_failed_measurement() {
+        let dir = tmp("auto-saturated");
+        let inner = scripted();
+        let chat = Fake::new(move |id, req| {
+            if req.num_predict == Some(1) {
+                return Ok(ChatResponse {
+                    prompt_eval_count: req.num_ctx.map(u64::from),
+                    ..Default::default()
+                });
+            }
+            (inner.answer)(id, req)
+        });
+        go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!(manifest_ctx(&dir).method, "estimate");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn context_overflow_is_recorded_but_not_charged_to_the_model() {
+        let dir = tmp("overflow");
+        let inner = probing(1000);
+        let chat = Fake::new(move |id, req| {
+            if id == "g2" && req.num_predict != Some(1) {
+                // The prompt and the reply together used the whole window.
+                let n = u64::from(req.num_ctx.expect("ctx"));
+                return Ok(ChatResponse {
+                    prompt_eval_count: Some(n - 100),
+                    eval_count: Some(100),
+                    done_reason: "length".into(),
+                    ..resp(&reply("supported", QUOTE))
+                });
+            }
+            (inner.answer)(id, req)
+        });
+        let rep = go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("run");
+        let lines = read_lines(&dir, false).expect("lines");
+        let g2 = lines.iter().find(|l| l.claim_id == "g2").expect("g2");
+        assert_eq!(
+            (g2.status.as_str(), g2.error_code.as_deref()),
+            ("unusable", Some("context_overflow"))
+        );
+        assert!(g2.error.as_deref().is_some_and(|e| e.contains("num_ctx")));
+        // Not an unusable outcome of the model: nothing is listed against it, the claim is
+        // pending, and the run is incomplete (neither pass nor fail).
+        assert!(rep.unusable.is_empty());
+        assert_eq!(rep.context_overflow, 1);
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        assert_eq!(rep.default_result, "incomplete");
+        assert!(!rep.passes_default);
+        let hint = rep.hint.as_deref().expect("hint");
+        assert!(
+            hint.contains("larger --num-ctx") && hint.contains("not charged"),
+            "{hint}"
+        );
+        let table = render_table(&rep);
+        assert!(table.contains("context_overflow") && table.contains("INCOMPLETE"));
+        assert!(rep.rule_note.contains("context_overflow"));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn five_overflows_in_a_row_stop_the_run() {
+        let dir = tmp("overflow-stop");
+        let inner = probing(1000);
+        let chat = Fake::new(move |id, req| {
+            if req.num_predict != Some(1) {
+                let n = u64::from(req.num_ctx.expect("ctx"));
+                return Ok(ChatResponse {
+                    prompt_eval_count: Some(n),
+                    done_reason: "length".into(),
+                    ..resp("{}")
+                });
+            }
+            (inner.answer)(id, req)
+        });
+        let e =
+            go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect_err("stop");
+        assert_eq!(e.code(), "context_overflow");
+        assert_eq!(read_lines(&dir, false).expect("lines").len(), 5);
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_resume_reuses_the_chosen_window_and_makes_no_measurement() {
+        let dir = tmp("auto-resume");
+        let store = Store::open_in_memory().expect("store");
+        let run1 = |chat: &Fake, srv: &Srv, s: &Settings, resume: bool, said: &mut Vec<String>| {
+            let files = gold();
+            let args = RunArgs {
+                settings: s,
+                gold: &files,
+                store: &store,
+                out_dir: &dir,
+                resume,
+                keep_thinking: false,
+            };
+            run(&args, chat, srv, &mut |m| said.push(m.to_string()))
+        };
+        run1(
+            &probing(6000),
+            &Srv::new(),
+            &auto_settings(),
+            false,
+            &mut vec![],
+        )
+        .expect("first");
+        let path = dir.join("verdicts.jsonl");
+        let text = std::fs::read_to_string(&path).expect("read");
+        let keep: Vec<&str> = text.lines().take(5).collect();
+        std::fs::write(&path, format!("{}\n", keep.join("\n"))).expect("write");
+
+        // A different measurement now would give a different window; the run keeps its own.
+        let chat = probing(30_000);
+        let mut said = vec![];
+        run1(&chat, &Srv::new(), &auto_settings(), true, &mut said).expect("resume");
+        assert_eq!(probes(&chat), 0);
+        assert_eq!(chat.calls(), 2);
+        assert!(chat.seen.borrow().iter().all(|r| r.num_ctx == Some(12_288)));
+        assert!(
+            said.iter()
+                .any(|m| m.contains("num_ctx 12288, chosen by the original run")),
+            "{said:?}"
+        );
+        assert_eq!(read_manifest(&dir).expect("m").settings["num_ctx"], 12_288);
+
+        // A fixed-window resume of an auto run is refused, and says what to pass.
+        let e = run1(&scripted(), &Srv::new(), &settings(), true, &mut vec![]).expect_err("mode");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("cannot resume") && msg.contains("--num-ctx auto"),
+            "{msg}"
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn fixed_mode_sends_the_number_as_given_and_never_probes() {
+        let dir = tmp("fixed");
+        let chat = scripted();
+        go_with(&settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert!(
+            chat.seen
+                .borrow()
+                .iter()
+                .all(|r| r.num_ctx == Some(16_384) && r.num_predict == Some(4096))
+        );
+        assert_eq!(chat.calls(), 7);
+        let z = manifest_ctx(&dir);
+        assert_eq!(
+            (z.mode.as_str(), z.method.as_str(), z.num_ctx),
+            ("fixed", "fixed", 16_384)
+        );
+        let m = read_manifest(&dir).expect("m");
+        assert_eq!(m.settings["num_ctx"], 16_384);
+        assert_eq!(m.settings["num_ctx_mode"], "fixed");
+        let pins = read_lines(&dir, false).expect("l")[0]
+            .pins
+            .clone()
+            .expect("pins");
+        assert_eq!(pins.num_ctx_mode, "fixed");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_resume_of_a_run_made_before_the_mode_existed_is_fixed() {
+        let dir = tmp("legacy");
+        go_with(&settings(), &gold(), &dir, false, &scripted(), &Srv::new()).expect("run");
+        // Strip what older manifests lacked.
+        let mut m = read_manifest(&dir).expect("m");
+        m.ctx = None;
+        m.settings
+            .as_object_mut()
+            .expect("obj")
+            .remove("num_ctx_mode");
+        write_json(&dir.join("manifest.json"), &m).expect("write");
+        let chat = scripted();
+        go_with(&settings(), &gold(), &dir, true, &chat, &Srv::new()).expect("resume fixed");
+        assert_eq!(chat.calls(), 0);
+        let e = go_with(
+            &auto_settings(),
+            &gold(),
+            &dir,
+            true,
+            &scripted(),
+            &Srv::new(),
+        )
+        .expect_err("auto");
+        assert!(e.to_string().contains("cannot resume"));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn an_offloaded_model_is_warned_about_and_recorded_never_blocked() {
+        let dir = tmp("offload");
+        let mut srv = Srv::new();
+        srv.loaded = Some(Loaded {
+            name: "judge:latest".into(),
+            size_vram: 60,
+            size: 100,
+            context_length: None,
+        });
+        let mut said = vec![];
+        let store = Store::open_in_memory().expect("store");
+        let files = gold();
+        let s = auto_settings();
+        let args = RunArgs {
+            settings: &s,
+            gold: &files,
+            store: &store,
+            out_dir: &dir,
+            resume: false,
+            keep_thinking: false,
+        };
+        let rep = run(&args, &probing(2000), &srv, &mut |m| {
+            said.push(m.to_string())
+        })
+        .expect("run");
+        assert_eq!(rep.status, "complete");
+        assert!(
+            said.iter()
+                .any(|m| m.contains("partly offloaded") && m.contains("60%")),
+            "{said:?}"
+        );
+        let z = manifest_ctx(&dir);
+        assert_eq!(z.offloaded, Some(true));
+        assert!((z.vram_fraction.expect("frac") - 0.6).abs() < 1e-9);
+        assert!(render_table(&rep).contains("partly offloaded"));
+
+        // Fully in VRAM: recorded, no warning. A fixed run notes it after the first reply.
+        let dir2 = tmp("offload-fixed");
+        let mut srv = Srv::new();
+        srv.loaded = Some(Loaded {
+            name: "judge".into(),
+            size_vram: 100,
+            size: 100,
+            context_length: None,
+        });
+        go_with(&settings(), &gold(), &dir2, false, &scripted(), &srv).expect("run");
+        let z = manifest_ctx(&dir2);
+        assert_eq!((z.offloaded, z.vram_fraction), (Some(false), Some(1.0)));
+        cleanup(&[&dir, &dir2]);
+    }
+
+    #[test]
+    fn a_low_measurement_never_sizes_below_the_estimate_and_the_reload_is_recorded() {
+        let dir = tmp("auto-max");
+        // A cached prefix: the server reports far fewer tokens than the prompt has.
+        go_with(
+            &auto_settings(),
+            &gold(),
+            &dir,
+            false,
+            &probing(10),
+            &Srv::new(),
+        )
+        .expect("run");
+        let z = manifest_ctx(&dir);
+        assert_eq!(z.method, "measured");
+        assert_eq!(z.max_prompt_tokens, z.estimated_max_prompt_tokens);
+        assert!(z.notes.iter().any(|n| n.contains("cached prefix")));
+        let m = read_manifest(&dir).expect("m");
+        assert_eq!(
+            (
+                m.settings["shift"].as_bool(),
+                m.settings["truncate"].as_bool()
+            ),
+            (Some(false), Some(false))
+        );
+        assert_eq!(
+            z.reloaded_after_measurement,
+            z.probe_num_ctx != Some(z.num_ctx)
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_server_side_context_error_is_recorded_as_context_overflow() {
+        let dir = tmp("server-overflow");
+        let inner = probing(1000);
+        let chat = Fake::new(move |id, req| {
+            if id == "g3" && req.num_predict != Some(1) {
+                return Err(Error::ContextOverflow(
+                    "chat: http 400: the input length exceeds the context length".into(),
+                ));
+            }
+            (inner.answer)(id, req)
+        });
+        let rep = go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("run");
+        let lines = read_lines(&dir, false).expect("lines");
+        let g3 = lines.iter().find(|l| l.claim_id == "g3").expect("g3");
+        assert_eq!(g3.error_code.as_deref(), Some("context_overflow"));
+        assert!(rep.unusable.is_empty());
+        assert_eq!(
+            (rep.status.as_str(), rep.context_overflow),
+            ("incomplete", 1)
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn an_auto_resume_with_nothing_pending_loads_no_model_and_measures_nothing() {
+        let dir = tmp("auto-noop");
+        let mut srv = Srv::new();
+        srv.max_ctx = Some(40_960);
+        srv.loaded = Some(Loaded {
+            name: "judge".into(),
+            size_vram: 100,
+            size: 100,
+            context_length: None,
+        });
+        go_with(&auto_settings(), &gold(), &dir, false, &probing(2000), &srv).expect("first");
+        let before = srv.asked.get();
+        assert!(before > 0);
+        let chat = probing(2000);
+        let rep = go_with(&auto_settings(), &gold(), &dir, true, &chat, &srv).expect("noop");
+        assert_eq!(rep.status, "complete");
+        assert_eq!(chat.calls(), 0, "no probe and no scored call");
+        assert_eq!(srv.asked.get(), before, "no show or ps either");
+        cleanup(&[&dir]);
+    }
+
+    /// Every request offrig builds goes through `ChatRequest::body`; this drives every
+    /// chat path through a recording fake and checks the body each one would send. A new
+    /// path that forgets `shift` or `truncate` fails here.
+    #[test]
+    fn every_chat_path_sends_shift_false_and_truncate_false() {
+        let dir = tmp("invariant");
+        let inner = probing(2000);
+        // g1 answers garbage once, so the schema-retry path is driven too.
+        let first = RefCell::new(true);
+        let chat = Fake::new(move |id, req| {
+            if id == "g1" && req.num_predict != Some(1) && first.replace(false) {
+                return Ok(resp("not json at all"));
+            }
+            (inner.answer)(id, req)
+        });
+        go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("calibrate");
+        // A one-off check in auto mode.
+        let files = gold();
+        let entries = read_gold(&files).expect("gold");
+        let one = &entries[0].claim;
+        let mut est = TokenEstimator::default();
+        crate::verify::verify_one_auto(
+            &chat,
+            &VerifyConfig::new("judge"),
+            one,
+            &[],
+            None,
+            &mut est,
+        )
+        .expect("one-off");
+        let seen = chat.seen.borrow();
+        assert!(seen.iter().any(|r| r.num_predict == Some(1)), "probes ran");
+        assert!(seen.iter().any(|r| r.messages.len() > 2), "the retry ran");
+        assert!(seen.len() > 10);
+        for r in seen.iter() {
+            let b = r.body();
+            assert_eq!(b["shift"], json!(false), "{b}");
+            assert_eq!(b["truncate"], json!(false), "{b}");
+        }
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn every_record_carries_the_resolved_number_never_the_word_auto() {
+        let dir = tmp("resolved");
+        let rep = go_with(
+            &auto_settings(),
+            &gold(),
+            &dir,
+            false,
+            &probing(6000),
+            &Srv::new(),
+        )
+        .expect("run");
+        let table = render_table(&rep);
+        assert!(table.contains("num_ctx 12288"), "{table}");
+        for bad in ["num_ctx: auto", "num_ctx auto", "num_ctx=auto"] {
+            assert!(!table.contains(bad), "{bad}: {table}");
+        }
+        let num = |v: &Value| v.as_u64() == Some(12_288);
+        let metrics: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("metrics.json")).expect("metrics"),
+        )
+        .expect("json");
+        assert!(
+            num(&metrics["settings"]["num_ctx"]),
+            "{}",
+            metrics["settings"]
+        );
+        assert!(num(&metrics["ctx"]["num_ctx"]));
+        assert_eq!(metrics["settings"]["num_ctx_mode"], "auto");
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("manifest.json")).expect("manifest"),
+        )
+        .expect("json");
+        assert!(num(&manifest["settings"]["num_ctx"]) && num(&manifest["ctx"]["num_ctx"]));
+        for line in read_lines(&dir, false).expect("lines") {
+            assert_eq!(line.pins.expect("pins").num_ctx, 12_288);
+        }
+        for f in ["metrics.json", "manifest.json", "verdicts.jsonl"] {
+            let t = std::fs::read_to_string(dir.join(f)).expect("file");
+            for bad in [
+                "\"num_ctx\":\"auto\"",
+                "\"num_ctx\": \"auto\"",
+                "\"num_ctx\":null",
+            ] {
+                assert!(!t.contains(bad), "{f}: {bad}");
+            }
+        }
+        cleanup(&[&dir]);
     }
 }
