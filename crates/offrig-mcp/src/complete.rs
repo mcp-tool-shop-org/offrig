@@ -8,7 +8,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use offrig_core::account::{AccountView, Scope};
+use offrig_core::account::{AccountGuard, Scope};
 use offrig_core::balances::{self, Balance};
 use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
@@ -255,9 +255,10 @@ pub fn complete_with(
 
     let store = Store::open(db)?;
     let held = settle_held(&store, &or)?;
-    let view = AccountView::read(
+    // The balance is read before the account lock is taken (it is a network call).
+    let guard = AccountGuard::read(
         Provider::OpenRouter,
-        &Scope::beside(&project, &ctx.registry),
+        Scope::beside(&project, &ctx.registry),
         balance,
     );
     let c = store.commit_completion_with_account(
@@ -270,7 +271,7 @@ pub fn complete_with(
             price_out_m: price.completion_per_m(),
             worst_case: worst,
         },
-        &view,
+        &guard,
     )?;
     let journal = store.journal(
         "complete",
@@ -366,8 +367,7 @@ pub fn complete_with(
                         .into(),
                 );
             }
-            warnings.extend(view.skipped_note(Provider::OpenRouter));
-            warnings.extend(view.notes.iter().cloned());
+            warnings.extend(guard.notes());
             json!({
                 "completion_id": c.id,
                 "model": a.model,

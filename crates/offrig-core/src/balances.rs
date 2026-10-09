@@ -4,6 +4,22 @@
 
 use crate::store::Provider;
 
+/// The reason text when the provider answered without a usable number.
+const NO_NUMBER: &str = "the provider reported no usable number";
+
+/// A short code for why a balance is unknown, for output that must not carry free text
+/// (error bodies, paths): `no_key`, `no_number` or `http_error`.
+pub fn unknown_code(why: &str) -> &'static str {
+    let l = why.to_ascii_lowercase();
+    if why == NO_NUMBER {
+        "no_number"
+    } else if l.contains("key") {
+        "no_key"
+    } else {
+        "http_error"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Balance {
     Known(f64),
@@ -26,10 +42,18 @@ impl Balance {
         }
     }
 
+    /// `no_key`, `http_error` or `no_number` when unknown; `None` when known.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Balance::Known(_) => None,
+            Balance::Unknown(why) => Some(unknown_code(why)),
+        }
+    }
+
     pub fn from_result(r: crate::Result<f64>) -> Balance {
         match r {
             Ok(v) if v.is_finite() => Balance::Known(v),
-            Ok(_) => Balance::Unknown("the provider reported no usable number".into()),
+            Ok(_) => Balance::Unknown(NO_NUMBER.into()),
             Err(e) => Balance::Unknown(e.to_string()),
         }
     }
@@ -73,6 +97,26 @@ mod tests {
         assert!(
             cap_exceeds_balance(Provider::RunPod, 50.0, &Balance::Unknown("x".into())).is_none()
         );
+    }
+
+    #[test]
+    fn an_unknown_balance_has_a_code_without_free_text() {
+        assert_eq!(
+            Balance::from_result(Err(Error::MissingOpenRouterKey)).code(),
+            Some("no_key")
+        );
+        assert_eq!(
+            Balance::from_result(Err(Error::MissingApiKey)).code(),
+            Some("no_key")
+        );
+        assert_eq!(Balance::from_result(Ok(f64::NAN)).code(), Some("no_number"));
+        let http = Error::OpenRouter {
+            status: 500,
+            what: "the credits".into(),
+            body: "/home/secret/path".into(),
+        };
+        assert_eq!(Balance::from_result(Err(http)).code(), Some("http_error"));
+        assert_eq!(Balance::Known(1.0).code(), None);
     }
 
     #[test]

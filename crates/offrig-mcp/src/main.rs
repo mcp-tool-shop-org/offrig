@@ -121,7 +121,8 @@ fn provider_budget_json(
         None => json!("unknown"),
     };
     if balance.is_none() {
-        v["balance_note"] = json!(why_unknown);
+        // A code, never the provider's free text.
+        v["balance_note"] = json!(balances::unknown_code(why_unknown));
     }
     if let Some(x) = balance
         && b.cap > x + 1e-9
@@ -143,7 +144,7 @@ fn account_json(t: &account::AccountTotals, balance: Option<f64>) -> Value {
         "spent": round2(t.spent),
         "unspent": round2(t.unspent),
         "balance": match balance { Some(x) => json!(round2(x)), None => json!("unknown") },
-        "notes": t.notes,
+        "notes": t.note_codes(),
     });
     if let Some(x) = balance
         && t.unspent > x + 1e-9
@@ -723,7 +724,9 @@ impl Sidecar {
                 ],
                 {
                     let scope = account::Scope::beside(&self.project, &self.ctx.registry);
-                    let (keys, mut notes) = scope.known();
+                    // Registry problems are codes here; skipped projects are in each
+                    // provider's own notes.
+                    let (keys, notes) = scope.known();
                     let me = offrig_core::lanes::project_key(&self.project);
                     let totals = [
                         account::account_totals(store::Provider::RunPod, &keys, Some((&me, s))),
@@ -733,13 +736,6 @@ impl Sidecar {
                             Some((&me, s)),
                         ),
                     ];
-                    for t in &totals {
-                        for n in &t.notes {
-                            if !notes.contains(n) {
-                                notes.push(n.clone());
-                            }
-                        }
-                    }
                     (totals, notes)
                 },
                 s.handoffs()?,
@@ -849,7 +845,8 @@ impl Sidecar {
             "record the project brief and constraints, then queue handoffs".into()
         };
         ok(json!({
-            "project": self.project.display().to_string(),
+            // A folder name, never the path: status output carries no local paths.
+            "project": offrig_core::account::folder_name(&offrig_core::lanes::project_key(&self.project)),
             "lane": own_lane.as_ref().map(|l| json!({
                 "tag": l.tag,
                 "ssh_alias": l.ssh_alias,
@@ -888,6 +885,7 @@ impl Sidecar {
                 "openrouter": account_json(&account_totals[1], or_balance.known()),
                 "notes": account_notes,
             },
+            "uncounted": [account::UNCOUNTED_MANUAL],
             "runpod": {
                 "balance": account.as_ref().map(|a| round2(a.client_balance)),
                 "spend_per_hr": account.as_ref().map(|a| round2(a.current_spend_per_hr)),
@@ -1550,23 +1548,18 @@ impl Sidecar {
         // Caps are per project but the money is one RunPod account: read what the account
         // holds and what the other projects have committed (best effort, read-only, off
         // the store lock), so the commit below can refuse a plan the account could not pay.
+        // The account lock is taken inside the commit, around the read of the other
+        // projects and the store's own write, so two projects cannot both pass.
         let scope = account::Scope::beside(&self.project, &self.ctx.registry);
-        let view = tokio::task::spawn_blocking(move || {
-            account::AccountView::read(store::Provider::RunPod, &scope, &balances::read)
-        })
-        .await
-        .unwrap_or_else(|e| account::AccountView {
-            balance: balances::Balance::Unknown(e.to_string()),
-            others_committed: 0.0,
-            notes: Vec::new(),
-        });
-        let mut account_notes: Vec<String> = view.notes.clone();
-        account_notes.extend(view.skipped_note(store::Provider::RunPod));
+        let balance = tokio::task::spawn_blocking(|| balances::read(store::Provider::RunPod))
+            .await
+            .unwrap_or_else(|e| balances::Balance::Unknown(e.to_string()));
+        let guard = account::AccountGuard::new(scope, balance);
         let committed = match self.with_store(|s| {
             if let Err(e) = ops::lane_busy(&self.ctx, s, &cfg, id, &lane_pods) {
                 return Ok(Err(e));
             }
-            s.commit_plan_with_account(id, &view).map(Ok)
+            s.commit_plan_with_account(id, &guard).map(Ok)
         }) {
             Ok(Ok(p)) => p,
             Ok(Err(e)) => {
@@ -1625,7 +1618,7 @@ impl Sidecar {
             "capacity_wait_minutes": wait_secs.map(|s| s / 60),
             "watchdog": match &watchdog { Ok(()) => "started".to_string(), Err(e) => format!("FAILED to start: {e}; shut down by the deadline yourself") },
             "budget": budget.as_ref().map(budget_json),
-            "account_notes": account_notes,
+            "account_notes": guard.notes(),
             "next_action": format!(
                 "follow the launch with offrig_job {{\"job_id\": {job_id}}} or {{\"plan_id\": {id}}} every minute or two (job_id {job_id} is the launch's, not the plan's {id}); nothing is ready until it says so"
             ),

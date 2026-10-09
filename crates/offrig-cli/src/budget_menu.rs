@@ -71,13 +71,17 @@ pub fn report(
     let mut notes = Vec::new();
     if let Some(scope) = scope {
         let (keys, known_notes) = scope.known();
-        notes.extend(known_notes);
+        notes.extend(
+            known_notes
+                .iter()
+                .map(|c| account::registry_note_text(c).to_string()),
+        );
         let me = project_key(&scope.current);
         for (p, bal) in Provider::ALL.into_iter().zip(&balances_seen) {
             let t = account::account_totals(p, &keys, Some((&me, store)));
             lines.push(t.line(bal));
             warnings.extend(t.warning(bal));
-            for n in t.notes {
+            for n in t.notes() {
                 if !notes.contains(&n) {
                     notes.push(n);
                 }
@@ -95,8 +99,10 @@ fn num(v: f64) -> serde_json::Value {
 }
 
 /// The budget report as one versioned JSON object (`offrig budget --show --json`).
-/// Numbers are numbers or null, never strings. No path appears except `project`, as the
-/// caller gave it; unreadable projects are named by folder only.
+/// Numbers are numbers or null, never strings. No path and no free text: `project` is
+/// what the caller passes (a folder name, or "."), skipped projects are `<folder>: <code>`
+/// (see `ReadSkip::code`), and a balance that is unknown carries a code (`no_key`,
+/// `http_error`, `no_number`).
 pub fn report_json(
     store: &Store,
     balance: &dyn Fn(Provider) -> Balance,
@@ -106,28 +112,11 @@ pub fn report_json(
     use serde_json::{Value, json};
     let mut providers = serde_json::Map::new();
     let mut account = serde_json::Map::new();
-    let (keys, mut notes) = scope.map_or_else(|| (Vec::new(), Vec::new()), Scope::known);
+    let (keys, registry_notes) = scope.map_or_else(|| (Vec::new(), Vec::new()), Scope::known);
     let me = scope.map(|s| project_key(&s.current));
-    let folder = |key: &str| {
-        std::path::Path::new(key)
-            .file_name()
-            .map_or_else(|| "a project".into(), |n| n.to_string_lossy().into_owned())
-    };
-    // Registry errors may quote a path: say only that they failed.
-    for n in &mut notes {
-        *n = if n.contains("lane registry") {
-            "the lane registry could not be read".into()
-        } else {
-            "the budget projects registry could not be read".into()
-        };
-    }
     for p in Provider::ALL {
         let b = store.budget_for(p)?;
         let bal = balance(p);
-        let note = match &bal {
-            Balance::Unknown(why) => json!(why.replace('\\', "/")),
-            Balance::Known(_) => Value::Null,
-        };
         providers.insert(
             p.as_str().into(),
             json!({
@@ -137,35 +126,31 @@ pub fn report_json(
                 "spent": num(b.spent),
                 "remaining": num(b.remaining),
                 "balance": bal.known().map_or(Value::Null, num),
-                "balance_note": note,
+                "balance_note": bal.code(),
                 "warning": balances::cap_exceeds_balance(p, b.cap, &bal),
             }),
         );
         let a = match (scope, &me) {
             (Some(_), Some(me)) => {
                 let t = account::account_totals(p, &keys, Some((me, store)));
-                let mut anotes = notes.clone();
-                anotes.extend(t.skipped.iter().map(|(k, why)| {
-                    format!(
-                        "project {}: not counted ({})",
-                        folder(k),
-                        why.replace(k.as_str(), &folder(k))
-                    )
-                }));
+                let mut anotes = registry_notes.clone();
+                anotes.extend(t.note_codes());
                 json!({
                     "caps": num(t.caps),
                     "projects": t.projects,
                     "committed": num(t.committed),
                     "unspent": num(t.unspent),
                     "balance": bal.known().map_or(Value::Null, num),
+                    "balance_note": bal.code(),
                     "warning": t.warning(&bal),
                     "notes": anotes,
                 })
             }
             _ => json!({
                 "caps": null, "projects": null, "committed": null, "unspent": null,
-                "balance": bal.known().map_or(Value::Null, num), "warning": null,
-                "notes": ["the account view is unavailable (no config directory)"],
+                "balance": bal.known().map_or(Value::Null, num),
+                "balance_note": bal.code(), "warning": null,
+                "notes": ["account_view_unavailable"],
             }),
         };
         account.insert(p.as_str().into(), a);
@@ -183,6 +168,7 @@ pub fn report_json(
             "remaining": num(o.remaining),
         },
         "account": account,
+        "uncounted": [account::UNCOUNTED_MANUAL],
     }))
 }
 
@@ -610,8 +596,13 @@ y
         assert_eq!(v["providers"]["runpod"]["cap_source"], "own");
         assert_eq!(v["providers"]["openrouter"]["cap_source"], "not set");
         assert!(v["providers"]["openrouter"]["balance"].is_null());
-        assert_eq!(v["providers"]["openrouter"]["balance_note"], "no key");
+        assert_eq!(v["providers"]["openrouter"]["balance_note"], "no_key");
         assert!(v["providers"]["runpod"]["warning"].is_string());
+        assert_eq!(
+            v["uncounted"],
+            serde_json::json!([account::UNCOUNTED_MANUAL])
+        );
+        assert_eq!(v["account"]["runpod"]["notes"][0], "gone: no_store");
         assert_eq!(v["account"]["runpod"]["projects"], 1);
         assert!(v["account"]["runpod"]["caps"].is_number());
         let root = d.0.to_string_lossy().replace('\\', "/").to_lowercase();

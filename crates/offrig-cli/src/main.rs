@@ -384,6 +384,24 @@ fn ensure_tunnel(s: &Session) -> Result<Option<Tunnel>> {
     )?))
 }
 
+/// The project as `--json` names it: "." for the current directory, otherwise the folder
+/// name. Never a path.
+fn json_project_name(dir: &std::path::Path, given: bool) -> String {
+    if !given {
+        return ".".into();
+    }
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+    if let (Some(a), Some(b)) = (
+        canon(dir),
+        std::env::current_dir().ok().and_then(|c| canon(&c)),
+    ) && a == b
+    {
+        return ".".into();
+    }
+    dir.file_name()
+        .map_or_else(|| ".".into(), |n| n.to_string_lossy().into_owned())
+}
+
 /// Which cap `offrig budget` sets: `None` for the overall cap, or one provider's. Checks
 /// that `--provider` came with both a provider and an amount.
 fn budget_target(
@@ -441,6 +459,7 @@ fn run(cli: Cli) -> Result<()> {
                 for l in budget_menu::report(store, &offrig_core::balances::read, scope.as_ref())? {
                     println!("{l}");
                 }
+                println!("{}", offrig_core::account::UNCOUNTED_NOTE);
                 Ok(())
             };
             // Any cap set here makes this project known to the account view.
@@ -495,10 +514,7 @@ fn run(cli: Cli) -> Result<()> {
                 return ran;
             }
             if json {
-                let name = given.as_ref().map_or_else(
-                    || ".".to_string(),
-                    |p| p.to_string_lossy().replace('\\', "/"),
-                );
+                let name = json_project_name(&dir, given.is_some());
                 let v = budget_menu::report_json(
                     &store,
                     &offrig_core::balances::read,
@@ -707,6 +723,7 @@ fn run(cli: Cli) -> Result<()> {
             if p.is_job() {
                 return Err(offrig_core::session::job_serves_nothing(&p).into());
             }
+            info!("{}", offrig_core::account::MANUAL_POD_NOTICE);
             preflight(&s, &p, yes)?;
             let stop = ctrl_c_flag()?;
             let minutes = wait.unwrap_or(p.wait_for_gpu_minutes);

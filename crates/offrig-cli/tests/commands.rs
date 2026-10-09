@@ -426,6 +426,103 @@ fn budget_labels_an_unset_cap_not_set_and_registers_the_project() {
 }
 
 #[test]
+fn budget_show_ends_with_the_uncounted_note_and_json_lists_it() {
+    let (rig, _) = rig_with("budget-uncounted", vec![], 50.0);
+    let proj = rig.dir.join("proj-uncounted");
+    std::fs::create_dir_all(&proj).expect("proj");
+    let p = proj.to_str().expect("utf8");
+    let show = out(&rig.run(&["budget", "--show", "--project", p]));
+    assert_eq!(
+        show.lines().last(),
+        Some(
+            "Note: pods started by hand with `offrig up` or the offrig app are not counted against these caps or in the account totals."
+        ),
+        "{show}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&out(&rig.run(&[
+        "budget",
+        "--show",
+        "--json",
+        "--project",
+        p,
+    ])))
+    .expect("json");
+    assert_eq!(
+        v["uncounted"],
+        serde_json::json!(["manual pods (offrig up, the app)"])
+    );
+}
+
+#[test]
+fn budget_json_names_the_project_by_folder_and_carries_no_paths() {
+    let (rig, _) = rig_with("budget-sentinel", vec![], 50.0);
+    // The sentinel is in the name of a directory above every project.
+    let root = rig.dir.join("sentinelxyz");
+    let mk = |name: &str| {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).expect("project dir");
+        d
+    };
+    let (me, gone, junk) = (mk("me"), mk("gone"), mk("junk"));
+    for d in [&me, &gone, &junk] {
+        let o = rig.run(&[
+            "budget",
+            "--provider",
+            "runpod",
+            "10",
+            "--project",
+            d.to_str().expect("utf8"),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    }
+    // One registered project loses its store; another's store becomes junk.
+    std::fs::remove_dir_all(gone.join(".offrig")).expect("remove store");
+    std::fs::write(
+        junk.join(".offrig").join("offrig.db"),
+        b"not a database, just some text",
+    )
+    .expect("junk");
+    let o = rig.run(&[
+        "budget",
+        "--show",
+        "--json",
+        "--project",
+        me.to_str().expect("utf8"),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let text = out(&o);
+    assert!(!text.to_lowercase().contains("sentinelxyz"), "{text}");
+    assert!(!text.contains("\\\\"), "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(v["project"], "me");
+    let notes: Vec<&str> = v["account"]["runpod"]["notes"]
+        .as_array()
+        .expect("notes")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(notes.contains(&"gone: no_store"), "{notes:?}");
+    assert!(notes.contains(&"junk: unreadable"), "{notes:?}");
+    // No key in the rig: the balance is unknown, as a code.
+    assert_eq!(v["providers"]["openrouter"]["balance_note"], "no_key");
+    // The text report may name folders, and still carries no path of the sentinel root.
+    let t = out(&rig.run(&["budget", "--show", "--project", me.to_str().expect("utf8")]));
+    assert!(t.contains("project gone: not counted"), "{t}");
+    assert!(!t.to_lowercase().contains("sentinelxyz"), "{t}");
+}
+
+#[test]
+fn up_says_the_pod_is_not_counted_against_any_cap() {
+    let (rig, _) = rig_with("up-notice", vec![lane_pod()], 50.0);
+    let o = rig.run(&["up", "--detach", "--no-zed", "--yes"]);
+    assert_eq!(o.status.code(), Some(0), "{}\n{}", out(&o), err(&o));
+    let first = out(&o).find("This pod is started by hand: it is not counted against any project's cap. The one-hour runway guard still applies.");
+    let launch = out(&o).find("already up");
+    assert!(first.is_some(), "{}", out(&o));
+    assert!(first < launch, "said before launching: {}", out(&o));
+}
+
+#[test]
 fn index_embeds_incrementally_reports_status_and_rebuilds() {
     // A fixed tunnel port keeps the mock embed server (an ephemeral port) clear of it.
     let rig = Rig::new(

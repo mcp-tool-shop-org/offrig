@@ -303,7 +303,14 @@ async fn status_states_the_project_and_each_open_plans_lane_and_pod() {
     });
     let client = connect(&l, &url).await;
     let b = body(&call(&client, "offrig_status", json!({})).await);
-    assert_eq!(b["project"], l.dir.display().to_string());
+    // The folder name only (status carries no local paths); the key is lower case on Windows.
+    let folder = l
+        .dir
+        .file_name()
+        .expect("folder")
+        .to_string_lossy()
+        .to_lowercase();
+    assert_eq!(b["project"].as_str().map(str::to_lowercase), Some(folder));
     let plan = &b["open_plans"][0];
     assert_eq!(plan["plan_id"], job);
     assert_eq!(plan["profile"], "job");
