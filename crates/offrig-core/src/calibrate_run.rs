@@ -201,6 +201,9 @@ impl Settings {
             "swap_evidence": self.swap_evidence,
             "seed": self.seed,
             "temperature": self.temperature,
+            // Sent on every chat so Ollama errors instead of shifting or truncating.
+            "shift": false,
+            "truncate": false,
             "num_ctx_mode": self.ctx_mode.as_str(),
             "num_ctx": num_ctx,
             "num_predict": self.num_predict,
@@ -675,6 +678,12 @@ pub struct CtxSizing {
     /// Set once the model has loaded and the server reported its memory split.
     pub offloaded: Option<bool>,
     pub vram_fraction: Option<f64>,
+    /// The window the measurement calls ran at (it follows the estimate). When it differs
+    /// from `num_ctx`, Ollama reloads the model once when the scored calls start.
+    #[serde(default)]
+    pub probe_num_ctx: Option<u32>,
+    #[serde(default)]
+    pub reloaded_after_measurement: bool,
 }
 
 impl CtxSizing {
@@ -691,6 +700,8 @@ impl CtxSizing {
             notes: vec![],
             offloaded: None,
             vram_fraction: None,
+            probe_num_ctx: None,
+            reloaded_after_measurement: false,
         }
     }
 }
@@ -882,11 +893,24 @@ fn resolve_ctx(
     }
     let (max_prompt, pct, longest_id, how) = match (
         &failed,
-        z.measured.iter().max_by_key(|m| m.prompt_eval_count),
+        // The larger of the measured count and the estimate, per claim: a cached prefix
+        // can make Ollama's prompt_eval_count lower than the real prompt, never higher.
+        z.measured
+            .iter()
+            .max_by_key(|m| m.prompt_eval_count.max(m.estimated)),
     ) {
         (None, Some(m)) => {
             z.method = "measured".into();
-            (m.prompt_eval_count, 5, m.claim_id.clone(), "measured")
+            z.notes.push(
+                "sized from max(measured prompt_eval_count, estimate) per claim: a cached prefix can lower the count Ollama reports"
+                    .into(),
+            );
+            (
+                m.prompt_eval_count.max(m.estimated),
+                5,
+                m.claim_id.clone(),
+                "measured",
+            )
         }
         _ => {
             let note = format!(
@@ -904,6 +928,13 @@ fn resolve_ctx(
     z.max_prompt_tokens = Some(max_prompt);
     z.margin_tokens = Some(m);
     z.num_ctx = n;
+    z.probe_num_ctx = Some(probe_ctx);
+    if !z.measured.is_empty() && n != probe_ctx {
+        z.reloaded_after_measurement = true;
+        z.notes.push(format!(
+            "the measurement ran at num_ctx {probe_ctx}, the run at {n}: the model reloads once"
+        ));
+    }
     progress(&format!(
         "num_ctx {n} (longest prompt {max_prompt} tokens {how}, num_predict {np}, margin {m})"
     ));
@@ -3496,5 +3527,61 @@ mod tests {
         let z = manifest_ctx(&dir2);
         assert_eq!((z.offloaded, z.vram_fraction), (Some(false), Some(1.0)));
         cleanup(&[&dir, &dir2]);
+    }
+
+    #[test]
+    fn a_low_measurement_never_sizes_below_the_estimate_and_the_reload_is_recorded() {
+        let dir = tmp("auto-max");
+        // A cached prefix: the server reports far fewer tokens than the prompt has.
+        go_with(
+            &auto_settings(),
+            &gold(),
+            &dir,
+            false,
+            &probing(10),
+            &Srv::new(),
+        )
+        .expect("run");
+        let z = manifest_ctx(&dir);
+        assert_eq!(z.method, "measured");
+        assert_eq!(z.max_prompt_tokens, z.estimated_max_prompt_tokens);
+        assert!(z.notes.iter().any(|n| n.contains("cached prefix")));
+        let m = read_manifest(&dir).expect("m");
+        assert_eq!(
+            (
+                m.settings["shift"].as_bool(),
+                m.settings["truncate"].as_bool()
+            ),
+            (Some(false), Some(false))
+        );
+        assert_eq!(
+            z.reloaded_after_measurement,
+            z.probe_num_ctx != Some(z.num_ctx)
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_server_side_context_error_is_recorded_as_context_overflow() {
+        let dir = tmp("server-overflow");
+        let inner = probing(1000);
+        let chat = Fake::new(move |id, req| {
+            if id == "g3" && req.num_predict != Some(1) {
+                return Err(Error::ContextOverflow(
+                    "chat: http 400: the input length exceeds the context length".into(),
+                ));
+            }
+            (inner.answer)(id, req)
+        });
+        let rep = go_with(&auto_settings(), &gold(), &dir, false, &chat, &Srv::new()).expect("run");
+        let lines = read_lines(&dir, false).expect("lines");
+        let g3 = lines.iter().find(|l| l.claim_id == "g3").expect("g3");
+        assert_eq!(g3.error_code.as_deref(), Some("context_overflow"));
+        assert!(rep.unusable.is_empty());
+        assert_eq!(
+            (rep.status.as_str(), rep.context_overflow),
+            ("incomplete", 1)
+        );
+        cleanup(&[&dir]);
     }
 }

@@ -381,6 +381,10 @@ impl ChatRequest {
             "model": self.model,
             "stream": false,
             "messages": self.messages,
+            // Never let the server drop history or shift the window silently: a prompt
+            // or reply that does not fit is an error (`context_overflow`).
+            "shift": false,
+            "truncate": false,
         });
         if let Some(f) = &self.format {
             body["format"] = f.clone();
@@ -421,6 +425,24 @@ pub struct ChatResponse {
     pub total_duration: Option<u64>,
 }
 
+/// Whether an Ollama error message says the prompt or reply did not fit the window.
+/// Texts from the Ollama source (server/routes.go, llm/llama_server.go): "the prompt is
+/// longer than the context length ...", "the input length exceeds the context length",
+/// "input after truncation exceeds maximum context length", "input exceeds maximum
+/// context length and cannot be truncated further", "... exceeds the available context".
+pub fn is_context_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    (m.contains("context length") && (m.contains("longer than") || m.contains("exceeds")))
+        || m.contains("exceeds the available context")
+}
+
+fn as_context_error(e: Error) -> Error {
+    match e {
+        Error::Ollama(m) if is_context_error(&m) => Error::ContextOverflow(m),
+        other => other,
+    }
+}
+
 /// Headroom below `num_ctx` that counts as full: prompt tokens plus reply tokens at or
 /// above `num_ctx - CTX_FULL_SLACK` mean the window was used up.
 pub const CTX_FULL_SLACK: u64 = 16;
@@ -447,9 +469,11 @@ impl Ollama {
     /// `num_predict: 1`, where the cut is expected.
     pub fn chat_raw(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let what = "chat";
-        let v = self.post("/api/chat", &req.body(), what)?;
+        let v = self
+            .post("/api/chat", &req.body(), what)
+            .map_err(as_context_error)?;
         if let Some(err) = v.get("error") {
-            return Err(Error::Ollama(format!("{what}: {err}")));
+            return Err(as_context_error(Error::Ollama(format!("{what}: {err}"))));
         }
         let message = &v["message"];
         let content = message["content"]
@@ -657,6 +681,27 @@ mod tests {
         assert_eq!(b["messages"][0]["role"], "user");
         assert!(b.get("format").is_none() && b.get("think").is_none());
         assert!(b.get("options").is_none());
+        // Never shift or truncate: a window that fills is an error, not a silent edit.
+        assert_eq!(
+            (b["shift"].as_bool(), b["truncate"].as_bool()),
+            (Some(false), Some(false))
+        );
+        assert!(is_context_error(
+            "chat: http 400: {\"error\":\"the input length exceeds the context length\"}"
+        ));
+        assert!(is_context_error(
+            "the prompt is longer than the context length currently available to the model"
+        ));
+        assert!(is_context_error(
+            "input exceeds maximum context length and cannot be truncated further"
+        ));
+        assert!(!is_context_error("model not found") && !is_context_error("timed out"));
+        assert!(matches!(
+            as_context_error(Error::Ollama(
+                "chat: http 400: the input length exceeds the context length".into()
+            )),
+            Error::ContextOverflow(_)
+        ));
         let full = ChatRequest {
             format: Some(json!({"type": "object"})),
             think: Some(ThinkLevel::High),
