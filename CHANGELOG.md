@@ -18,6 +18,9 @@ All notable changes to offrig are documented here. The format is based on
     unusable and counts against the model. A connection problem or a single timeout is not
     recorded at all: `--resume` retries it, and until every claim has an answer the result
     is `incomplete`, never a pass or fail.
+  - Wilson intervals have exact edges: no events gives a lower bound of exactly 0, and every
+    claim an upper bound of exactly 1, not a rounding error away. `verify calibrate --help`
+    now describes failed calls the way the command treats them.
   - Runs resume (`--resume`) only with the same model, digest, settings and gold files,
     and can be rescored from their directory (`--report-only`).
   - Local only: a loopback Ollama, and model names containing "cloud" are refused.

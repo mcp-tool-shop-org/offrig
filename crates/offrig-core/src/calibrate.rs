@@ -40,18 +40,23 @@ impl From<&Verdict> for Outcome {
 }
 
 /// The Wilson score interval for `x` successes in `n` trials. With no trials nothing is
-/// known, so it is the whole range.
+/// known, so it is the whole range. The edges are exact: no successes gives a lower bound
+/// of 0, and all successes an upper bound of 1 (in floating point the formula can land a
+/// rounding error away, which would break comparisons such as "the interval excludes 0").
 pub fn wilson_ci(x: usize, n: usize) -> (f64, f64) {
     if n == 0 {
         return (0.0, 1.0);
     }
+    let (all, none) = (x >= n, x == 0);
     let n = n as f64;
     let p = x as f64 / n;
     let z2 = Z95 * Z95;
     let denom = 1.0 + z2 / n;
     let centre = (p + z2 / (2.0 * n)) / denom;
     let half = Z95 * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
-    ((centre - half).max(0.0), (centre + half).min(1.0))
+    let low = if none { 0.0 } else { (centre - half).max(0.0) };
+    let high = if all { 1.0 } else { (centre + half).min(1.0) };
+    (low, high)
 }
 
 /// A rate with its Wilson interval.
@@ -311,6 +316,27 @@ mod tests {
         close(lo, 0.8389);
         assert_eq!(hi, 1.0);
         assert_eq!(wilson_ci(0, 0), (0.0, 1.0));
+    }
+
+    #[test]
+    fn wilson_edges_are_exact() {
+        // The formula's lower bound at x = 0 is centre - half, which floating point can leave
+        // a rounding error above 0; the same at x = n for the upper bound.
+        for n in 1..=2000 {
+            let (lo, hi) = wilson_ci(0, n);
+            assert_eq!(lo, 0.0, "wilson_ci(0, {n}) lower bound");
+            assert!(hi > 0.0 && hi < 1.0);
+            let (lo, hi) = wilson_ci(n, n);
+            assert_eq!(hi, 1.0, "wilson_ci({n}, {n}) upper bound");
+            assert!(lo > 0.0 && lo < 1.0);
+        }
+        // Interior counts never touch the edges.
+        for n in 2..=200 {
+            for x in 1..n {
+                let (lo, hi) = wilson_ci(x, n);
+                assert!(0.0 < lo && lo < hi && hi < 1.0, "wilson_ci({x}, {n})");
+            }
+        }
     }
 
     /// 100 unsupported claims (the first `subtle` of them near-misses) and 100
