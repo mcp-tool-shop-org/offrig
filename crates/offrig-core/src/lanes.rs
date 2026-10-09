@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -288,14 +288,6 @@ pub struct Registry {
     lock_stale: Duration,
 }
 
-struct LockGuard(PathBuf);
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 impl Registry {
     /// A registry in `dir` (the config directory, or a temp dir in tests).
     pub fn at(dir: impl Into<PathBuf>) -> Self {
@@ -317,49 +309,23 @@ impl Registry {
         self
     }
 
+    /// The directory the registry lives in (the config directory).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn path(&self) -> PathBuf {
         self.dir.join(LANES_FILE)
     }
 
-    fn lock(&self) -> Result<LockGuard> {
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| Error::io(format!("creating {}", self.dir.display()), e))?;
-        let path = self.dir.join(LOCK_FILE);
-        let deadline = Instant::now() + self.lock_wait;
-        loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(LockGuard(path)),
-                // On Windows a lock that is being deleted answers PermissionDenied.
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-                    ) =>
-                {
-                    // A side-car that died holding the lock must not wedge every other.
-                    let age = std::fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| SystemTime::now().duration_since(t).ok());
-                    if age.is_some_and(|a| a > self.lock_stale) {
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(Error::Timeout(format!(
-                            "the lane registry lock {}",
-                            path.display()
-                        )));
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => return Err(Error::io(format!("locking {}", path.display()), e)),
-            }
-        }
+    fn lock(&self) -> Result<fsutil::LockGuard> {
+        fsutil::lock_file(
+            &self.dir,
+            LOCK_FILE,
+            self.lock_wait,
+            self.lock_stale,
+            "the lane registry lock",
+        )
     }
 
     fn read(&self) -> Result<Vec<Record>> {
@@ -578,6 +544,7 @@ impl LaneCtx {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use std::time::SystemTime;
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("offrig-lanes-{name}-{}", std::process::id()));

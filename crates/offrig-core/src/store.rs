@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
+use crate::account::AccountView;
 use crate::checks::{Check, Outcome};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
@@ -508,6 +509,14 @@ impl Provider {
         }
     }
 
+    /// The name people use: `RunPod`, `OpenRouter`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::RunPod => "RunPod",
+            Provider::OpenRouter => "OpenRouter",
+        }
+    }
+
     /// The `settings` key holding this provider's explicit cap.
     fn setting_key(self) -> &'static str {
         match self {
@@ -531,9 +540,29 @@ impl std::fmt::Display for Provider {
     }
 }
 
-/// Which cap said no, and what it had left.
+/// Where a provider's cap comes from in one project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapSource {
+    /// The provider's own explicit cap.
+    Own,
+    /// No cap of its own: it falls back to the overall `budget_cap`.
+    Overall,
+    /// Neither is set, so the cap is 0 and nothing is allowed.
+    NotSet,
+}
+
+impl CapSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapSource::Own => "own",
+            CapSource::Overall => "overall",
+            CapSource::NotSet => "not set",
+        }
+    }
+}
+
 /// Whether `amount` fits in `remaining`. Anything not a clear fit, NaN included, is a no.
-fn fits(amount: f64, remaining: f64) -> bool {
+pub(crate) fn fits(amount: f64, remaining: f64) -> bool {
     matches!(
         amount.partial_cmp(&(remaining + 1e-9)),
         Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
@@ -1113,6 +1142,17 @@ impl Store {
     /// True when an overall ceiling is in force.
     pub fn has_overall_ceiling(&self) -> Result<bool> {
         Ok(self.overall_ceiling()?.is_some())
+    }
+
+    /// Where the provider's cap comes from: its own, the overall one, or nowhere.
+    pub fn cap_source(&self, p: Provider) -> Result<CapSource> {
+        Ok(if self.cap_setting(p.setting_key())?.is_some() {
+            CapSource::Own
+        } else if self.cap_setting("budget_cap")?.is_some() {
+            CapSource::Overall
+        } else {
+            CapSource::NotSet
+        })
     }
 
     /// True when the provider has its own explicit cap (not the overall fallback).
@@ -1770,6 +1810,17 @@ impl Store {
     /// Re-checks the budget, because other plans may have committed since.
     /// Idempotent: committing a committed plan returns it unchanged.
     pub fn commit_plan(&self, id: i64) -> Result<Plan> {
+        self.commit_plan_checked(id, None)
+    }
+
+    /// As [`Store::commit_plan`], and after the per-project checks the commitment must
+    /// also fit the RunPod account (see [`AccountView`]). The view is read before this
+    /// call, so no network I/O happens while the write lock is held.
+    pub fn commit_plan_with_account(&self, id: i64, account: &AccountView) -> Result<Plan> {
+        self.commit_plan_checked(id, Some(account))
+    }
+
+    fn commit_plan_checked(&self, id: i64, account: Option<&AccountView>) -> Result<Plan> {
         let plan = self
             .plan(id)?
             .ok_or_else(|| Error::Refused(format!("no plan {id}; make one with offrig_plan")))?;
@@ -1790,6 +1841,9 @@ impl Store {
                     "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
                     plan.worst_case, r.remaining, r.scope
                 )));
+            }
+            if let Some(a) = account {
+                a.check(Provider::RunPod, plan.worst_case, "plan")?;
             }
             self.conn
                 .execute(
@@ -2042,6 +2096,24 @@ impl Store {
     /// is left. The check and the commit run under one write lock (`BEGIN IMMEDIATE`), so
     /// two side-cars sharing this file cannot both commit past the cap.
     pub fn commit_completion(&self, c: NewCompletion) -> Result<Completion> {
+        self.commit_completion_checked(c, None)
+    }
+
+    /// As [`Store::commit_completion`], and the worst case must also fit the OpenRouter
+    /// account (see [`AccountView`]).
+    pub fn commit_completion_with_account(
+        &self,
+        c: NewCompletion,
+        account: &AccountView,
+    ) -> Result<Completion> {
+        self.commit_completion_checked(c, Some(account))
+    }
+
+    fn commit_completion_checked(
+        &self,
+        c: NewCompletion,
+        account: Option<&AccountView>,
+    ) -> Result<Completion> {
         if !(c.worst_case.is_finite() && c.worst_case >= 0.0) {
             return Err(Error::Refused(format!(
                 "worst case {} must be a non-negative amount",
@@ -2051,7 +2123,7 @@ impl Store {
         self.conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(db("starting a completion commit"))?;
-        let res = self.commit_completion_locked(&c);
+        let res = self.commit_completion_locked(&c, account);
         match res {
             Ok(id) => {
                 self.conn
@@ -2067,7 +2139,11 @@ impl Store {
         }
     }
 
-    fn commit_completion_locked(&self, c: &NewCompletion) -> Result<i64> {
+    fn commit_completion_locked(
+        &self,
+        c: &NewCompletion,
+        account: Option<&AccountView>,
+    ) -> Result<i64> {
         if let Some(r) = self.refusal(Provider::OpenRouter, c.worst_case)? {
             return Err(Error::Budget(format!(
                 "worst case ${:.2} (at most {} tokens in and {} out, at ${}/M in and ${}/M out) \
@@ -2081,6 +2157,9 @@ impl Store {
                 r.cap,
                 r.scope
             )));
+        }
+        if let Some(a) = account {
+            a.check(Provider::OpenRouter, c.worst_case, "completion")?;
         }
         let now = now_unix();
         self.conn

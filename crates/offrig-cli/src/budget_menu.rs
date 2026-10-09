@@ -9,8 +9,10 @@
 use std::io::{BufRead, Write};
 
 use anyhow::Result;
+use offrig_core::account::{self, Scope};
 use offrig_core::balances::{self, Balance};
-use offrig_core::store::{Budget, Provider, Store};
+use offrig_core::lanes::project_key;
+use offrig_core::store::{Budget, CapSource, Provider, Store};
 
 /// One line: cap, committed, spent, remaining.
 pub fn line(b: &Budget) -> String {
@@ -24,16 +26,26 @@ pub fn line(b: &Budget) -> String {
 /// balance the provider itself reports), the overall line, then a WARNING line for each
 /// provider whose cap is above its reported balance. `balance` is called once per
 /// provider and is best effort: an unknown balance is shown with its reason.
-pub fn report(store: &Store, balance: &dyn Fn(Provider) -> Balance) -> Result<Vec<String>> {
+///
+/// With a `scope`, one `account <provider>` line per provider follows the overall line:
+/// what the caps of every known project promise against what the account holds, a
+/// WARNING when the unspent part is more than the balance, and a note for each project
+/// that could not be read.
+pub fn report(
+    store: &Store,
+    balance: &dyn Fn(Provider) -> Balance,
+    scope: Option<&Scope>,
+) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     let mut warnings = Vec::new();
+    let mut balances_seen = Vec::new();
     for p in Provider::ALL {
         let b = store.budget_for(p)?;
         let bal = balance(p);
-        let own = if store.provider_cap_is_explicit(p)? {
-            ""
-        } else {
-            " (overall cap)"
+        let own = match store.cap_source(p)? {
+            CapSource::Own => "",
+            CapSource::Overall => " (overall cap)",
+            CapSource::NotSet => " (not set)",
         };
         lines.push(format!(
             "{:<10}  {}{own}  balance {}",
@@ -44,6 +56,7 @@ pub fn report(store: &Store, balance: &dyn Fn(Provider) -> Balance) -> Result<Ve
         if let Some(w) = balances::cap_exceeds_balance(p, b.cap, &bal) {
             warnings.push(w);
         }
+        balances_seen.push(bal);
     }
     let kind = if store.has_overall_ceiling()? {
         ""
@@ -55,8 +68,122 @@ pub fn report(store: &Store, balance: &dyn Fn(Provider) -> Balance) -> Result<Ve
         "overall",
         line(&store.budget()?)
     ));
+    let mut notes = Vec::new();
+    if let Some(scope) = scope {
+        let (keys, known_notes) = scope.known();
+        notes.extend(known_notes);
+        let me = project_key(&scope.current);
+        for (p, bal) in Provider::ALL.into_iter().zip(&balances_seen) {
+            let t = account::account_totals(p, &keys, Some((&me, store)));
+            lines.push(t.line(bal));
+            warnings.extend(t.warning(bal));
+            for n in t.notes {
+                if !notes.contains(&n) {
+                    notes.push(n);
+                }
+            }
+        }
+    }
     lines.extend(warnings);
+    lines.extend(notes.into_iter().map(|n| format!("note: {n}")));
     Ok(lines)
+}
+
+fn num(v: f64) -> serde_json::Value {
+    serde_json::Number::from_f64((v * 100.0).round() / 100.0)
+        .map_or(serde_json::Value::Null, serde_json::Value::Number)
+}
+
+/// The budget report as one versioned JSON object (`offrig budget --show --json`).
+/// Numbers are numbers or null, never strings. No path appears except `project`, as the
+/// caller gave it; unreadable projects are named by folder only.
+pub fn report_json(
+    store: &Store,
+    balance: &dyn Fn(Provider) -> Balance,
+    scope: Option<&Scope>,
+    project: &str,
+) -> Result<serde_json::Value> {
+    use serde_json::{Value, json};
+    let mut providers = serde_json::Map::new();
+    let mut account = serde_json::Map::new();
+    let (keys, mut notes) = scope.map_or_else(|| (Vec::new(), Vec::new()), Scope::known);
+    let me = scope.map(|s| project_key(&s.current));
+    let folder = |key: &str| {
+        std::path::Path::new(key)
+            .file_name()
+            .map_or_else(|| "a project".into(), |n| n.to_string_lossy().into_owned())
+    };
+    // Registry errors may quote a path: say only that they failed.
+    for n in &mut notes {
+        *n = if n.contains("lane registry") {
+            "the lane registry could not be read".into()
+        } else {
+            "the budget projects registry could not be read".into()
+        };
+    }
+    for p in Provider::ALL {
+        let b = store.budget_for(p)?;
+        let bal = balance(p);
+        let note = match &bal {
+            Balance::Unknown(why) => json!(why.replace('\\', "/")),
+            Balance::Known(_) => Value::Null,
+        };
+        providers.insert(
+            p.as_str().into(),
+            json!({
+                "cap": num(b.cap),
+                "cap_source": store.cap_source(p)?.as_str(),
+                "committed": num(b.committed),
+                "spent": num(b.spent),
+                "remaining": num(b.remaining),
+                "balance": bal.known().map_or(Value::Null, num),
+                "balance_note": note,
+                "warning": balances::cap_exceeds_balance(p, b.cap, &bal),
+            }),
+        );
+        let a = match (scope, &me) {
+            (Some(_), Some(me)) => {
+                let t = account::account_totals(p, &keys, Some((me, store)));
+                let mut anotes = notes.clone();
+                anotes.extend(t.skipped.iter().map(|(k, why)| {
+                    format!(
+                        "project {}: not counted ({})",
+                        folder(k),
+                        why.replace(k.as_str(), &folder(k))
+                    )
+                }));
+                json!({
+                    "caps": num(t.caps),
+                    "projects": t.projects,
+                    "committed": num(t.committed),
+                    "unspent": num(t.unspent),
+                    "balance": bal.known().map_or(Value::Null, num),
+                    "warning": t.warning(&bal),
+                    "notes": anotes,
+                })
+            }
+            _ => json!({
+                "caps": null, "projects": null, "committed": null, "unspent": null,
+                "balance": bal.known().map_or(Value::Null, num), "warning": null,
+                "notes": ["the account view is unavailable (no config directory)"],
+            }),
+        };
+        account.insert(p.as_str().into(), a);
+    }
+    let o = store.budget()?;
+    Ok(json!({
+        "version": 1,
+        "project": project,
+        "providers": providers,
+        "overall": {
+            "cap": num(o.cap),
+            "ceiling": store.has_overall_ceiling()?,
+            "committed": num(o.committed),
+            "spent": num(o.spent),
+            "remaining": num(o.remaining),
+        },
+        "account": account,
+    }))
 }
 
 /// Run the menu until the person quits (or input ends). `project` is a display name
@@ -304,7 +431,7 @@ y
             Provider::RunPod => Balance::Known(31.1),
             Provider::OpenRouter => Balance::Known(8.25),
         };
-        let r = report(&s, &bal).expect("report");
+        let r = report(&s, &bal, None).expect("report");
         assert_eq!(r.len(), 4, "{r:#?}");
         assert!(
             r[0].starts_with("runpod") && r[0].contains("cap $30.00"),
@@ -329,19 +456,167 @@ y
     fn an_unknown_balance_shows_why_and_a_fallback_cap_says_so() {
         let (_d, s) = store();
         let none = |_: Provider| Balance::Unknown("OPENROUTER_API_KEY is not set".into());
-        let r = report(&s, &none).expect("report");
+        let r = report(&s, &none, None).expect("report");
         assert!(r[0].contains("(overall cap)"), "{}", r[0]);
         assert!(r[1].contains("balance unknown (OPENROUTER_API_KEY is not set)"));
         assert_eq!(r.len(), 3, "no warning without a known balance");
         s.set_provider_cap(Provider::RunPod, 1.0).expect("rp");
         s.set_provider_cap(Provider::OpenRouter, 1.0).expect("or");
         s.clear_budget_cap().expect("clear");
-        let r = report(&s, &none).expect("report");
+        let r = report(&s, &none, None).expect("report");
         assert!(
             r[2].contains("no ceiling") && r[2].contains("cap $2.00"),
             "{}",
             r[2]
         );
+    }
+
+    #[test]
+    fn a_provider_with_no_cap_anywhere_says_not_set_and_a_fallback_says_overall() {
+        let d = tempdir::Dir::new();
+        let s = Store::open(&d.0.join("offrig.db")).expect("store");
+        let none = |_: Provider| Balance::Unknown("no key".into());
+        // Nothing set at all: not a fallback, because there is nothing to fall back to.
+        let r = report(&s, &none, None).expect("report");
+        assert!(
+            r[0].contains("cap $0.00") && r[0].contains("(not set)") && !r[0].contains("overall"),
+            "{}",
+            r[0]
+        );
+        assert!(r[1].contains("(not set)"), "{}", r[1]);
+        // Only a provider cap: the other provider is still not set.
+        s.set_provider_cap(Provider::OpenRouter, 5.0).expect("or");
+        let r = report(&s, &none, None).expect("report");
+        assert!(r[0].contains("(not set)"), "{}", r[0]);
+        assert!(!r[1].contains("(not set)") && !r[1].contains("(overall cap)"));
+        // An overall cap: the label is true again.
+        s.set_budget_cap(20.0).expect("overall");
+        let r = report(&s, &none, None).expect("report");
+        assert!(
+            r[0].contains("(overall cap)") && !r[0].contains("(not set)"),
+            "{}",
+            r[0]
+        );
+    }
+
+    #[test]
+    fn the_account_lines_follow_the_overall_line_with_a_warning_and_notes() {
+        let d = tempdir::Dir::new();
+        let mk = |name: &str, cap: f64| {
+            let p = d.0.join(name);
+            std::fs::create_dir_all(p.join(".offrig")).expect("dir");
+            let s = Store::open(&p.join(".offrig").join("offrig.db")).expect("store");
+            s.set_provider_cap(Provider::RunPod, cap).expect("rp");
+            s.set_provider_cap(Provider::OpenRouter, 1.0).expect("or");
+            (p, s)
+        };
+        let (pa, a) = mk("a", 30.0);
+        let (pb, _b) = mk("b", 20.0);
+        let scope = Scope {
+            current: pa.clone(),
+            projects: offrig_core::account::ProjectsRegistry::at(d.0.join("cfg")),
+            lanes: offrig_core::lanes::Registry::at(d.0.join("cfg")),
+        };
+        scope.projects.add(&pb).expect("b");
+        scope.projects.add(&d.0.join("gone")).expect("gone");
+        let bal = |p: Provider| match p {
+            Provider::RunPod => Balance::Known(40.0),
+            Provider::OpenRouter => Balance::Known(100.0),
+        };
+        let r = report(&a, &bal, Some(&scope)).expect("report");
+        let acct: Vec<&String> = r.iter().filter(|l| l.starts_with("account ")).collect();
+        assert_eq!(acct.len(), 2, "{r:#?}");
+        assert!(
+            acct[0].contains("account runpod")
+                && acct[0].contains("caps $50.00 across 2 projects")
+                && acct[0].contains("unspent $50.00")
+                && acct[0].contains("balance $40.00"),
+            "{}",
+            acct[0]
+        );
+        assert!(
+            r.iter().any(|l| l.starts_with(
+                "WARNING: runpod caps across projects promise $50.00 unspent but the account holds $40.00"
+            )),
+            "{r:#?}"
+        );
+        assert!(
+            r.iter()
+                .any(|l| l.starts_with("note: project ") && l.contains("no offrig store")),
+            "{r:#?}"
+        );
+        let overall = r
+            .iter()
+            .position(|l| l.starts_with("overall"))
+            .expect("overall");
+        let first = r
+            .iter()
+            .position(|l| l.starts_with("account "))
+            .expect("acct");
+        assert!(first > overall, "{r:#?}");
+    }
+
+    #[test]
+    fn the_json_report_parses_and_has_the_versioned_keys_and_no_paths() {
+        let d = tempdir::Dir::new();
+        let p = d.0.join("a");
+        std::fs::create_dir_all(p.join(".offrig")).expect("dir");
+        let s = Store::open(&p.join(".offrig").join("offrig.db")).expect("store");
+        s.set_provider_cap(Provider::RunPod, 30.0).expect("rp");
+        let scope = Scope {
+            current: p.clone(),
+            projects: offrig_core::account::ProjectsRegistry::at(d.0.join("cfg")),
+            lanes: offrig_core::lanes::Registry::at(d.0.join("cfg")),
+        };
+        scope.projects.add(&d.0.join("gone")).expect("gone");
+        let bal = |p: Provider| match p {
+            Provider::RunPod => Balance::Known(10.0),
+            Provider::OpenRouter => Balance::Unknown("no key".into()),
+        };
+        let v = report_json(&s, &bal, Some(&scope), "demo").expect("json");
+        let text = serde_json::to_string(&v).expect("text");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("parses");
+        assert_eq!(v["version"], 1);
+        assert_eq!(v["project"], "demo");
+        for k in [
+            "cap",
+            "cap_source",
+            "committed",
+            "spent",
+            "remaining",
+            "balance",
+            "balance_note",
+            "warning",
+        ] {
+            assert!(v["providers"]["runpod"].get(k).is_some(), "{k}");
+            assert!(v["providers"]["openrouter"].get(k).is_some(), "{k}");
+        }
+        for k in ["cap", "ceiling", "committed", "spent", "remaining"] {
+            assert!(v["overall"].get(k).is_some(), "{k}");
+        }
+        for k in [
+            "caps",
+            "projects",
+            "committed",
+            "unspent",
+            "balance",
+            "warning",
+            "notes",
+        ] {
+            assert!(v["account"]["runpod"].get(k).is_some(), "{k}");
+            assert!(v["account"]["openrouter"].get(k).is_some(), "{k}");
+        }
+        assert_eq!(v["providers"]["runpod"]["cap"], 30.0);
+        assert_eq!(v["providers"]["runpod"]["cap_source"], "own");
+        assert_eq!(v["providers"]["openrouter"]["cap_source"], "not set");
+        assert!(v["providers"]["openrouter"]["balance"].is_null());
+        assert_eq!(v["providers"]["openrouter"]["balance_note"], "no key");
+        assert!(v["providers"]["runpod"]["warning"].is_string());
+        assert_eq!(v["account"]["runpod"]["projects"], 1);
+        assert!(v["account"]["runpod"]["caps"].is_number());
+        let root = d.0.to_string_lossy().replace('\\', "/").to_lowercase();
+        assert!(!text.to_lowercase().contains(&root), "{text}");
+        assert!(!text.contains("\\\\"), "{text}");
     }
 
     #[test]

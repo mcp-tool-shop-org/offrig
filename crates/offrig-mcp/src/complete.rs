@@ -8,11 +8,13 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use offrig_core::account::{AccountView, Scope};
+use offrig_core::balances::{self, Balance};
 use offrig_core::cost::now_unix;
 use offrig_core::error::chain;
 use offrig_core::lanes::LaneCtx;
 use offrig_core::openrouter::{self, OpenRouter, Price, Request};
-use offrig_core::store::{Completion, CompletionEnd, NewCompletion, Store};
+use offrig_core::store::{Completion, CompletionEnd, NewCompletion, Provider, Store};
 use offrig_core::{Error, Result};
 use serde_json::{Value, json};
 
@@ -218,6 +220,18 @@ fn write(path: &Path, text: &str) -> Result<()> {
 /// Run one completion. Refusals before the commit are errors; after the commit the
 /// result is always a reply that says what was charged, even when the call failed.
 pub fn complete(ctx: &LaneCtx, db: &Path, a: Ask) -> Result<Value> {
+    complete_with(ctx, db, a, &balances::read)
+}
+
+/// As [`complete`], with the live balance read injected (tests never reach the network).
+/// The worst case must fit the OpenRouter account once the other projects' committed
+/// money is counted; an unreadable balance never blocks and is reported as a warning.
+pub fn complete_with(
+    ctx: &LaneCtx,
+    db: &Path,
+    a: Ask,
+    balance: &dyn Fn(Provider) -> Balance,
+) -> Result<Value> {
     let lane = allowed_lane(ctx)?;
     validate(&a)?;
     let project = ctx.project.clone();
@@ -241,15 +255,23 @@ pub fn complete(ctx: &LaneCtx, db: &Path, a: Ask) -> Result<Value> {
 
     let store = Store::open(db)?;
     let held = settle_held(&store, &or)?;
-    let c = store.commit_completion(NewCompletion {
-        model: a.model.clone(),
-        lane,
-        input_bound: input,
-        max_tokens: a.max_tokens,
-        price_in_m: price.prompt_per_m(),
-        price_out_m: price.completion_per_m(),
-        worst_case: worst,
-    })?;
+    let view = AccountView::read(
+        Provider::OpenRouter,
+        &Scope::beside(&project, &ctx.registry),
+        balance,
+    );
+    let c = store.commit_completion_with_account(
+        NewCompletion {
+            model: a.model.clone(),
+            lane,
+            input_bound: input,
+            max_tokens: a.max_tokens,
+            price_in_m: price.prompt_per_m(),
+            price_out_m: price.completion_per_m(),
+            worst_case: worst,
+        },
+        &view,
+    )?;
     let journal = store.journal(
         "complete",
         None,
@@ -344,6 +366,8 @@ pub fn complete(ctx: &LaneCtx, db: &Path, a: Ask) -> Result<Value> {
                         .into(),
                 );
             }
+            warnings.extend(view.skipped_note(Provider::OpenRouter));
+            warnings.extend(view.notes.iter().cloned());
             json!({
                 "completion_id": c.id,
                 "model": a.model,
