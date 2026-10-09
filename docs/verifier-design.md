@@ -256,7 +256,10 @@ The checks on each reply:
     removed. Models quote the prose of a `///` comment across its line wraps, and under
     rule 1 those true quotes were downgraded: on the 2026-10-09 calibration, 33 of
     gemma4:31b's 52 grounded abstentions were quotes that are in the evidence.
-    Paraphrase and elision (`...`) still don't match.
+    Paraphrase and elision (`...`) still don't match. The stripping is per line and
+    blind to language, so a line that merely starts with `*` or `--` (`*ptr = 1`,
+    `--resume <dir>`) also matches without it. That only widens matching for a quote
+    that drops those characters; the passage as written is always tried too.
   - A quote under 12 characters proves nothing and isn't found, unless it is a whole
     evidence line of at least 5 characters with a letter or digit in it (`return v`,
     `x += 1`). A line of code is specific where a fragment of prose isn't.
