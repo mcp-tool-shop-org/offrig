@@ -35,7 +35,8 @@ checked against the RunPod cap and an OpenRouter completion against the OpenRout
 When an overall ceiling is set, a spend must fit under that too. `--show` prints each
 provider's cap, committed, spent and remaining next to the balance the provider itself
 reports. It warns when a cap is above what the account holds, because the account would
-run dry first. Local Ollama costs nothing and has no cap, and Ollama Cloud is refused.
+run dry first. A provider cap above the overall ceiling never takes effect: the ceiling
+refuses first. Local Ollama costs nothing and has no cap, and Ollama Cloud is refused.
 
 A project set up with one cap keeps working as before: that cap stays as the overall
 ceiling, and each provider's cap starts at the same amount. Set the real per-provider caps,

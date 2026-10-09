@@ -532,6 +532,14 @@ impl std::fmt::Display for Provider {
 }
 
 /// Which cap said no, and what it had left.
+/// Whether `amount` fits in `remaining`. Anything not a clear fit, NaN included, is a no.
+fn fits(amount: f64, remaining: f64) -> bool {
+    matches!(
+        amount.partial_cmp(&(remaining + 1e-9)),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    )
+}
+
 struct Refusal {
     scope: String,
     remaining: f64,
@@ -993,7 +1001,8 @@ impl Store {
                 "budget cap {usd} must be a non-negative amount"
             )));
         }
-        let b = self.budget()?;
+        // The floor comes from the ledger alone, so a corrupt cap can always be replaced.
+        let b = self.ledger_floor(None)?;
         if usd + 1e-9 < b.floor() {
             return Err(Error::Refused(format!(
                 "the cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open plans and completions. ${:.2} stops new paid sessions and leaves running ones alone",
@@ -1014,7 +1023,7 @@ impl Store {
                 "{provider} budget cap {usd} must be a non-negative amount"
             )));
         }
-        let b = self.budget_for(provider)?;
+        let b = self.ledger_floor(Some(provider))?;
         if usd + 1e-9 < b.floor() {
             return Err(Error::Refused(format!(
                 "the {provider} cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open {provider} plans and completions. ${:.2} stops new {provider} spending and leaves running work alone",
@@ -1066,7 +1075,17 @@ impl Store {
             )
             .optional()
             .map_err(db("reading the budget cap"))?;
-        Ok(v.and_then(|s| s.parse().ok()))
+        // Absent is "not set". Present but unreadable (garbage, NaN, inf, negative) fails
+        // closed: no spend is allowed until a person sets the cap again.
+        match v {
+            None => Ok(None),
+            Some(text) => match text.trim().parse::<f64>() {
+                Ok(c) if c.is_finite() && c >= 0.0 => Ok(Some(c)),
+                _ => Err(Error::Refused(format!(
+                    "the setting {key} holds {text:?}, which is not a usable cap; nothing is spent until a person sets it again with `offrig budget`"
+                ))),
+            },
+        }
     }
 
     /// The cap in force for one provider: its own, else the overall one, else 0.
@@ -1623,6 +1642,17 @@ impl Store {
         })
     }
 
+    /// Spent and committed from the ledger, without reading any cap.
+    fn ledger_floor(&self, provider: Option<Provider>) -> Result<Budget> {
+        let (committed, spent) = self.ledger_totals(provider)?;
+        Ok(Budget {
+            cap: 0.0,
+            committed,
+            spent,
+            remaining: 0.0,
+        })
+    }
+
     fn ledger_totals(&self, provider: Option<Provider>) -> Result<(f64, f64)> {
         let filter = provider.map_or("1 = 1", Provider::ledger_filter);
         let sum = |kind: &str| -> Result<f64> {
@@ -1645,7 +1675,8 @@ impl Store {
     /// overall ceiling exists)? `Some` names the cap that refused, the provider's first.
     fn refusal(&self, provider: Provider, amount: f64) -> Result<Option<Refusal>> {
         let p = self.budget_for(provider)?;
-        if amount > p.remaining + 1e-9 {
+        // Written so that anything not a clear "fits" (NaN included) refuses.
+        if !fits(amount, p.remaining) {
             return Ok(Some(Refusal {
                 scope: format!("{provider} cap"),
                 remaining: p.remaining,
@@ -1654,7 +1685,7 @@ impl Store {
         }
         if self.overall_ceiling()?.is_some() {
             let o = self.budget()?;
-            if amount > o.remaining + 1e-9 {
+            if !fits(amount, o.remaining) {
                 return Ok(Some(Refusal {
                     scope: "overall cap".into(),
                     remaining: o.remaining,
@@ -1747,27 +1778,43 @@ impl Store {
             "planned" => {}
             s => return Err(Error::Refused(format!("plan {id} is {s}; make a new plan"))),
         }
-        if let Some(r) = self.refusal(Provider::RunPod, plan.worst_case)? {
-            return Err(Error::Refused(format!(
-                "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
-                plan.worst_case, r.remaining, r.scope
-            )));
-        }
-        let tx = self
-            .conn
-            .unchecked_transaction()
+        // The check and the commit run under one write lock (`BEGIN IMMEDIATE`), as for
+        // completions, so a plan and a completion committed at once from two processes
+        // cannot both pass the shared overall ceiling.
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
             .map_err(db("starting a plan commit"))?;
-        tx.execute(
-            "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
-            params![id, plan.worst_case, now_unix()],
-        )
-        .map_err(db("writing a commit"))?;
-        tx.execute(
-            "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1",
-            params![id, now_unix()],
-        )
-        .map_err(db("marking the plan committed"))?;
-        tx.commit().map_err(db("committing a plan"))?;
+        let res = (|| -> Result<()> {
+            if let Some(r) = self.refusal(Provider::RunPod, plan.worst_case)? {
+                return Err(Error::Refused(format!(
+                    "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
+                    plan.worst_case, r.remaining, r.scope
+                )));
+            }
+            self.conn
+                .execute(
+                    "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
+                    params![id, plan.worst_case, now_unix()],
+                )
+                .map_err(db("writing a commit"))?;
+            self.conn
+                .execute(
+                    "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1",
+                    params![id, now_unix()],
+                )
+                .map_err(db("marking the plan committed"))?;
+            Ok(())
+        })();
+        match res {
+            Ok(()) => self
+                .conn
+                .execute_batch("COMMIT")
+                .map_err(db("committing a plan"))?,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
         self.plan(id)?
             .ok_or_else(|| Error::Refused("plan vanished after commit".into()))
     }
@@ -2956,6 +3003,61 @@ mod tests {
         let back = s.plan(p.id).expect("read").expect("plan");
         assert_eq!(back.gpu_types, p.gpu_types);
         assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");
+    }
+
+    #[test]
+    fn an_unreadable_cap_refuses_every_spend() {
+        for key in ["budget_cap", "budget_cap.runpod", "budget_cap.openrouter"] {
+            for bad in ["garbage", "NaN", "inf", "-1"] {
+                let s = store();
+                s.set_provider_cap(Provider::RunPod, 50.0).expect("cap");
+                s.set_provider_cap(Provider::OpenRouter, 50.0).expect("cap");
+                s.set_budget_cap(50.0).expect("cap");
+                s.conn
+                    .execute(
+                        "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        params![key, bad],
+                    )
+                    .expect("corrupt");
+                let plan = s.create_plan(NewPlan {
+                    profile: "p".into(),
+                    gpu_count: 1,
+                    gpu_types: vec!["NVIDIA GeForce RTX 5090".into()],
+                    max_hours: 0.1,
+                    max_price_hr: 0.1,
+                    note: None,
+                });
+                let completion = s.commit_completion(new_completion(0.01));
+                // A provider key only governs its own provider; the overall key governs both.
+                let plan_bad = key != "budget_cap.openrouter";
+                let completion_bad = key != "budget_cap.runpod";
+                assert_eq!(plan.is_err(), plan_bad, "{key}={bad}: plan {plan:?}");
+                assert_eq!(
+                    completion.is_err(),
+                    completion_bad,
+                    "{key}={bad}: completion {completion:?}"
+                );
+                if plan_bad {
+                    let e = plan.expect_err("refused").to_string();
+                    assert!(e.contains(key), "{e}");
+                }
+                // A person can always replace the broken value.
+                match key {
+                    "budget_cap" => s.set_budget_cap(20.0).expect("reset"),
+                    "budget_cap.runpod" => {
+                        s.set_provider_cap(Provider::RunPod, 20.0).expect("reset")
+                    }
+                    _ => s
+                        .set_provider_cap(Provider::OpenRouter, 20.0)
+                        .expect("reset"),
+                }
+                assert!(
+                    s.commit_completion(new_completion(0.01)).is_ok(),
+                    "{key}={bad} after reset"
+                );
+            }
+        }
     }
 
     fn new_completion(worst: f64) -> NewCompletion {
