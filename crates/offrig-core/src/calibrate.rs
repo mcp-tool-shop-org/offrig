@@ -78,7 +78,26 @@ impl Rate {
     }
 }
 
+/// How the model did on gold `cannot_tell` claims: ones the evidence cannot decide.
+/// Accepting one is a false accept; saying `unsupported` or `cannot_tell` is right.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct CannotTellGold {
+    /// Gold `cannot_tell` claims the model answered.
+    pub n: usize,
+    /// Judged `supported`, of `n`.
+    pub false_accept: Rate,
+    /// Judged `cannot_tell`, of `n`: the model stayed silent where it should.
+    pub said_cannot_tell: Rate,
+    /// Judged `unsupported`, of `n`: right in effect, but it claimed a contradiction.
+    pub said_unsupported: usize,
+}
+
 /// One check type's row of the calibration table.
+///
+/// Scoring choice for gold `cannot_tell` (R&D review, 2026-10-08): a model that accepts
+/// one is wrong exactly as if it accepted an unsupported claim, so the primary
+/// false-accept rate counts gold `unsupported` and gold `cannot_tell` together. Their
+/// answers `unsupported` and `cannot_tell` are both correct, and neither is an abstain.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CheckMetrics {
     pub check_type: CheckType,
@@ -86,15 +105,25 @@ pub struct CheckMetrics {
     pub n: usize,
     pub supported_n: usize,
     pub unsupported_n: usize,
+    /// Gold `cannot_tell` claims answered.
+    pub cannot_tell_n: usize,
     /// Gold claims the model gave no outcome for. Any makes the rule fail.
     pub missing: usize,
-    /// Unsupported judged supported, of all unsupported (`cannot_tell` is not accepted).
+    /// PRIMARY: (gold unsupported + gold cannot_tell) judged supported, of all of
+    /// them. `cannot_tell` as an answer is not accepted. The default rule uses this.
     pub false_accept: Rate,
-    /// The same over planted near-misses only.
+    /// The rule as first written: gold unsupported judged supported, of gold unsupported.
+    pub false_accept_unsupported_only: Rate,
+    /// The unsupported-only rate over planted near-misses only.
     pub subtle_false_accept: Rate,
-    /// `cannot_tell` of all answered claims.
+    /// The row for gold `cannot_tell` claims alone.
+    pub cannot_tell_gold: CannotTellGold,
+    /// Model `cannot_tell` of gold supported + unsupported answered. Gold `cannot_tell`
+    /// claims are left out, so answering `cannot_tell` everywhere still fails.
     pub abstain: Rate,
-    /// Mean of the two recalls over the claims it decided. None when a class had none.
+    /// Mean of two recalls over the claims the model decided: supported claims judged
+    /// supported, and not-supported claims (unsupported and cannot_tell together)
+    /// judged unsupported. None when a class had no decided claim.
     pub decided_balanced_accuracy: Option<f64>,
     pub passes_default_rule: bool,
 }
@@ -124,10 +153,11 @@ pub fn metrics(gold: &[Claim], outcomes: &[Outcome]) -> Vec<CheckMetrics> {
 }
 
 fn row(ct: CheckType, gold: &[&Claim], said: &HashMap<&str, VerdictKind>) -> CheckMetrics {
-    let (mut n, mut supported_n, mut unsupported_n, mut missing) = (0, 0, 0, 0);
-    let (mut fa, mut subtle_n, mut subtle_fa, mut abstained) = (0, 0, 0, 0);
-    // Decided claims: (right on supported, supported decided, right on unsupported, unsupported decided).
-    let (mut sup_right, mut sup_decided, mut unsup_right, mut unsup_decided) = (0, 0, 0, 0);
+    let (mut n, mut supported_n, mut unsupported_n, mut ct_n, mut missing) = (0, 0, 0, 0, 0);
+    let (mut fa_unsup, mut subtle_n, mut subtle_fa, mut abstained) = (0, 0, 0, 0);
+    let (mut ct_fa, mut ct_said_ct, mut ct_said_unsup) = (0, 0, 0);
+    // Decided claims: supported (right, decided) and not-supported (right, decided).
+    let (mut sup_right, mut sup_decided, mut neg_right, mut neg_decided) = (0, 0, 0, 0);
     for c in gold {
         let Some(&v) = said.get(c.id.as_str()) else {
             missing += 1;
@@ -136,17 +166,16 @@ fn row(ct: CheckType, gold: &[&Claim], said: &HashMap<&str, VerdictKind>) -> Che
         n += 1;
         let truth = c.label.expect("filtered to labelled claims");
         let subtle = c.subtle == Some(true);
-        if v == VerdictKind::CannotTell {
-            abstained += 1;
-        }
         match truth {
             Label::Supported => {
                 supported_n += 1;
-                if v != VerdictKind::CannotTell {
-                    sup_decided += 1;
-                    if v == VerdictKind::Supported {
+                match v {
+                    VerdictKind::CannotTell => abstained += 1,
+                    VerdictKind::Supported => {
+                        sup_decided += 1;
                         sup_right += 1;
                     }
+                    VerdictKind::Unsupported => sup_decided += 1,
                 }
             }
             Label::Unsupported => {
@@ -154,25 +183,42 @@ fn row(ct: CheckType, gold: &[&Claim], said: &HashMap<&str, VerdictKind>) -> Che
                 if subtle {
                     subtle_n += 1;
                 }
-                if v == VerdictKind::Supported {
-                    fa += 1;
-                    if subtle {
-                        subtle_fa += 1;
+                match v {
+                    VerdictKind::CannotTell => abstained += 1,
+                    VerdictKind::Supported => {
+                        fa_unsup += 1;
+                        if subtle {
+                            subtle_fa += 1;
+                        }
+                        neg_decided += 1;
+                    }
+                    VerdictKind::Unsupported => {
+                        neg_decided += 1;
+                        neg_right += 1;
                     }
                 }
-                if v != VerdictKind::CannotTell {
-                    unsup_decided += 1;
-                    if v == VerdictKind::Unsupported {
-                        unsup_right += 1;
+            }
+            Label::CannotTell => {
+                ct_n += 1;
+                match v {
+                    VerdictKind::CannotTell => ct_said_ct += 1,
+                    VerdictKind::Supported => {
+                        ct_fa += 1;
+                        neg_decided += 1;
+                    }
+                    VerdictKind::Unsupported => {
+                        ct_said_unsup += 1;
+                        neg_decided += 1;
+                        neg_right += 1;
                     }
                 }
             }
         }
     }
-    let false_accept = Rate::new(fa, unsupported_n);
-    let abstain = Rate::new(abstained, n);
-    let decided_balanced_accuracy = (sup_decided > 0 && unsup_decided > 0).then(|| {
-        (sup_right as f64 / sup_decided as f64 + unsup_right as f64 / unsup_decided as f64) / 2.0
+    let false_accept = Rate::new(fa_unsup + ct_fa, unsupported_n + ct_n);
+    let abstain = Rate::new(abstained, supported_n + unsupported_n);
+    let decided_balanced_accuracy = (sup_decided > 0 && neg_decided > 0).then(|| {
+        (sup_right as f64 / sup_decided as f64 + neg_right as f64 / neg_decided as f64) / 2.0
     });
     let passes_default_rule = missing == 0
         && unsupported_n >= MIN_UNSUPPORTED
@@ -184,9 +230,17 @@ fn row(ct: CheckType, gold: &[&Claim], said: &HashMap<&str, VerdictKind>) -> Che
         n,
         supported_n,
         unsupported_n,
+        cannot_tell_n: ct_n,
         missing,
         false_accept,
+        false_accept_unsupported_only: Rate::new(fa_unsup, unsupported_n),
         subtle_false_accept: Rate::new(subtle_fa, subtle_n),
+        cannot_tell_gold: CannotTellGold {
+            n: ct_n,
+            false_accept: Rate::new(ct_fa, ct_n),
+            said_cannot_tell: Rate::new(ct_said_ct, ct_n),
+            said_unsupported: ct_said_unsup,
+        },
         abstain,
         decided_balanced_accuracy,
         passes_default_rule,
@@ -451,6 +505,150 @@ mod tests {
         k[0].passes_default_rule = false;
         rows.extend(k);
         assert!(passes_default(&rows));
+    }
+
+    fn ct_gold(prefix: &str, n: usize) -> Vec<Claim> {
+        (0..n)
+            .map(|i| {
+                gold(
+                    &format!("{prefix}{i}"),
+                    CheckType::Grounded,
+                    Label::CannotTell,
+                    false,
+                )
+            })
+            .collect()
+    }
+
+    /// Supported and unsupported gold answered right.
+    fn all_right(g: &[Claim]) -> Vec<Outcome> {
+        g.iter()
+            .map(|c| {
+                out(
+                    &c.id,
+                    if c.label == Some(Label::Supported) {
+                        VerdictKind::Supported
+                    } else {
+                        VerdictKind::Unsupported
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gold_cannot_tell_is_scored_as_the_review_decided() {
+        // 100 supported, 100 unsupported (first 10 near-misses), 40 cannot_tell.
+        let mut g = gold_set(CheckType::Grounded, 10);
+        g.extend(ct_gold("t", 40));
+        let mut o = vec![];
+        for i in 0..100 {
+            // 2 false accepts (one a near-miss), 3 abstains, 95 right.
+            let u = match i {
+                0 | 50 => VerdictKind::Supported,
+                1..=3 => VerdictKind::CannotTell,
+                _ => VerdictKind::Unsupported,
+            };
+            // 1 judged unsupported, 4 abstains, 95 right.
+            let s = match i {
+                0 => VerdictKind::Unsupported,
+                1..=4 => VerdictKind::CannotTell,
+                _ => VerdictKind::Supported,
+            };
+            o.push(out(&format!("u{i}"), u));
+            o.push(out(&format!("s{i}"), s));
+        }
+        for i in 0..40 {
+            // 4 accepted, 10 said unsupported, 26 cannot_tell.
+            let t = match i {
+                0..=3 => VerdictKind::Supported,
+                4..=13 => VerdictKind::Unsupported,
+                _ => VerdictKind::CannotTell,
+            };
+            o.push(out(&format!("t{i}"), t));
+        }
+        let r = &metrics(&g, &o)[0];
+        assert_eq!((r.n, r.cannot_tell_n, r.missing), (240, 40, 0));
+        // Primary: (2 + 4) of (100 + 40).
+        assert_eq!((r.false_accept.hits, r.false_accept.of), (6, 140));
+        let (lo, hi) = wilson_ci(6, 140);
+        close(r.false_accept.low, lo);
+        close(r.false_accept.high, hi);
+        // The rule as first written: 2 of 100, with its own interval.
+        let u = &r.false_accept_unsupported_only;
+        assert_eq!((u.hits, u.of), (2, 100));
+        close(u.high, wilson_ci(2, 100).1);
+        assert_eq!(
+            (r.subtle_false_accept.hits, r.subtle_false_accept.of),
+            (1, 10)
+        );
+        // The cannot_tell row.
+        let c = &r.cannot_tell_gold;
+        assert_eq!((c.n, c.false_accept.hits, c.said_unsupported), (40, 4, 10));
+        close(c.said_cannot_tell.rate.expect("rate"), 26.0 / 40.0);
+        // Abstains: 3 + 4 of 200 supported and unsupported; the 26 are not abstains.
+        assert_eq!((r.abstain.hits, r.abstain.of), (7, 200));
+        // Decided supported: 96, 95 right. Decided not-supported: unsupported 97
+        // (95 right) + cannot_tell decided 14 (10 right) = 111, 105 right.
+        close(
+            r.decided_balanced_accuracy.expect("balanced"),
+            (95.0 / 96.0 + 105.0 / 111.0) / 2.0,
+        );
+        // The primary upper bound for 6 of 140 is under 10%, and so the model passes.
+        assert!(r.false_accept.high < 0.10);
+        assert!(r.passes_default_rule);
+    }
+
+    #[test]
+    fn accepting_cannot_tell_claims_can_fail_a_model_the_old_rule_passed() {
+        let mut g = gold_set(CheckType::Grounded, 0);
+        g.extend(ct_gold("t", 40));
+        let mut o = all_right(&g[..200]);
+        // Accepts 10 of 40 cannot_tell claims.
+        for i in 0..40 {
+            let v = if i < 10 {
+                VerdictKind::Supported
+            } else {
+                VerdictKind::CannotTell
+            };
+            o.push(out(&format!("t{i}"), v));
+        }
+        let r = &metrics(&g, &o)[0];
+        assert_eq!(r.false_accept_unsupported_only.hits, 0);
+        assert!(r.false_accept_unsupported_only.high < 0.10);
+        assert_eq!((r.false_accept.hits, r.false_accept.of), (10, 140));
+        assert!(r.false_accept.high > 0.10);
+        assert!(!r.passes_default_rule);
+        // Their silence is not an abstain.
+        assert_eq!(r.abstain.hits, 0);
+    }
+
+    #[test]
+    fn answering_cannot_tell_everywhere_still_fails_on_abstain() {
+        let mut g = gold_set(CheckType::Grounded, 0);
+        g.extend(ct_gold("t", 400));
+        let o: Vec<Outcome> = g
+            .iter()
+            .map(|c| out(&c.id, VerdictKind::CannotTell))
+            .collect();
+        let r = &metrics(&g, &o)[0];
+        // The 400 right answers do not dilute abstain: it is over the other 200.
+        assert_eq!((r.abstain.hits, r.abstain.of), (200, 200));
+        assert_eq!(r.abstain.rate, Some(1.0));
+        assert_eq!(r.false_accept.hits, 0);
+        assert_eq!(r.cannot_tell_gold.said_cannot_tell.rate, Some(1.0));
+        assert_eq!(r.decided_balanced_accuracy, None);
+        assert!(!r.passes_default_rule);
+    }
+
+    #[test]
+    fn a_missing_cannot_tell_answer_counts_as_missing() {
+        let mut g = gold_set(CheckType::Grounded, 0);
+        g.extend(ct_gold("t", 1));
+        let o = all_right(&g[..200]);
+        let r = &metrics(&g, &o)[0];
+        assert_eq!((r.missing, r.cannot_tell_n), (1, 0));
+        assert!(!r.passes_default_rule);
     }
 
     #[test]

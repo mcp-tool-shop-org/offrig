@@ -2,6 +2,7 @@
 //! desktop app drives the same calls.
 
 mod budget_menu;
+mod verify_cmd;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -233,6 +234,11 @@ enum Cmd {
         /// Project directory (default: the current directory)
         #[arg(long)]
         project: Option<std::path::PathBuf>,
+    },
+    /// The verifier: checks that claims are backed by their evidence
+    Verify {
+        #[command(subcommand)]
+        cmd: verify_cmd::VerifyCmd,
     },
     /// Stage a recipe profile's weights on a RunPod network volume so launches skip
     /// the download. The volume bills monthly until removed; only a human stages.
@@ -742,6 +748,7 @@ fn run(cli: Cli) -> Result<()> {
             info!("opened {target} in Zed");
             Ok(())
         }
+        Cmd::Verify { cmd } => verify_cmd::run(cmd),
         Cmd::Stage {
             profile,
             dc,

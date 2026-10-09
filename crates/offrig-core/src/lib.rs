@@ -7,6 +7,7 @@
 //! that this still holds.
 
 pub mod calibrate;
+pub mod calibrate_run;
 pub mod checks;
 pub mod config;
 pub mod context;

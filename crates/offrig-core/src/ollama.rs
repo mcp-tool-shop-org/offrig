@@ -14,13 +14,19 @@ pub struct Ollama {
     base: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 pub struct Tag {
     pub name: String,
     #[serde(default)]
     pub size: u64,
     #[serde(default)]
     pub details: TagDetails,
+    /// The model's content digest, as `/api/tags` reports it.
+    #[serde(default)]
+    pub digest: String,
+    /// Set when the entry is a stub that Ollama forwards to a hosted service.
+    #[serde(default)]
+    pub remote_host: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
