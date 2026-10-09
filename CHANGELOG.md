@@ -6,6 +6,16 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **Caps add up across projects.** `offrig budget --show` prints an `account` line per
+  provider: the caps across every known project, what they have committed and still
+  unspent, beside the provider's balance, with a warning when the projects together
+  promise more than the account holds. Before a pod or an OpenRouter completion is
+  committed, offrig checks that it, plus everything already committed in this and every
+  other project, fits in the live balance, and refuses if not. If the balance can't be
+  read, the commit goes ahead under the project's caps with a note. A provider with no cap
+  shows `(not set)` instead of `(overall cap)`, `--provider` without a provider and an
+  amount says what it needs, and `offrig budget --show --json` prints the whole view as one
+  versioned object.
 - **A cap per provider.** RunPod and OpenRouter hold separate money, so each now has its
   own cap: `offrig budget --provider runpod <usd>` and `--provider openrouter <usd>`. A pod
   is checked against the RunPod cap, an OpenRouter completion against the OpenRouter cap,
