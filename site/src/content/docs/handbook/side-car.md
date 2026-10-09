@@ -22,12 +22,26 @@ It opens a project's store only on first use, so it is harmless in projects that
 it. Then a human sets the project's cap, in the project directory:
 
 ```text
-offrig budget 15          set the cap to $15
-offrig budget             in a terminal: a menu to set a new cap or stop new spending
-offrig budget --show      show cap, committed, spent and remaining
+offrig budget --provider runpod 30       RunPod's cap: pods (and later serverless)
+offrig budget --provider openrouter 8    OpenRouter's cap: completions
+offrig budget 15                         an overall ceiling across both (optional)
+offrig budget --clear-overall            drop the overall ceiling once both caps are set
+offrig budget                            in a terminal: a menu for the overall cap
+offrig budget --show                     every cap, with each provider's own balance
 ```
 
-No tool can change the cap. An agent reads it; only a person sets it. Run without an
+**Each provider has its own cap.** RunPod and OpenRouter hold separate money, so a pod is
+checked against the RunPod cap and an OpenRouter completion against the OpenRouter cap.
+When an overall ceiling is set, a spend must fit under that too. `--show` prints each
+provider's cap, committed, spent and remaining next to the balance the provider itself
+reports. It warns when a cap is above what the account holds, because the account would
+run dry first. Local Ollama costs nothing and has no cap, and Ollama Cloud is refused.
+
+A project set up with one cap keeps working as before: that cap stays as the overall
+ceiling, and each provider's cap starts at the same amount. Set the real per-provider caps,
+then clear the overall ceiling if you don't want one.
+
+No tool can change a cap. An agent reads it; only a person sets it. Run without an
 amount in a terminal, `offrig budget` shows the budget and any running plans, then offers:
 
 1. **Set a new cap.** Asked for, then confirmed.
