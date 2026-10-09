@@ -80,7 +80,9 @@ pub struct CalibrateArgs {
     resume: Option<PathBuf>,
     /// Also write each claim's thinking text to thinking.jsonl in the run directory, to
     /// see what a model was doing (a truncated reply, say). Untrusted model output: it is
-    /// never scored or stored, and it can echo the evidence, so scan it before sharing
+    /// never scored or stored, and it can echo the evidence, so scan it before sharing.
+    /// A resume appends; when a claim has two rows, the last one is its run. A transport
+    /// or server error has no reply, so it has no row
     #[arg(long, conflicts_with = "report_only")]
     keep_thinking: bool,
     /// Score the run in this directory again and call nothing

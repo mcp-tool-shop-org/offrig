@@ -76,9 +76,10 @@ pub enum Error {
     Engine(String),
 
     /// The model stopped at its token limit before it finished (`done_reason: length`).
-    /// What it wrote is not an answer.
-    #[error("truncated: {0}")]
-    Truncated(String),
+    /// What it wrote is not an answer. `thinking` keeps what a thinking model had reasoned
+    /// by then, for diagnosis only; it is never part of the message.
+    #[error("truncated: {message}")]
+    Truncated { message: String, thinking: String },
 
     /// A verifier reply that failed its schema, twice. Never reported as a verdict.
     #[error("bad verdict reply: {0}")]
@@ -161,6 +162,14 @@ impl Error {
 impl Error {
     /// A stable snake_case code for this error, for machine callers (the side-car's
     /// `code` field and the CLI's exit status). Codes never change once released.
+    /// A truncation with no thinking kept.
+    pub fn truncated(message: impl Into<String>) -> Self {
+        Error::Truncated {
+            message: message.into(),
+            thinking: String::new(),
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             Error::MissingApiKey | Error::MissingOpenRouterKey => "missing_api_key",
@@ -176,7 +185,7 @@ impl Error {
             Error::Guard(_) => "guard_refused",
             Error::Timeout(_) => "timeout",
             Error::Ollama(_) | Error::Engine(_) => "model_server",
-            Error::Truncated(_) => "truncated",
+            Error::Truncated { .. } => "truncated",
             Error::BadVerdict(_) => "bad_verdict",
             Error::Cancelled(_) => "cancelled",
             Error::NoCapacity(_) => "no_capacity",
@@ -334,7 +343,7 @@ mod tests {
             ),
             (Error::Ollama("x".into()), "model_server", true),
             (Error::Engine("x".into()), "model_server", true),
-            (Error::Truncated("x".into()), "truncated", false),
+            (Error::truncated("x"), "truncated", false),
             (Error::BadVerdict("x".into()), "bad_verdict", false),
             (
                 Error::Db {

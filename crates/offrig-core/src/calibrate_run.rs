@@ -609,8 +609,12 @@ struct ThinkingRecorder<'a> {
 impl ChatBackend for ThinkingRecorder<'_> {
     fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let r = self.inner.chat(req);
-        if let Ok(resp) = &r {
-            self.seen.borrow_mut().push(resp.thinking.clone());
+        match &r {
+            Ok(resp) => self.seen.borrow_mut().push(resp.thinking.clone()),
+            // A reply cut off at the token limit is the one most worth reading.
+            Err(Error::Truncated { thinking, .. }) => self.seen.borrow_mut().push(thinking.clone()),
+            // A transport or server error carries no reply, so there is nothing to keep.
+            Err(_) => {}
         }
         r
     }
@@ -1557,6 +1561,50 @@ mod tests {
     }
 
     #[test]
+    fn keep_thinking_keeps_the_thinking_of_a_truncated_reply() {
+        let dir = tmp("thinking-cut");
+        let chat = Fake::new(|id, _| {
+            if id == "g1" {
+                return Err(Error::Truncated {
+                    message: "stopped at its token limit after 4096 tokens".into(),
+                    thinking: "still weighing the second passage".into(),
+                });
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let store = Store::open_in_memory().expect("store");
+        let s = settings();
+        let files = gold();
+        let args = RunArgs {
+            settings: &s,
+            gold: &files,
+            store: &store,
+            out_dir: &dir,
+            resume: false,
+            keep_thinking: true,
+        };
+        run(&args, &chat, &Srv::new(), &mut |_| {}).expect("run");
+        let lines = read_lines(&dir, false).expect("lines");
+        let g1 = lines.iter().find(|l| l.claim_id == "g1").expect("g1");
+        assert_eq!(
+            (g1.status.as_str(), g1.error_code.as_deref()),
+            ("unusable", Some("truncated"))
+        );
+        assert!(!g1.error.as_deref().unwrap_or_default().contains("weighing"));
+        let text = std::fs::read_to_string(dir.join(THINKING_FILE)).expect("thinking file");
+        let row: Value = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).expect("row"))
+            .find(|r| r["claim_id"] == "g1")
+            .expect("a row for the truncated claim");
+        assert_eq!(
+            row["thinking"],
+            json!(["still weighing the second passage"])
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
     fn without_keep_thinking_no_thinking_file_is_written() {
         let dir = tmp("no-thinking");
         let chat = Fake::new(|_, _| {
@@ -1782,7 +1830,7 @@ mod tests {
         let dir = tmp("unusable");
         let store = Store::open_in_memory().expect("store");
         let chat = Fake::new(|id, _| match id {
-            "g1" => Err(Error::Truncated("stopped at its token limit".into())),
+            "g1" => Err(Error::truncated("stopped at its token limit")),
             "g2" => Ok(resp("I think it is fine")),
             "g3" => Err(Error::Ollama("chat: model failed to load".into())),
             "g4" => Ok(resp(&reply("cannot_tell", ""))),
