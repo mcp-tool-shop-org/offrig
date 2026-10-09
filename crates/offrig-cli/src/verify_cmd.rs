@@ -19,10 +19,13 @@ pub enum VerifyCmd {
     ///
     /// Oracle mode: the model sees each claim's own context as evidence, in file order
     /// (--swap-evidence reverses it), one claim per call. Every outcome is appended to
-    /// <out>/verdicts.jsonl and saved to the store as untrusted model output; a call
-    /// that fails is counted as unusable and never scored. The run is resumable with
-    /// --resume, and --report-only rescores a finished or partial run. Local models
-    /// on a loopback server only: Ollama Cloud models and remote URLs are refused.
+    /// <out>/verdicts.jsonl and saved to the store as untrusted model output. A reply
+    /// the model breaks (bad verdict, cut off, or timing out twice on a claim) counts as
+    /// unusable, against the model. A connection problem or a single timeout is not
+    /// recorded: --resume retries it, and until every claim has an answer the result is
+    /// incomplete, never a pass or fail. --report-only rescores a finished or partial
+    /// run. Local models on a loopback server only: Ollama Cloud models and remote URLs
+    /// are refused.
     Calibrate(Box<CalibrateArgs>),
 }
 
