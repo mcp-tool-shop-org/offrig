@@ -1394,7 +1394,7 @@ mod tests {
     #[test]
     fn a_truncated_or_failed_call_is_not_retried() {
         let c = claim(CheckType::Grounded, "x", vec![ev("a", "text")]);
-        let fake = Fake::new(vec![Err(Error::Truncated("out of tokens".into()))]);
+        let fake = Fake::new(vec![Err(Error::truncated("out of tokens"))]);
         let e = verify_one(&fake, &VerifyConfig::new("m"), &c, &[]).expect_err("length");
         assert_eq!(e.code(), "truncated");
         assert_eq!(fake.seen.borrow().len(), 1);

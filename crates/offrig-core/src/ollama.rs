@@ -441,11 +441,14 @@ impl Ollama {
             total_duration: v["total_duration"].as_u64(),
         };
         if resp.done_reason == "length" {
-            return Err(Error::Truncated(format!(
-                "{} stopped at its token limit after {} tokens; raise num_predict",
-                req.model,
-                resp.eval_count.unwrap_or(0)
-            )));
+            return Err(Error::Truncated {
+                message: format!(
+                    "{} stopped at its token limit after {} tokens; raise num_predict",
+                    req.model,
+                    resp.eval_count.unwrap_or(0)
+                ),
+                thinking: resp.thinking,
+            });
         }
         Ok(resp)
     }

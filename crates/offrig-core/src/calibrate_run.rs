@@ -15,6 +15,7 @@
 //! to a hosted service) and nothing but a loopback server. A failed call is an
 //! `unusable` outcome with its error code; it is counted, never scored as a verdict.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -31,7 +32,7 @@ use crate::calibrate::{
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
 use crate::index::sha256_hex;
-use crate::ollama::{Ollama, Tag, ThinkLevel};
+use crate::ollama::{ChatRequest, ChatResponse, Ollama, Tag, ThinkLevel};
 use crate::store::Store;
 use crate::verify::{
     ChatBackend, CheckType, Claim, Label, Pins, Timing, Verdict, VerdictKind, VerifyConfig,
@@ -589,6 +590,34 @@ pub struct RunArgs<'a> {
     pub store: &'a Store,
     pub out_dir: &'a Path,
     pub resume: bool,
+    /// Write each claim's thinking text to [`THINKING_FILE`] in the run directory. A
+    /// diagnosis aid: not scored, not stored, and not part of the resume identity.
+    pub keep_thinking: bool,
+}
+
+/// The file `--keep-thinking` writes in the run directory. It holds model output that
+/// can echo anything the evidence holds, so it stays out of the store and out of the
+/// manifest, metrics and verdict files; copy it anywhere public only after a scan.
+pub const THINKING_FILE: &str = "thinking.jsonl";
+
+/// A chat backend that keeps the thinking text of every reply it passes through.
+struct ThinkingRecorder<'a> {
+    inner: &'a dyn ChatBackend,
+    seen: RefCell<Vec<String>>,
+}
+
+impl ChatBackend for ThinkingRecorder<'_> {
+    fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        let r = self.inner.chat(req);
+        match &r {
+            Ok(resp) => self.seen.borrow_mut().push(resp.thinking.clone()),
+            // A reply cut off at the token limit is the one most worth reading.
+            Err(Error::Truncated { thinking, .. }) => self.seen.borrow_mut().push(thinking.clone()),
+            // A transport or server error carries no reply, so there is nothing to keep.
+            Err(_) => {}
+        }
+        r
+    }
 }
 
 /// Run (or resume) a calibration and return its report. `progress` gets one line per
@@ -697,6 +726,23 @@ pub fn run(
         ));
     }
 
+    let recorder = ThinkingRecorder {
+        inner: chat,
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut thinking_file = if args.keep_thinking {
+        Some(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join(THINKING_FILE))
+                .map_err(|e| Error::io("opening thinking.jsonl", e))?,
+        )
+    } else {
+        None
+    };
+    let chat: &dyn ChatBackend = if args.keep_thinking { &recorder } else { chat };
+
     // Claims with a real answer, in run order: the health check for a repeated server error
     // asks the first of them again.
     let ok_ids: HashSet<&str> = prior
@@ -727,6 +773,7 @@ pub fn run(
         }
         let evidence = evidence_list(&claim, &[]);
         let started = Instant::now();
+        recorder.seen.borrow_mut().clear();
         let mut result = verify_one(chat, &cfg, &claim, &[]);
         if s.structured == Structured::Auto
             && cfg.structured
@@ -738,6 +785,20 @@ pub fn run(
             result = verify_one(chat, &cfg, &claim, &[]);
         }
         let wall = started.elapsed().as_secs_f64();
+        if let Some(f) = thinking_file.as_mut() {
+            // Every reply to this claim (a schema retry makes two), whatever its outcome,
+            // so a truncated or broken reply shows what the model was doing.
+            let calls = recorder.seen.borrow_mut().split_off(0);
+            if !calls.is_empty() {
+                let row = serde_json::json!({
+                    "claim_id": sel.id,
+                    "untrusted": true,
+                    "chars": calls.iter().map(|t| t.chars().count()).sum::<usize>(),
+                    "thinking": calls,
+                });
+                writeln!(f, "{row}").map_err(|e| Error::io("writing thinking.jsonl", e))?;
+            }
+        }
         let mut transport_note: Option<&'static str> = None;
         let line = match result {
             Ok(v) => {
@@ -1440,8 +1501,121 @@ mod tests {
             store,
             out_dir: dir,
             resume,
+            keep_thinking: false,
         };
         run(&args, chat, srv, &mut |_| {})
+    }
+
+    #[test]
+    fn keep_thinking_writes_each_claims_thinking_beside_the_run_and_nowhere_else() {
+        let dir = tmp("thinking");
+        let chat = Fake::new(|id, _| {
+            Ok(ChatResponse {
+                thinking: format!("working on {id}"),
+                ..resp(&reply("unsupported", ""))
+            })
+        });
+        let store = Store::open_in_memory().expect("store");
+        let s = settings();
+        let files = gold();
+        let args = RunArgs {
+            settings: &s,
+            gold: &files,
+            store: &store,
+            out_dir: &dir,
+            resume: false,
+            keep_thinking: true,
+        };
+        let rep = run(&args, &chat, &Srv::new(), &mut |_| {}).expect("run");
+        assert_eq!(rep.status.as_str(), "complete");
+        let text = std::fs::read_to_string(dir.join(THINKING_FILE)).expect("thinking file");
+        let rows: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("row"))
+            .collect();
+        assert_eq!(rows.len(), 7, "one row per claim");
+        let g2 = rows.iter().find(|r| r["claim_id"] == "g2").expect("g2");
+        assert_eq!(g2["thinking"], json!(["working on g2"]));
+        assert_eq!(
+            (g2["untrusted"].as_bool(), g2["chars"].as_u64()),
+            (Some(true), Some(13))
+        );
+        // Nothing of it reaches the verdicts, the manifest or the metrics.
+        for f in ["verdicts.jsonl", "manifest.json", "metrics.json"] {
+            let t = std::fs::read_to_string(dir.join(f)).expect("file");
+            assert!(!t.contains("working on"), "{f}");
+            assert!(!t.contains("keep_thinking"), "{f}");
+        }
+        // Not part of the resume identity: a resume without it is accepted.
+        let path = dir.join("verdicts.jsonl");
+        let first: Vec<String> = std::fs::read_to_string(&path)
+            .expect("read")
+            .lines()
+            .take(6)
+            .map(str::to_string)
+            .collect();
+        std::fs::write(&path, first.join("\n") + "\n").expect("write");
+        let rep = go_store(&s, &files, &dir, true, &chat, &Srv::new(), &store).expect("resume");
+        assert_eq!(rep.status.as_str(), "complete");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn keep_thinking_keeps_the_thinking_of_a_truncated_reply() {
+        let dir = tmp("thinking-cut");
+        let chat = Fake::new(|id, _| {
+            if id == "g1" {
+                return Err(Error::Truncated {
+                    message: "stopped at its token limit after 4096 tokens".into(),
+                    thinking: "still weighing the second passage".into(),
+                });
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let store = Store::open_in_memory().expect("store");
+        let s = settings();
+        let files = gold();
+        let args = RunArgs {
+            settings: &s,
+            gold: &files,
+            store: &store,
+            out_dir: &dir,
+            resume: false,
+            keep_thinking: true,
+        };
+        run(&args, &chat, &Srv::new(), &mut |_| {}).expect("run");
+        let lines = read_lines(&dir, false).expect("lines");
+        let g1 = lines.iter().find(|l| l.claim_id == "g1").expect("g1");
+        assert_eq!(
+            (g1.status.as_str(), g1.error_code.as_deref()),
+            ("unusable", Some("truncated"))
+        );
+        assert!(!g1.error.as_deref().unwrap_or_default().contains("weighing"));
+        let text = std::fs::read_to_string(dir.join(THINKING_FILE)).expect("thinking file");
+        let row: Value = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).expect("row"))
+            .find(|r| r["claim_id"] == "g1")
+            .expect("a row for the truncated claim");
+        assert_eq!(
+            row["thinking"],
+            json!(["still weighing the second passage"])
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn without_keep_thinking_no_thinking_file_is_written() {
+        let dir = tmp("no-thinking");
+        let chat = Fake::new(|_, _| {
+            Ok(ChatResponse {
+                thinking: "hidden".into(),
+                ..resp(&reply("unsupported", ""))
+            })
+        });
+        go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert!(!dir.join(THINKING_FILE).exists());
+        cleanup(&[&dir]);
     }
 
     fn go(s: &Settings, dir: &Path, resume: bool, chat: &Fake, srv: &Srv) -> Result<Report> {
@@ -1656,7 +1830,7 @@ mod tests {
         let dir = tmp("unusable");
         let store = Store::open_in_memory().expect("store");
         let chat = Fake::new(|id, _| match id {
-            "g1" => Err(Error::Truncated("stopped at its token limit".into())),
+            "g1" => Err(Error::truncated("stopped at its token limit")),
             "g2" => Ok(resp("I think it is fine")),
             "g3" => Err(Error::Ollama("chat: model failed to load".into())),
             "g4" => Ok(resp(&reply("cannot_tell", ""))),
