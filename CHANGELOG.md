@@ -6,6 +6,12 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **`verify calibrate --keep-thinking`** writes each claim's thinking text to
+  `thinking.jsonl` in the run directory, every reply included (a truncated one too), to
+  show what a model was doing. It's a diagnosis aid: never scored, stored, or part of the
+  resume identity. It is untrusted model output that can echo the evidence: it is only
+  ever written to the run directory, under its own name so a results copy can skip it,
+  and it should be scanned before it goes anywhere public.
 - **Quote rule 2.** A verdict's quote now matches the evidence with each line's leading
   diff and comment markers removed, as well as written. A model quoting the prose of a
   `///` comment across its line wraps was being downgraded to `cannot_tell` for a quote

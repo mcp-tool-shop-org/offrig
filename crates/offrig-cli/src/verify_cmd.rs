@@ -78,6 +78,11 @@ pub struct CalibrateArgs {
     /// Continue the run in this directory, repeating the same model, gold and settings
     #[arg(long, conflicts_with = "report_only")]
     resume: Option<PathBuf>,
+    /// Also write each claim's thinking text to thinking.jsonl in the run directory, to
+    /// see what a model was doing (a truncated reply, say). Untrusted model output: it is
+    /// never scored or stored, and it can echo the evidence, so scan it before sharing
+    #[arg(long, conflicts_with = "report_only")]
+    keep_thinking: bool,
     /// Score the run in this directory again and call nothing
     #[arg(long)]
     report_only: Option<PathBuf>,
@@ -154,6 +159,7 @@ fn calibrate(a: CalibrateArgs) -> Result<()> {
         store: &store,
         out_dir: &out_dir,
         resume,
+        keep_thinking: a.keep_thinking,
     };
     let report = calibrate_run::run(&args, &ollama, &ollama, &mut |m| say(m))?;
     print!("{}", render_table(&report));
