@@ -307,18 +307,26 @@ impl AccountView {
         }
     }
 
-    /// The commitment of `amount` (a `what`, "plan" or "completion") plus the other
-    /// projects' committed money must fit the live balance. An unknown balance never
-    /// blocks: see [`AccountView::skipped_note`].
-    pub fn check(&self, provider: Provider, amount: f64, what: &str) -> Result<()> {
+    /// The commitment of `amount` (a `what`, "plan" or "completion") plus what this
+    /// project has already committed (`own_committed`, read by the store under its write
+    /// lock) plus the other projects' committed money must fit the live balance: the
+    /// account holds all of it. An unknown balance never blocks: see
+    /// [`AccountView::skipped_note`].
+    pub fn check(
+        &self,
+        provider: Provider,
+        amount: f64,
+        own_committed: f64,
+        what: &str,
+    ) -> Result<()> {
         let Some(have) = self.balance.known() else {
             return Ok(());
         };
-        if fits(amount + self.others_committed, have) {
+        if fits(amount + own_committed + self.others_committed, have) {
             return Ok(());
         }
         Err(Error::Budget(format!(
-            "the {} account holds ${have:.2}; other projects hold ${:.2} committed; this {what} needs ${amount:.2}. Wait for those to finish, or lower the amount",
+            "the {} account holds ${have:.2}; this project holds ${own_committed:.2} committed; other projects hold ${:.2} committed; this {what} needs ${amount:.2}. Wait for those to finish, or lower the amount",
             provider.label(),
             self.others_committed
         )))
@@ -524,7 +532,8 @@ mod tests {
             .to_string();
         assert!(
             msg.contains("RunPod account holds $40.00")
-                && msg.contains("$30.00 committed")
+                && msg.contains("this project holds $0.00 committed")
+                && msg.contains("other projects hold $30.00 committed")
                 && msg.contains("needs $20.00"),
             "{msg}"
         );
@@ -538,6 +547,58 @@ mod tests {
         store
             .commit_plan_with_account(small.id, &view)
             .expect("fits");
+    }
+
+    #[test]
+    fn the_guard_counts_this_projects_own_committed_money_too() {
+        let root = tmp("own");
+        let me = project(&root, "me", 100.0, 20.0);
+        let other = project(&root, "other", 100.0, 10.0);
+        let sc = scope(&root, &me);
+        sc.projects.add(&other).expect("reg");
+        let store = Store::open(&me.join(".offrig").join("offrig.db")).expect("store");
+        let view = AccountView::read(Provider::RunPod, &sc, &|_| Balance::Known(50.0));
+        // 20 own + 10 other + 25 new = 55 > 50: refused, though 25 + 10 alone would fit.
+        let big = store.create_plan(new_plan(25.0)).expect("plan");
+        let msg = store
+            .commit_plan_with_account(big.id, &view)
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            msg.contains("account holds $50.00")
+                && msg.contains("this project holds $20.00 committed")
+                && msg.contains("other projects hold $10.00 committed")
+                && msg.contains("needs $25.00"),
+            "{msg}"
+        );
+        // 20 + 10 + 20 = 50 fits exactly.
+        let ok = store.create_plan(new_plan(20.0)).expect("plan");
+        store.commit_plan_with_account(ok.id, &view).expect("fits");
+        // Completions count the project's own OpenRouter commitments the same way.
+        let or_view = AccountView::read(Provider::OpenRouter, &sc, &|_| Balance::Known(5.0));
+        store
+            .set_provider_cap(Provider::OpenRouter, 50.0)
+            .expect("cap");
+        let c = |worst: f64| NewCompletion {
+            model: "m".into(),
+            lane: "plain".into(),
+            input_bound: 1,
+            max_tokens: 1,
+            price_in_m: 1.0,
+            price_out_m: 1.0,
+            worst_case: worst,
+        };
+        store
+            .commit_completion_with_account(c(3.0), &or_view)
+            .expect("3 fits 5");
+        let err = store
+            .commit_completion_with_account(c(3.0), &or_view)
+            .expect_err("3 + 3 > 5");
+        assert!(
+            err.to_string()
+                .contains("this project holds $3.00 committed"),
+            "{err}"
+        );
     }
 
     #[test]

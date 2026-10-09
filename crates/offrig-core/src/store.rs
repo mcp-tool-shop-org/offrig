@@ -1843,7 +1843,12 @@ impl Store {
                 )));
             }
             if let Some(a) = account {
-                a.check(Provider::RunPod, plan.worst_case, "plan")?;
+                a.check(
+                    Provider::RunPod,
+                    plan.worst_case,
+                    self.budget_for(Provider::RunPod)?.committed,
+                    "plan",
+                )?;
             }
             self.conn
                 .execute(
@@ -2159,7 +2164,12 @@ impl Store {
             )));
         }
         if let Some(a) = account {
-            a.check(Provider::OpenRouter, c.worst_case, "completion")?;
+            a.check(
+                Provider::OpenRouter,
+                c.worst_case,
+                self.budget_for(Provider::OpenRouter)?.committed,
+                "completion",
+            )?;
         }
         let now = now_unix();
         self.conn
