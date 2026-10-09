@@ -111,6 +111,8 @@ pub enum Label {
     Supported,
     #[serde(alias = "false")]
     Unsupported,
+    /// The evidence cannot decide the claim. A verifier that accepts it is wrong.
+    CannotTell,
 }
 
 /// One piece of evidence: where it came from and what it says.
@@ -859,9 +861,13 @@ mod tests {
             r#"{"id":"b","check_type":"knowledge","claim":"y","label":"unsupported","subtle":true,"split":"tune","origin":"g1","extra":1}"#,
             "\n",
             r#"{"id":"c","check_type":"reasoning","claim":"z","label":"true","evidence_paths":["a.md"]}"#,
+            "
+",
+            r#"{"id":"d","check_type":"grounded","claim":"w","label":"cannot_tell"}"#,
         );
         let cs = read_claims(text).expect("claims");
-        assert_eq!(cs.len(), 3);
+        assert_eq!(cs.len(), 4);
+        assert_eq!(cs[3].label, Some(Label::CannotTell));
         assert!(cs[0].high_stakes && cs[0].label.is_none() && cs[0].context.len() == 1);
         assert_eq!(cs[1].label, Some(Label::Unsupported));
         assert_eq!(cs[1].subtle, Some(true));

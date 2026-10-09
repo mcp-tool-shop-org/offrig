@@ -7,7 +7,6 @@
     {
       "breakage": {
         "coChangesOnly": [
-          "offrig-cli",
           "offrig-core"
         ],
         "collapsed": false,
@@ -20,26 +19,23 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-app",
-      "qualifyingSourceCommits": 7,
+      "qualifyingSourceCommits": 10,
       "rebaseline": null
     },
     {
       "breakage": {
-        "coChangesOnly": [
-          "offrig-app",
-          "offrig-core"
-        ],
+        "coChangesOnly": [],
         "collapsed": false,
         "confidence": "low",
         "importsAndCoChanges": [],
         "importsOnly": []
       },
-      "cohesion": 0,
+      "cohesion": null,
       "cohesionDropped": false,
       "confidence": "low",
       "highWater": null,
       "name": "offrig-cli",
-      "qualifyingSourceCommits": 11,
+      "qualifyingSourceCommits": 17,
       "rebaseline": null
     },
     {
@@ -49,34 +45,36 @@
         "confidence": "low",
         "importsAndCoChanges": [
           "offrig-app",
-          "offrig-cli"
+          "offrig-mcp"
         ],
         "importsOnly": [
-          "offrig-mcp"
+          "offrig-cli"
         ]
       },
-      "cohesion": 0.343093,
+      "cohesion": 0.521127,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 31,
+      "qualifyingSourceCommits": 42,
       "rebaseline": null
     },
     {
       "breakage": {
-        "coChangesOnly": [],
+        "coChangesOnly": [
+          "offrig-core"
+        ],
         "collapsed": false,
         "confidence": "low",
         "importsAndCoChanges": [],
         "importsOnly": []
       },
-      "cohesion": 1,
+      "cohesion": 0.509804,
       "cohesionDropped": false,
       "confidence": "low",
       "highWater": null,
       "name": "offrig-mcp",
-      "qualifyingSourceCommits": 22,
+      "qualifyingSourceCommits": 28,
       "rebaseline": null
     },
     {
@@ -120,8 +118,8 @@
         "path": ".github/workflows/pages.yml"
       },
       {
-        "commits": 1,
-        "lines": 123,
+        "commits": 2,
+        "lines": 137,
         "path": ".github/workflows/release.yml"
       },
       {
@@ -130,13 +128,13 @@
         "path": ".gitignore"
       },
       {
-        "commits": 27,
-        "lines": 255,
+        "commits": 36,
+        "lines": 411,
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 7,
-        "lines": 5263,
+        "commits": 10,
+        "lines": 5421,
         "path": "Cargo.lock"
       },
       {
@@ -175,8 +173,8 @@
         "path": "README.ja.md"
       },
       {
-        "commits": 29,
-        "lines": 909,
+        "commits": 31,
+        "lines": 932,
         "path": "README.md"
       },
       {
@@ -205,8 +203,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 27,
-        "lines": 779,
+        "commits": 29,
+        "lines": 842,
         "path": "atlas/README.md"
       },
       {
@@ -215,18 +213,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 27,
-        "lines": 3349,
+        "commits": 29,
+        "lines": 3654,
         "path": "atlas/page.json"
       },
       {
-        "commits": 27,
-        "lines": 4218,
+        "commits": 29,
+        "lines": 4874,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 27,
-        "lines": 14963,
+        "commits": 29,
+        "lines": 17120,
         "path": "atlas/structure.json"
       },
       {
@@ -285,18 +283,18 @@
         "path": "crates/offrig-app/build.rs"
       },
       {
-        "commits": 4,
-        "lines": 61,
+        "commits": 5,
+        "lines": 63,
         "path": "crates/offrig-app/src/app.rs"
       },
       {
-        "commits": 1,
-        "lines": 772,
+        "commits": 3,
+        "lines": 775,
         "path": "crates/offrig-app/src/app/more_ui_tests.rs"
       },
       {
-        "commits": 3,
-        "lines": 121,
+        "commits": 4,
+        "lines": 124,
         "path": "crates/offrig-app/src/main.rs"
       },
       {
@@ -305,8 +303,8 @@
         "path": "crates/offrig-app/src/worker.rs"
       },
       {
-        "commits": 1,
-        "lines": 1705,
+        "commits": 2,
+        "lines": 1711,
         "path": "crates/offrig-app/src/worker/tests.rs"
       },
       {
@@ -315,13 +313,23 @@
         "path": "crates/offrig-app/tests/support/fake_tools.rs"
       },
       {
-        "commits": 13,
-        "lines": 485,
+        "commits": 1,
+        "lines": 290,
+        "path": "crates/offrig-cli/src/budget_menu.rs"
+      },
+      {
+        "commits": 17,
+        "lines": 619,
         "path": "crates/offrig-cli/src/main.rs"
       },
       {
-        "commits": 3,
-        "lines": 876,
+        "commits": 1,
+        "lines": 162,
+        "path": "crates/offrig-cli/src/verify_cmd.rs"
+      },
+      {
+        "commits": 6,
+        "lines": 1000,
         "path": "crates/offrig-cli/tests/commands.rs"
       },
       {
@@ -336,7 +344,12 @@
       },
       {
         "commits": 1,
-        "lines": 1,
+        "lines": 197,
+        "path": "crates/offrig-cli/tests/verify_calibrate.rs"
+      },
+      {
+        "commits": 3,
+        "lines": 5,
         "path": "crates/offrig-core/Cargo.toml"
       },
       {
@@ -385,13 +398,23 @@
         "path": "crates/offrig-core/roles/systems-designer.md"
       },
       {
+        "commits": 2,
+        "lines": 711,
+        "path": "crates/offrig-core/src/calibrate.rs"
+      },
+      {
+        "commits": 3,
+        "lines": 2219,
+        "path": "crates/offrig-core/src/calibrate_run.rs"
+      },
+      {
         "commits": 3,
         "lines": 433,
         "path": "crates/offrig-core/src/checks.rs"
       },
       {
-        "commits": 17,
-        "lines": 1007,
+        "commits": 21,
+        "lines": 1061,
         "path": "crates/offrig-core/src/config.rs"
       },
       {
@@ -405,8 +428,8 @@
         "path": "crates/offrig-core/src/cost.rs"
       },
       {
-        "commits": 6,
-        "lines": 278,
+        "commits": 9,
+        "lines": 334,
         "path": "crates/offrig-core/src/error.rs"
       },
       {
@@ -420,6 +443,11 @@
         "path": "crates/offrig-core/src/guard.rs"
       },
       {
+        "commits": 1,
+        "lines": 921,
+        "path": "crates/offrig-core/src/index.rs"
+      },
+      {
         "commits": 7,
         "lines": 1107,
         "path": "crates/offrig-core/src/job.rs"
@@ -430,18 +458,23 @@
         "path": "crates/offrig-core/src/lanes.rs"
       },
       {
-        "commits": 12,
-        "lines": 15,
+        "commits": 16,
+        "lines": 20,
         "path": "crates/offrig-core/src/lib.rs"
       },
       {
-        "commits": 4,
-        "lines": 118,
+        "commits": 7,
+        "lines": 362,
         "path": "crates/offrig-core/src/ollama.rs"
       },
       {
-        "commits": 3,
-        "lines": 627,
+        "commits": 1,
+        "lines": 498,
+        "path": "crates/offrig-core/src/openrouter.rs"
+      },
+      {
+        "commits": 4,
+        "lines": 685,
         "path": "crates/offrig-core/src/planning.rs"
       },
       {
@@ -455,33 +488,33 @@
         "path": "crates/offrig-core/src/roles.rs"
       },
       {
-        "commits": 4,
-        "lines": 598,
+        "commits": 5,
+        "lines": 614,
         "path": "crates/offrig-core/src/runner.rs"
       },
       {
-        "commits": 6,
-        "lines": 94,
+        "commits": 8,
+        "lines": 1145,
         "path": "crates/offrig-core/src/runpod.rs"
       },
       {
-        "commits": 15,
-        "lines": 1078,
+        "commits": 17,
+        "lines": 1282,
         "path": "crates/offrig-core/src/session.rs"
       },
       {
-        "commits": 1,
-        "lines": 409,
+        "commits": 2,
+        "lines": 454,
         "path": "crates/offrig-core/src/siblings.rs"
       },
       {
-        "commits": 1,
-        "lines": 269,
+        "commits": 2,
+        "lines": 270,
         "path": "crates/offrig-core/src/sidecar_port.rs"
       },
       {
-        "commits": 12,
-        "lines": 691,
+        "commits": 15,
+        "lines": 796,
         "path": "crates/offrig-core/src/spec.rs"
       },
       {
@@ -490,24 +523,29 @@
         "path": "crates/offrig-core/src/sshconfig.rs"
       },
       {
-        "commits": 3,
-        "lines": 414,
+        "commits": 5,
+        "lines": 419,
         "path": "crates/offrig-core/src/stage.rs"
       },
       {
-        "commits": 10,
-        "lines": 2249,
+        "commits": 14,
+        "lines": 3574,
         "path": "crates/offrig-core/src/store.rs"
       },
       {
-        "commits": 2,
-        "lines": 179,
+        "commits": 4,
+        "lines": 196,
         "path": "crates/offrig-core/src/trace.rs"
       },
       {
         "commits": 2,
         "lines": 460,
         "path": "crates/offrig-core/src/tunnel.rs"
+      },
+      {
+        "commits": 2,
+        "lines": 1308,
+        "path": "crates/offrig-core/src/verify.rs"
       },
       {
         "commits": 1,
@@ -526,13 +564,28 @@
       },
       {
         "commits": 1,
+        "lines": 10,
+        "path": "crates/offrig-core/tests/fixtures/calibrate-gold.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 263,
+        "path": "crates/offrig-core/tests/index_http.rs"
+      },
+      {
+        "commits": 1,
         "lines": 277,
         "path": "crates/offrig-core/tests/lane_registry.rs"
       },
       {
-        "commits": 1,
-        "lines": 212,
+        "commits": 3,
+        "lines": 306,
         "path": "crates/offrig-core/tests/ollama_http.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 209,
+        "path": "crates/offrig-core/tests/openrouter_http.rs"
       },
       {
         "commits": 1,
@@ -540,8 +593,8 @@
         "path": "crates/offrig-core/tests/proc_run.rs"
       },
       {
-        "commits": 1,
-        "lines": 299,
+        "commits": 3,
+        "lines": 964,
         "path": "crates/offrig-core/tests/runpod_http.rs"
       },
       {
@@ -550,8 +603,8 @@
         "path": "crates/offrig-core/tests/ssh_files.rs"
       },
       {
-        "commits": 1,
-        "lines": 88,
+        "commits": 2,
+        "lines": 98,
         "path": "crates/offrig-core/tests/stage_volume.rs"
       },
       {
@@ -560,8 +613,8 @@
         "path": "crates/offrig-core/tests/store_rules.rs"
       },
       {
-        "commits": 1,
-        "lines": 161,
+        "commits": 2,
+        "lines": 186,
         "path": "crates/offrig-core/tests/support/mod.rs"
       },
       {
@@ -575,18 +628,23 @@
         "path": "crates/offrig-core/tests/zed_files.rs"
       },
       {
-        "commits": 1,
-        "lines": 28,
+        "commits": 2,
+        "lines": 29,
         "path": "crates/offrig-mcp/Cargo.toml"
       },
       {
-        "commits": 23,
-        "lines": 2737,
+        "commits": 1,
+        "lines": 516,
+        "path": "crates/offrig-mcp/src/complete.rs"
+      },
+      {
+        "commits": 27,
+        "lines": 2948,
         "path": "crates/offrig-mcp/src/main.rs"
       },
       {
-        "commits": 16,
-        "lines": 2416,
+        "commits": 18,
+        "lines": 2514,
         "path": "crates/offrig-mcp/src/ops.rs"
       },
       {
@@ -600,13 +658,13 @@
         "path": "crates/offrig-mcp/tests/common/mod.rs"
       },
       {
-        "commits": 1,
-        "lines": 212,
+        "commits": 2,
+        "lines": 221,
         "path": "crates/offrig-mcp/tests/error_codes.rs"
       },
       {
-        "commits": 2,
-        "lines": 452,
+        "commits": 3,
+        "lines": 460,
         "path": "crates/offrig-mcp/tests/fake_ssh_session.rs"
       },
       {
@@ -615,19 +673,24 @@
         "path": "crates/offrig-mcp/tests/job_tools.rs"
       },
       {
-        "commits": 1,
-        "lines": 271,
+        "commits": 3,
+        "lines": 286,
         "path": "crates/offrig-mcp/tests/lanes_disk.rs"
       },
       {
-        "commits": 1,
-        "lines": 367,
+        "commits": 2,
+        "lines": 375,
         "path": "crates/offrig-mcp/tests/launch_failure.rs"
       },
       {
-        "commits": 2,
-        "lines": 372,
+        "commits": 3,
+        "lines": 385,
         "path": "crates/offrig-mcp/tests/launch_wait.rs"
+      },
+      {
+        "commits": 1,
+        "lines": 146,
+        "path": "crates/offrig-mcp/tests/memory_index.rs"
       },
       {
         "commits": 2,
@@ -635,13 +698,18 @@
         "path": "crates/offrig-mcp/tests/oneplan.rs"
       },
       {
-        "commits": 5,
-        "lines": 705,
+        "commits": 1,
+        "lines": 462,
+        "path": "crates/offrig-mcp/tests/openrouter.rs"
+      },
+      {
+        "commits": 6,
+        "lines": 714,
         "path": "crates/offrig-mcp/tests/phase2.rs"
       },
       {
-        "commits": 1,
-        "lines": 352,
+        "commits": 3,
+        "lines": 370,
         "path": "crates/offrig-mcp/tests/plan_limits.rs"
       },
       {
@@ -650,8 +718,8 @@
         "path": "crates/offrig-mcp/tests/runner.rs"
       },
       {
-        "commits": 1,
-        "lines": 340,
+        "commits": 2,
+        "lines": 345,
         "path": "crates/offrig-mcp/tests/sibling_pods.rs"
       },
       {
@@ -805,9 +873,14 @@
         "path": "docs/screenshots/app-tunnel-open.png"
       },
       {
-        "commits": 12,
-        "lines": 435,
+        "commits": 13,
+        "lines": 559,
         "path": "docs/sidecar-design.md"
+      },
+      {
+        "commits": 2,
+        "lines": 355,
+        "path": "docs/verifier-design.md"
       },
       {
         "commits": 1,
@@ -975,8 +1048,8 @@
         "path": "site/src/content.config.ts"
       },
       {
-        "commits": 1,
-        "lines": 124,
+        "commits": 3,
+        "lines": 145,
         "path": "site/src/content/docs/handbook/configuration.md"
       },
       {
@@ -995,8 +1068,8 @@
         "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
       },
       {
-        "commits": 2,
-        "lines": 118,
+        "commits": 5,
+        "lines": 139,
         "path": "site/src/content/docs/handbook/reference.md"
       },
       {
@@ -1005,13 +1078,13 @@
         "path": "site/src/content/docs/handbook/security.md"
       },
       {
-        "commits": 2,
-        "lines": 146,
+        "commits": 4,
+        "lines": 216,
         "path": "site/src/content/docs/handbook/side-car.md"
       },
       {
-        "commits": 1,
-        "lines": 83,
+        "commits": 2,
+        "lines": 85,
         "path": "site/src/content/docs/handbook/usage.md"
       },
       {
@@ -1020,8 +1093,8 @@
         "path": "site/src/pages/index.astro"
       },
       {
-        "commits": 1,
-        "lines": 117,
+        "commits": 2,
+        "lines": 121,
         "path": "site/src/site-config.ts"
       },
       {
@@ -1045,112 +1118,112 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-10-08T00:11:55.135Z",
+  "generatedAt": "2026-10-09T02:54:56.049Z",
   "generatedFrom": {
-    "commit": "ab31154662ad9d774d890b0f5b581f7b466708fc"
+    "commit": "6ed81436a664dae677e941fec5e711e8e2be7c55"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "README.md",
-      "either": 25,
-      "shared": 21,
-      "strength": 0.84
+      "either": 35,
+      "shared": 24,
+      "strength": 0.685714
     },
     {
       "a": "CHANGELOG.md",
       "b": "crates/offrig-core/src/config.rs",
-      "either": 23,
-      "shared": 13,
-      "strength": 0.565217
+      "either": 33,
+      "shared": 17,
+      "strength": 0.515152
     },
     {
       "a": "README.md",
       "b": "crates/offrig-core/src/config.rs",
-      "either": 25,
-      "shared": 13,
-      "strength": 0.52
+      "either": 30,
+      "shared": 15,
+      "strength": 0.5
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 23,
-      "shared": 23,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 23,
-      "shared": 23,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 23,
-      "shared": 23,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 23,
-      "shared": 23,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 23,
-      "shared": 23,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 23,
-      "shared": 23,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "crates/offrig-app/src/worker.rs",
-      "b": "crates/offrig-cli/src/main.rs",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
-    },
-    {
-      "a": "crates/offrig-app/src/worker.rs",
-      "b": "crates/offrig-core/src/session.rs",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
-    },
-    {
-      "a": "crates/offrig-cli/src/main.rs",
       "b": "crates/offrig-core/src/session.rs",
       "either": 14,
-      "shared": 8,
-      "strength": 0.571429
+      "shared": 7,
+      "strength": 0.5
+    },
+    {
+      "a": "crates/offrig-core/src/config.rs",
+      "b": "crates/offrig-core/src/spec.rs",
+      "either": 20,
+      "shared": 10,
+      "strength": 0.5
     },
     {
       "a": "crates/offrig-core/src/lib.rs",
       "b": "crates/offrig-core/src/store.rs",
-      "either": 12,
-      "shared": 7,
-      "strength": 0.583333
+      "either": 17,
+      "shared": 10,
+      "strength": 0.588235
+    },
+    {
+      "a": "crates/offrig-core/src/spec.rs",
+      "b": "crates/offrig-mcp/src/ops.rs",
+      "either": 18,
+      "shared": 9,
+      "strength": 0.5
     },
     {
       "a": "crates/offrig-mcp/src/main.rs",
       "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 20,
-      "shared": 12,
-      "strength": 0.6
+      "either": 25,
+      "shared": 13,
+      "strength": 0.52
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 35.25,
+    "appliedChangesetLimit": 39,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -1159,16 +1232,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-10-07T16:57:01-07:00",
-    "inScopeFiles": 141,
+    "headDate": "2026-10-08T22:54:52-04:00",
+    "inScopeFiles": 156,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 44,
+    "qualifyingCommits": 62,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-10T23:57:01.000Z",
+    "since": "2026-04-12T02:54:52.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
@@ -1184,7 +1257,7 @@
     ],
     "sourceFileReach": 20,
     "sourceFileRise": 25,
-    "sourceFilesReachingStrongFloor": 6,
+    "sourceFilesReachingStrongFloor": 8,
     "strength": 0.5,
     "windowDays": 180
   },

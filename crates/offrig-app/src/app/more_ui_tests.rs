@@ -61,6 +61,7 @@ fn every_update_kind_lands_in_its_field() {
         name: "m:1b".into(),
         size: 1_000_000_000,
         details: TagDetails::default(),
+        ..Default::default()
     }]));
     s.apply(Update::Check(ChatCheck {
         model: "m:1b".into(),
@@ -416,6 +417,7 @@ fn the_pods_models_can_be_tested_once_the_tunnel_is_open() {
             parameter_size: "1B".into(),
             quantization_level: "Q4_0".into(),
         },
+        ..Default::default()
     };
     let (mut h, cmds) = harness(vec![
         Update::Pods(vec![pod_with(serde_json::json!({}))]),

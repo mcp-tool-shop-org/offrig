@@ -102,6 +102,22 @@ and `retryable` existed keep working.
 | `<project>\.offrig\watchdog-<plan>.log` | A plan's watchdog log |
 | `~/.ssh/known_hosts_offrig` | Pinned pod host keys |
 
+## Calibrate a verifier model
+
+```text
+offrig verify calibrate gold/grounded.jsonl gold/reasoning.jsonl --model gemma4:31b --think on --split tune
+```
+
+Runs each gold claim through offrig's verifier prompt on a local Ollama (loopback only;
+cloud models are refused), with the claim's own evidence, and prints the false-accept
+rate, abstain rate and balanced accuracy per check type against the default rule. The run
+directory (`.offrig/out/calibrate-<model>-<time>`) holds `manifest.json`,
+`verdicts.jsonl` and `metrics.json`. A connection problem is never recorded as an answer:
+the run reports `incomplete` and `--resume <dir>` retries those claims with the same
+settings. A reply the model itself breaks counts against it. `--report-only <dir>` rescores
+a run. `--swap-evidence` reverses the
+evidence order to check for position bias; `--gpu-cost-hr` sets the cost per claim.
+
 ## Verify a build
 
 ```text

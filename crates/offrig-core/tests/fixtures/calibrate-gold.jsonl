@@ -1,0 +1,10 @@
+{"id":"g1","check_type":"grounded","claim":"The limit is 25 MB.","context":[{"source":"docs/a.md","text":"The upload limit is 25 MB per file."},{"source":"src/b.rs","text":"const LIMIT_MB: u32 = 25;"}],"label":"supported","subtle":false,"split":"tune","origin":"docs-2026","notes":"unknown fields are tolerated"}
+{"id":"g2","check_type":"grounded","claim":"The limit is 50 MB.","context":[{"source":"docs/a.md","text":"The upload limit is 25 MB per file."}],"label":"unsupported","subtle":true,"split":"tune","origin":"docs-2026"}
+{"id":"g3","check_type":"grounded","claim":"Uploads expire after a day.","context":[{"source":"docs/a.md","text":"The upload limit is 25 MB per file."}],"label":"unsupported","subtle":false,"split":"tune","origin":"docs-2026"}
+{"id":"g4","check_type":"grounded","claim":"The limit applies to folders.","context":[{"source":"docs/a.md","text":"The upload limit is 25 MB per file."}],"label":"cannot_tell","subtle":false,"split":"tune","origin":"docs-2026"}
+
+{"id":"g5","check_type":"grounded","claim":"The limit is 25 MB.","context":[{"source":"docs/a.md","text":"The upload limit is 25 MB per file."}],"label":"supported","subtle":false,"split":"heldout","origin":"docs-2026"}
+{"id":"r1","check_type":"reasoning","claim":"The change adds a retry loop.","context":[{"source":"diff","text":"+ for attempt in 0..3 { try_send() }"}],"label":"supported","subtle":false,"split":"tune","origin":"prs-2026","has_doc_comment":true,"self_referential":false}
+{"id":"r2","check_type":"reasoning","claim":"The change removes the timeout.","context":[{"source":"diff","text":"+ for attempt in 0..3 { try_send() }"}],"label":"unsupported","subtle":false,"split":"tune","origin":"prs-2026","has_doc_comment":false,"self_referential":true}
+{"id":"k1","check_type":"knowledge","claim":"SQLite stores dates as a native type.","label":"unsupported","subtle":false,"split":"tune","origin":"natural"}
+{"id":"u1","check_type":"grounded","claim":"No label here.","context":[{"source":"x","text":"y"}],"split":"tune"}

@@ -6,6 +6,25 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **`offrig verify calibrate`** measures a local model as a verifier before it can become
+  the default. It runs gold claims (JSONL) through offrig's own verifier prompt, one claim
+  per call, with each claim's own evidence (oracle mode, so it measures the verifier, not
+  retrieval), and scores the result against the default rule per check type: the upper
+  bound of the false-accept rate under 10%, abstaining on at most 20% of claims, balanced
+  accuracy on decided claims of at least 0.80, and at least 100 false claims per type.
+  - Gold `cannot_tell` claims count as false accepts when a model calls them supported.
+  - Every outcome goes to `verdicts.jsonl` and the store, marked untrusted. A reply the
+    model breaks (bad verdict, cut off, or timing out twice on the same claim) is counted as
+    unusable and counts against the model. A connection problem or a single timeout is not
+    recorded at all: `--resume` retries it, and until every claim has an answer the result
+    is `incomplete`, never a pass or fail.
+  - Runs resume (`--resume`) only with the same model, digest, settings and gold files,
+    and can be rescored from their directory (`--report-only`).
+  - Local only: a loopback Ollama, and model names containing "cloud" are refused.
+  - The report breaks results down by origin, by whether the context's comments state the
+    behaviour, and gives cost per claim (GPU dollars per hour times wall time; boot and
+    model download are not included).
+
 - **Prices and stock come from the v2 catalog.**
   `GET /catalog/gpus?include=AVAILABILITY&product=POD` replaces the GraphQL price
   query. The listed secure-cloud price is per GPU and is multiplied by the GPU count.

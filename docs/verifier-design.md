@@ -109,6 +109,24 @@ secondary summary and not re-checked; treat its numbers as approximate.
   unsupported claims** (about 200 or more in total). The coverage floor stops a model
   that always abstains from winning.
 
+  **Gold `cannot_tell` claims** (added 2026-10-08, from R&D's review of the calibration
+  runner) are claims the evidence doesn't decide. A model that calls one `supported` has
+  passed something the evidence can't back, so:
+  - `supported` on a gold `cannot_tell` is a **false accept**; `unsupported` or
+    `cannot_tell` on it is correct, and is not counted as abstaining.
+  - The **primary false-accept rate** is over gold `unsupported` + `cannot_tell` (every
+    claim whose truth is "not supported"); the rate over gold `unsupported` alone is
+    reported beside it. The default rule uses the primary rate.
+  - The abstain rate is over gold `supported` + `unsupported` only.
+  - Balanced accuracy compares `supported` with not-supported, on decided claims (a model
+    `cannot_tell` is not decided).
+  - The 100-claim minimum still counts gold `unsupported` only.
+  - A separate row per check type reports gold `cannot_tell`: its count, false accepts,
+    and how often the model said `cannot_tell` (whether it tells silent from wrong).
+
+  `offrig verify calibrate` implements this protocol in oracle mode (each claim's own
+  evidence). End-to-end calibration through retrieval is a follow-up.
+
 **Retrieval**
 - Thakur et al. 2021, BEIR (arXiv:2104.08663): BM25 is a strong baseline out of domain,
   and dense retrievers often lose to it. Cormack, Clarke & Büttcher 2009: reciprocal rank

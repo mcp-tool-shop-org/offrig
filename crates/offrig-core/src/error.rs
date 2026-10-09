@@ -166,6 +166,7 @@ impl Error {
             Error::MissingApiKey | Error::MissingOpenRouterKey => "missing_api_key",
             Error::OpenRouter { .. } => "openrouter_api",
             Error::Api { .. } | Error::GraphQl { .. } => "runpod_api",
+            Error::Http { .. } if self.is_client_timeout() => "timeout",
             Error::Http { .. } => "network",
             Error::Decode { .. } => "internal",
             Error::Io { .. } => "io",
@@ -185,6 +186,16 @@ impl Error {
             Error::Budget(_) => "budget_exceeded",
             Error::Transition { .. } => "invalid_transition",
         }
+    }
+
+    /// Whether this is an HTTP call that hit the client's global time limit (as
+    /// opposed to a refused or reset connection). Its code is `timeout`.
+    pub fn is_client_timeout(&self) -> bool {
+        matches!(
+            self,
+            Error::Http { source, .. }
+                if matches!(**source, ureq::Error::Timeout(ureq::Timeout::Global))
+        )
     }
 
     /// Whether the same call can reasonably succeed if tried again later.
@@ -229,6 +240,13 @@ mod tests {
         assert_eq!(Error::Budget("x".into()).code(), "budget_exceeded");
         assert_eq!(Error::NoCapacity("x".into()).code(), "no_capacity");
         assert_eq!(Error::Timeout("x".into()).code(), "timeout");
+        let slow = Error::http("chat", ureq::Error::Timeout(ureq::Timeout::Global));
+        assert_eq!((slow.code(), slow.is_client_timeout()), ("timeout", true));
+        let refused = Error::http("chat", ureq::Error::ConnectionFailed);
+        assert_eq!(
+            (refused.code(), refused.is_client_timeout()),
+            ("network", false)
+        );
         assert_eq!(Error::Config("x".into()).code(), "config");
         assert_eq!(Error::PodNotFound("x".into()).code(), "not_found");
         let api = |status| Error::Api {
