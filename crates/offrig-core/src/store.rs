@@ -8,11 +8,12 @@
 //! - every handoff state change goes through one transition law and is logged;
 //! - liveness is computed by one predicate that status and the reaper both use.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
+use crate::account::AccountGuard;
 use crate::checks::{Check, Outcome};
 use crate::cost::now_unix;
 use crate::error::{Error, Result};
@@ -252,10 +253,6 @@ fn plain_uri(path: &Path) -> String {
         }
     }
     out
-}
-
-fn immutable_uri(path: &Path) -> String {
-    format!("{}?immutable=1", plain_uri(path))
 }
 
 fn db(what: &str) -> impl FnOnce(rusqlite::Error) -> Error + '_ {
@@ -508,6 +505,14 @@ impl Provider {
         }
     }
 
+    /// The name people use: `RunPod`, `OpenRouter`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::RunPod => "RunPod",
+            Provider::OpenRouter => "OpenRouter",
+        }
+    }
+
     /// The `settings` key holding this provider's explicit cap.
     fn setting_key(self) -> &'static str {
         match self {
@@ -531,9 +536,84 @@ impl std::fmt::Display for Provider {
     }
 }
 
-/// Which cap said no, and what it had left.
+/// Why another project's store could not be read, as a code that carries no text or path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadSkip {
+    /// The project has no store file.
+    NoStore,
+    SchemaNewer,
+    SchemaOlder,
+    /// Present but unreadable: not a database, corrupt, or a cap that is not a number.
+    Unreadable,
+    /// Still locked after one retry.
+    Busy,
+}
+
+impl ReadSkip {
+    pub fn code(self) -> &'static str {
+        match self {
+            ReadSkip::NoStore => "no_store",
+            ReadSkip::SchemaNewer => "schema_newer",
+            ReadSkip::SchemaOlder => "schema_older",
+            ReadSkip::Unreadable => "unreadable",
+            ReadSkip::Busy => "busy",
+        }
+    }
+
+    /// For people: what the code means.
+    pub fn text(self) -> &'static str {
+        match self {
+            ReadSkip::NoStore => "it has no offrig store",
+            ReadSkip::SchemaNewer => "its store is from a newer offrig",
+            ReadSkip::SchemaOlder => "its store is from an older offrig",
+            ReadSkip::Unreadable => "its store could not be read",
+            ReadSkip::Busy => "its store is busy",
+        }
+    }
+
+    /// Classify an error from reading a store that did open.
+    pub fn of_error(e: &Error) -> ReadSkip {
+        match e {
+            Error::Db { source, .. } if is_busy(source) => ReadSkip::Busy,
+            _ => ReadSkip::Unreadable,
+        }
+    }
+}
+
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if matches!(
+                f.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+/// Where a provider's cap comes from in one project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapSource {
+    /// The provider's own explicit cap.
+    Own,
+    /// No cap of its own: it falls back to the overall `budget_cap`.
+    Overall,
+    /// Neither is set, so the cap is 0 and nothing is allowed.
+    NotSet,
+}
+
+impl CapSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapSource::Own => "own",
+            CapSource::Overall => "overall",
+            CapSource::NotSet => "not set",
+        }
+    }
+}
+
 /// Whether `amount` fits in `remaining`. Anything not a clear fit, NaN included, is a no.
-fn fits(amount: f64, remaining: f64) -> bool {
+pub(crate) fn fits(amount: f64, remaining: f64) -> bool {
     matches!(
         amount.partial_cmp(&(remaining + 1e-9)),
         Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
@@ -807,49 +887,82 @@ impl Store {
         Self::init(conn)
     }
 
-    /// Open an existing store for reading only, and change nothing on disk.
+    /// Open an existing store for reading only; nothing is created, migrated or written.
     ///
     /// The file is opened with SQLite's read-only flag (it is never created) and
     /// `query_only` is on, so a write fails in SQLite itself. Nothing here sets a pragma
     /// that writes (no journal mode, no migration): a store from an older offrig is
-    /// reported, never upgraded. A store in WAL mode that no one has open has no `-wal`
-    /// or `-shm` file, and a plain read-only open would create both; so in that case it
-    /// is opened `immutable` instead, which takes no locks and writes no side file. A
-    /// store someone has open (its `-wal` or `-shm` exist) is read normally, through the
-    /// files that are already there. This is how one lane reads another project's plans
-    /// (issue #26).
+    /// reported, never upgraded. The store is read through SQLite's normal locking (never
+    /// `immutable`, which can serve stale or torn pages from a store someone is writing),
+    /// so a store in WAL mode may gain `-wal` and `-shm` side files while it is read. A
+    /// busy store is retried once. This is how one lane reads another project's plans
+    /// (issue #26) and how the account view reads other projects' budgets.
     pub fn open_read_only(path: &Path) -> Result<Self> {
+        Self::open_ro_retry(path).map_err(|(_, e)| e)
+    }
+
+    /// As [`Store::open_read_only`], but a failure is classified for output that must not
+    /// carry text or paths.
+    pub fn probe_read_only(path: &Path) -> std::result::Result<Self, ReadSkip> {
+        if !path.is_file() {
+            return Err(ReadSkip::NoStore);
+        }
+        Self::open_ro_retry(path).map_err(|(skip, _)| skip)
+    }
+
+    fn open_ro_retry(path: &Path) -> std::result::Result<Self, (ReadSkip, Error)> {
+        match Self::open_ro_once(path) {
+            Err((ReadSkip::Busy, _)) => {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Self::open_ro_once(path)
+            }
+            other => other,
+        }
+    }
+
+    fn open_ro_once(path: &Path) -> std::result::Result<Self, (ReadSkip, Error)> {
         use rusqlite::OpenFlags;
-        let side = |ext: &str| {
-            let mut o = path.as_os_str().to_os_string();
-            o.push(ext);
-            PathBuf::from(o)
-        };
-        let idle = !side("-wal").exists() && !side("-shm").exists();
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_URI;
-        let target = if idle {
-            immutable_uri(path)
-        } else {
-            plain_uri(path)
+        let classify = |what: &'static str| {
+            move |e: rusqlite::Error| {
+                let skip = if is_busy(&e) {
+                    ReadSkip::Busy
+                } else {
+                    ReadSkip::Unreadable
+                };
+                (
+                    skip,
+                    Error::Db {
+                        what: what.to_string(),
+                        source: e,
+                    },
+                )
+            }
         };
-        let conn = Connection::open_with_flags(&target, flags)
-            .map_err(db("opening the project database read-only"))?;
+        let conn = Connection::open_with_flags(plain_uri(path), flags)
+            .map_err(classify("opening the project database read-only"))?;
         conn.execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 2000;")
-            .map_err(db("setting read-only pragmas"))?;
+            .map_err(classify("setting read-only pragmas"))?;
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .map_err(db("reading the schema version"))?;
+            .map_err(classify("reading the schema version"))?;
         if version > SCHEMA_VERSION {
-            return Err(Error::Refused(format!(
-                "the project database is schema v{version}; this offrig knows v{SCHEMA_VERSION}"
-            )));
+            return Err((
+                ReadSkip::SchemaNewer,
+                Error::Refused(format!(
+                    "the project database is schema v{version}; this offrig knows v{SCHEMA_VERSION}"
+                )),
+            ));
         }
         if version < 2 {
-            return Err(Error::Refused(format!(
-                "the project database is schema v{version}; its own offrig upgrades it, a read-only view does not"
-            )));
+            return Err((
+                ReadSkip::SchemaOlder,
+                Error::Refused(format!(
+                    "the project database is schema v{version}; its own offrig upgrades it, a read-only view does not"
+                )),
+            ));
         }
         Ok(Self { conn })
     }
@@ -1113,6 +1226,17 @@ impl Store {
     /// True when an overall ceiling is in force.
     pub fn has_overall_ceiling(&self) -> Result<bool> {
         Ok(self.overall_ceiling()?.is_some())
+    }
+
+    /// Where the provider's cap comes from: its own, the overall one, or nowhere.
+    pub fn cap_source(&self, p: Provider) -> Result<CapSource> {
+        Ok(if self.cap_setting(p.setting_key())?.is_some() {
+            CapSource::Own
+        } else if self.cap_setting("budget_cap")?.is_some() {
+            CapSource::Overall
+        } else {
+            CapSource::NotSet
+        })
     }
 
     /// True when the provider has its own explicit cap (not the overall fallback).
@@ -1770,6 +1894,17 @@ impl Store {
     /// Re-checks the budget, because other plans may have committed since.
     /// Idempotent: committing a committed plan returns it unchanged.
     pub fn commit_plan(&self, id: i64) -> Result<Plan> {
+        self.commit_plan_checked(id, None)
+    }
+
+    /// As [`Store::commit_plan`], and after the per-project checks the commitment must
+    /// also fit the RunPod account (see [`AccountGuard`]). The balance is read before this
+    /// call, so no network I/O happens while the account lock or the write lock is held.
+    pub fn commit_plan_with_account(&self, id: i64, account: &AccountGuard) -> Result<Plan> {
+        self.commit_plan_checked(id, Some(account))
+    }
+
+    fn commit_plan_checked(&self, id: i64, account: Option<&AccountGuard>) -> Result<Plan> {
         let plan = self
             .plan(id)?
             .ok_or_else(|| Error::Refused(format!("no plan {id}; make one with offrig_plan")))?;
@@ -1778,6 +1913,12 @@ impl Store {
             "planned" => {}
             s => return Err(Error::Refused(format!("plan {id} is {s}; make a new plan"))),
         }
+        // With an account guard, the account lock is taken first and the other projects
+        // are read under it, so two projects cannot both pass on the same balance.
+        let held = match account {
+            Some(a) => a.enter(Provider::RunPod)?,
+            None => None,
+        };
         // The check and the commit run under one write lock (`BEGIN IMMEDIATE`), as for
         // completions, so a plan and a completion committed at once from two processes
         // cannot both pass the shared overall ceiling.
@@ -1790,6 +1931,13 @@ impl Store {
                     "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
                     plan.worst_case, r.remaining, r.scope
                 )));
+            }
+            if let Some(h) = &held {
+                h.check(
+                    plan.worst_case,
+                    self.budget_for(Provider::RunPod)?.committed,
+                    "plan",
+                )?;
             }
             self.conn
                 .execute(
@@ -2042,16 +2190,38 @@ impl Store {
     /// is left. The check and the commit run under one write lock (`BEGIN IMMEDIATE`), so
     /// two side-cars sharing this file cannot both commit past the cap.
     pub fn commit_completion(&self, c: NewCompletion) -> Result<Completion> {
+        self.commit_completion_checked(c, None)
+    }
+
+    /// As [`Store::commit_completion`], and the worst case must also fit the OpenRouter
+    /// account (see [`AccountGuard`]).
+    pub fn commit_completion_with_account(
+        &self,
+        c: NewCompletion,
+        account: &AccountGuard,
+    ) -> Result<Completion> {
+        self.commit_completion_checked(c, Some(account))
+    }
+
+    fn commit_completion_checked(
+        &self,
+        c: NewCompletion,
+        account: Option<&AccountGuard>,
+    ) -> Result<Completion> {
         if !(c.worst_case.is_finite() && c.worst_case >= 0.0) {
             return Err(Error::Refused(format!(
                 "worst case {} must be a non-negative amount",
                 c.worst_case
             )));
         }
+        let held = match account {
+            Some(a) => a.enter(Provider::OpenRouter)?,
+            None => None,
+        };
         self.conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(db("starting a completion commit"))?;
-        let res = self.commit_completion_locked(&c);
+        let res = self.commit_completion_locked(&c, held.as_ref());
         match res {
             Ok(id) => {
                 self.conn
@@ -2067,7 +2237,11 @@ impl Store {
         }
     }
 
-    fn commit_completion_locked(&self, c: &NewCompletion) -> Result<i64> {
+    fn commit_completion_locked(
+        &self,
+        c: &NewCompletion,
+        held: Option<&crate::account::Held>,
+    ) -> Result<i64> {
         if let Some(r) = self.refusal(Provider::OpenRouter, c.worst_case)? {
             return Err(Error::Budget(format!(
                 "worst case ${:.2} (at most {} tokens in and {} out, at ${}/M in and ${}/M out) \
@@ -2081,6 +2255,13 @@ impl Store {
                 r.cap,
                 r.scope
             )));
+        }
+        if let Some(h) = held {
+            h.check(
+                c.worst_case,
+                self.budget_for(Provider::OpenRouter)?.committed,
+                "completion",
+            )?;
         }
         let now = now_unix();
         self.conn
@@ -3811,7 +3992,7 @@ mod tests {
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
-    fn ro_dir(name: &str) -> PathBuf {
+    fn ro_dir(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("offrig-ro-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("dir");
@@ -3819,8 +4000,15 @@ mod tests {
     }
 
     fn files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        // SQLite may add its own -wal and -shm files when a store is read; the database
+        // file and anything else must not change.
         let mut v: Vec<_> = std::fs::read_dir(dir)
             .expect("dir")
+            .filter(|e| {
+                let n = e.as_ref().expect("entry").file_name();
+                let n = n.to_string_lossy();
+                !(n.ends_with("-wal") || n.ends_with("-shm"))
+            })
             .map(|e| {
                 let e = e.expect("entry");
                 (
@@ -3867,7 +4055,7 @@ mod tests {
             assert!(ro.set_budget_cap(1.0).is_err());
             assert!(ro.set_setting("k", "v").is_err());
         }
-        assert_eq!(files(&folder), before, "no byte and no side file changed");
+        assert_eq!(files(&folder), before, "no byte of the database changed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3933,7 +4121,6 @@ mod tests {
         let u = plain_uri(Path::new("/tmp/a b/c#d?e%f.db"));
         assert!(u.starts_with("file:"), "{u}");
         assert!(u.ends_with("/tmp/a%20b/c%23d%3Fe%25f.db"), "{u}");
-        assert!(immutable_uri(Path::new("/x.db")).ends_with("/x.db?immutable=1"));
         // A drive path gets the empty authority.
         if cfg!(windows) {
             let u = plain_uri(Path::new("C:\\data\\x.db"));

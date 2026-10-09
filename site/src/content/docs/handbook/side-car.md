@@ -28,6 +28,7 @@ offrig budget 15                         an overall ceiling across both (optiona
 offrig budget --clear-overall            drop the overall ceiling once both caps are set
 offrig budget                            in a terminal: a menu for the overall cap
 offrig budget --show                     every cap, with each provider's own balance
+offrig budget --show --json              the same, as one versioned JSON object
 ```
 
 **Each provider has its own cap.** RunPod and OpenRouter hold separate money, so a pod is
@@ -37,6 +38,31 @@ provider's cap, committed, spent and remaining next to the balance the provider 
 reports. It warns when a cap is above what the account holds, because the account would
 run dry first. A provider cap above the overall ceiling never takes effect: the ceiling
 refuses first. Local Ollama costs nothing and has no cap, and Ollama Cloud is refused.
+
+**Caps are per project; the money is per account.** Several projects can each hold a
+RunPod cap, and together they can promise more than the RunPod account holds. So
+`--show` also prints an `account` line per provider: the caps across every project offrig
+knows (each project where a cap was set, and each project with a side-car lane), what they
+have committed, what is still unspent, and the balance. It warns when the projects together
+promise more than the account holds. Before a pod or an OpenRouter completion is committed,
+offrig also checks the account: this amount plus everything already committed, in this
+project and the others, must fit in the provider's live balance. That matters most on
+RunPod, which stops every pod on the account when the balance reaches zero. When the
+balance can't be read (no key, the provider unreachable), the commit goes ahead under the
+project's own caps, with a note saying the account check was skipped. That is deliberate: a
+provider outage shouldn't stop work that the project's caps already allow. A project whose
+records can't be read, on the other hand, stops the check: its commitments can't be
+counted, so nothing new is committed until it can be.
+
+A provider with no cap of its own and no overall ceiling shows `(not set)`: nothing can be
+spent there until a person sets it.
+
+These checks cover what an agent spends through the side-car (`offrig_launch`,
+`offrig_complete`). **A pod started by hand with `offrig up` or the app is not counted**
+against any project's cap or in the account totals. `offrig budget` says so in its last
+line, the JSON lists it under `uncounted`, and `offrig up` says so before it launches. Its
+own guard still applies: it refuses when the runway with the pod running would be under one
+hour.
 
 A project set up with one cap keeps working as before: that cap stays as the overall
 ceiling, and each provider's cap starts at the same amount. Set the real per-provider caps,

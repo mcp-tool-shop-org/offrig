@@ -1,6 +1,7 @@
 //! Small file helpers shared by the modules that edit user files.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::error::{Error, Result};
 
@@ -14,6 +15,62 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("offrig-tmp");
     std::fs::write(&tmp, bytes).map_err(|e| Error::io(format!("writing {}", tmp.display()), e))?;
     std::fs::rename(&tmp, path).map_err(|e| Error::io(format!("replacing {}", path.display()), e))
+}
+
+/// A lock file that is removed when this drops.
+pub struct LockGuard(PathBuf);
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Take the lock file `<dir>/<name>` (created with `create_new`, so exactly one holder),
+/// waiting up to `wait`. A lock older than `stale` belongs to a holder that died and is
+/// broken. `what` names the lock in the timeout message.
+pub fn lock_file(
+    dir: &Path,
+    name: &str,
+    wait: Duration,
+    stale: Duration,
+    what: &str,
+) -> Result<LockGuard> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| Error::io(format!("creating {}", dir.display()), e))?;
+    let path = dir.join(name);
+    let deadline = Instant::now() + wait;
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(LockGuard(path)),
+            // On Windows a lock that is being deleted answers PermissionDenied.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                // A holder that died must not wedge every other.
+                let age = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| SystemTime::now().duration_since(t).ok());
+                if age.is_some_and(|a| a > stale) {
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+                if Instant::now() >= deadline {
+                    return Err(Error::Timeout(format!("{what} {}", path.display())));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(Error::io(format!("locking {}", path.display()), e)),
+        }
+    }
 }
 
 /// Copy `path` to `<path>.offrig.bak` before offrig first changes it, and keep that

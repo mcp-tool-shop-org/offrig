@@ -212,14 +212,19 @@ enum Cmd {
         /// show the current budget (a menu in a terminal)
         usd: Option<f64>,
         /// Set this provider's cap instead of the overall one: runpod or openrouter
-        #[arg(long, value_parser = parse_provider, requires = "usd")]
-        provider: Option<offrig_core::store::Provider>,
+        // Optional text here, checked by `budget_target`, so a missing provider or
+        // amount gets one clear message instead of clap's tip.
+        #[arg(long, num_args = 0..=1)]
+        provider: Option<Option<String>>,
         /// Remove the overall ceiling (allowed once both provider caps are set)
         #[arg(long, conflicts_with_all = ["usd", "provider"])]
         clear_overall: bool,
         /// Print the budget lines only (one per provider, then the overall), even in a terminal
         #[arg(long)]
         show: bool,
+        /// With --show: print one JSON object (version 1) instead of the text report
+        #[arg(long, requires = "show")]
+        json: bool,
         /// Project directory (default: the current directory)
         #[arg(long)]
         project: Option<std::path::PathBuf>,
@@ -379,9 +384,50 @@ fn ensure_tunnel(s: &Session) -> Result<Option<Tunnel>> {
     )?))
 }
 
-fn parse_provider(s: &str) -> std::result::Result<offrig_core::store::Provider, String> {
-    offrig_core::store::Provider::parse(s)
-        .ok_or_else(|| format!("{s:?} is not a provider; use runpod or openrouter"))
+/// The project as `--json` names it: "." for the current directory, otherwise the folder
+/// name. Never a path.
+fn json_project_name(dir: &std::path::Path, given: bool) -> String {
+    if !given {
+        return ".".into();
+    }
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+    if let (Some(a), Some(b)) = (
+        canon(dir),
+        std::env::current_dir().ok().and_then(|c| canon(&c)),
+    ) && a == b
+    {
+        return ".".into();
+    }
+    dir.file_name()
+        .map_or_else(|| ".".into(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Which cap `offrig budget` sets: `None` for the overall cap, or one provider's. Checks
+/// that `--provider` came with both a provider and an amount.
+fn budget_target(
+    usd: Option<f64>,
+    provider: &Option<Option<String>>,
+) -> Result<Option<offrig_core::store::Provider>> {
+    use offrig_core::store::Provider;
+    let Some(given) = provider else {
+        return Ok(None);
+    };
+    let usage = || {
+        anyhow::anyhow!(
+            "--provider needs a provider and an amount, e.g. `offrig budget --provider runpod 30`"
+        )
+    };
+    let text = given.as_deref().ok_or_else(usage)?;
+    if usd.is_none() {
+        return Err(usage());
+    }
+    match Provider::parse(text) {
+        Some(p) => Ok(Some(p)),
+        None if text.trim().parse::<f64>().is_ok() => Err(usage()),
+        None => Err(anyhow::anyhow!(
+            "{text:?} is not a provider; use runpod or openrouter"
+        )),
+    }
 }
 
 /// A person at a terminal: both stdin and stdout are terminals. A tool that captures
@@ -398,30 +444,49 @@ fn run(cli: Cli) -> Result<()> {
             provider,
             clear_overall,
             show,
+            json,
             project,
         } => {
+            let given = project.clone();
             let dir = match project {
                 Some(p) => p,
                 None => std::env::current_dir()?,
             };
             let store = offrig_core::store::Store::open(&dir.join(".offrig").join("offrig.db"))?;
+            let target = budget_target(usd, &provider)?;
+            let scope = offrig_core::account::Scope::default_for(&dir).ok();
             let print_report = |store: &offrig_core::store::Store| -> Result<()> {
-                for l in budget_menu::report(store, &offrig_core::balances::read)? {
+                for l in budget_menu::report(store, &offrig_core::balances::read, scope.as_ref())? {
                     println!("{l}");
                 }
+                println!("{}", offrig_core::account::UNCOUNTED_NOTE);
                 Ok(())
+            };
+            // Any cap set here makes this project known to the account view.
+            let register = || match &scope {
+                Some(sc) => {
+                    if let Err(e) = sc.projects.add(&dir) {
+                        eprintln!(
+                            "note: this project could not be added to the account view ({e})"
+                        );
+                    }
+                }
+                None => eprintln!(
+                    "note: this project could not be added to the account view (no config directory)"
+                ),
             };
             if clear_overall {
                 store.clear_budget_cap()?;
                 info!("overall budget cap cleared for {}", dir.display());
             } else if let Some(cap) = usd {
-                if let Some(p) = provider {
+                if let Some(p) = target {
                     store.set_provider_cap(p, cap)?;
                     info!("{p} budget cap set to ${cap:.2} for {}", dir.display());
                 } else {
                     store.set_budget_cap(cap)?;
                     info!("budget cap set to ${cap:.2} for {}", dir.display());
                 }
+                register();
             } else if !show && interactive() && store.has_overall_ceiling()? {
                 // The menu manages the overall cap only; provider caps are set with
                 // `--provider`. The menu names the project by its folder, never the path.
@@ -429,12 +494,35 @@ fn run(cli: Cli) -> Result<()> {
                     || "this project".into(),
                     |n| n.to_string_lossy().into_owned(),
                 );
-                return budget_menu::run(
+                let caps = |s: &offrig_core::store::Store| -> Result<Vec<f64>> {
+                    let mut v = vec![s.budget()?.cap];
+                    for p in offrig_core::store::Provider::ALL {
+                        v.push(s.budget_for(p)?.cap);
+                    }
+                    Ok(v)
+                };
+                let before = caps(&store)?;
+                let ran = budget_menu::run(
                     &store,
                     &name,
                     &mut std::io::stdin().lock(),
                     &mut std::io::stdout(),
                 );
+                if caps(&store)? != before {
+                    register();
+                }
+                return ran;
+            }
+            if json {
+                let name = json_project_name(&dir, given.is_some());
+                let v = budget_menu::report_json(
+                    &store,
+                    &offrig_core::balances::read,
+                    scope.as_ref(),
+                    &name,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
             }
             print_report(&store)?;
             Ok(())
@@ -635,6 +723,7 @@ fn run(cli: Cli) -> Result<()> {
             if p.is_job() {
                 return Err(offrig_core::session::job_serves_nothing(&p).into());
             }
+            info!("{}", offrig_core::account::MANUAL_POD_NOTICE);
             preflight(&s, &p, yes)?;
             let stop = ctrl_c_flag()?;
             let minutes = wait.unwrap_or(p.wait_for_gpu_minutes);
@@ -1109,7 +1198,12 @@ mod budget_args {
                 clear_overall,
                 show,
                 ..
-            } => (usd, provider, clear_overall, show),
+            } => (
+                usd,
+                budget_target(usd, &provider).expect("a valid target"),
+                clear_overall,
+                show,
+            ),
             _ => panic!("not the budget command"),
         }
     }
@@ -1131,14 +1225,17 @@ mod budget_args {
 
     #[test]
     fn bad_combinations_are_usage_errors() {
-        assert!(
-            parse(&["--provider", "aws", "5"]).is_err(),
-            "unknown provider"
-        );
-        assert!(
-            parse(&["--provider", "runpod"]).is_err(),
-            "provider needs an amount"
-        );
+        let target = |args: &[&str]| match parse(args).expect("parses").cmd {
+            Cmd::Budget { usd, provider, .. } => budget_target(usd, &provider),
+            _ => panic!("not the budget command"),
+        };
+        let msg = |args: &[&str]| target(args).expect_err("usage error").to_string();
+        assert!(msg(&["--provider", "aws", "5"]).contains("not a provider"));
+        let want =
+            "--provider needs a provider and an amount, e.g. `offrig budget --provider runpod 30`";
+        assert_eq!(msg(&["--provider", "runpod"]), want, "needs an amount");
+        assert_eq!(msg(&["--provider"]), want, "needs both");
+        assert_eq!(msg(&["--provider", "30"]), want, "needs a provider");
         assert!(parse(&["--clear-overall", "5"]).is_err());
         assert!(parse(&["--clear-overall", "--provider", "runpod"]).is_err());
     }
