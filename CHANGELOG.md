@@ -6,6 +6,13 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **Quote rule 2.** A verdict's quote now matches the evidence with each line's leading
+  diff and comment markers removed, as well as written. A model quoting the prose of a
+  `///` comment across its line wraps was being downgraded to `cannot_tell` for a quote
+  that is in the evidence. A quote under 12 characters counts when it is a whole evidence
+  line (`return v`), so short lines of code can be quoted. Paraphrase and elision still
+  don't match. Every verdict pins the rule it was judged by (`quote_rule`), calibration
+  settings record it, and a calibration run never resumes across rules.
 - **`offrig verify calibrate`** measures a local model as a verifier before it can become
   the default. It runs gold claims (JSONL) through offrig's own verifier prompt, one claim
   per call, with each claim's own evidence (oracle mode, so it measures the verifier, not

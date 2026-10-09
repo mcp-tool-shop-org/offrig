@@ -250,6 +250,19 @@ The checks on each reply:
     otherwise the verdict becomes `cannot_tell` with the reason `quote_not_found`.
   - `unsupported` may quote the contradiction, or leave the quote empty when the
     evidence is silent. A quote that is given must be found.
+  - "Verbatim" is the words of the evidence, not the markers that wrap them (quote rule
+    2, 2026-10-09). A quote matches the passage as written, or with each line's leading
+    diff marker (`+`, `-`) and comment marker (`///`, `//!`, `//`, `#`, `*`, `--`)
+    removed. Models quote the prose of a `///` comment across its line wraps, and under
+    rule 1 those true quotes were downgraded: on the 2026-10-09 calibration, 33 of
+    gemma4:31b's 52 grounded abstentions were quotes that are in the evidence.
+    Paraphrase and elision (`...`) still don't match.
+  - A quote under 12 characters proves nothing and isn't found, unless it is a whole
+    evidence line of at least 5 characters with a letter or digit in it (`return v`,
+    `x += 1`). A line of code is specific where a fragment of prose isn't.
+  - Every verdict pins the quote rule it was judged by, and a calibration run records
+    it in its settings. A run made under one rule never resumes under another, and a
+    model calibrated under rule 1 is recalibrated under rule 2, never rescored.
 - The role card's worked examples come from outside every gold set. Their ids and the
   card's hash are recorded with each verdict.
 - A schema failure is retried once, then reported as an error.
