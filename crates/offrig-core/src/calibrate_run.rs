@@ -40,7 +40,13 @@ use crate::verify::{
 
 /// Consecutive transport failures after which the run stops (and stays resumable)
 /// instead of recording a whole file of claims against a server that is down.
-const MAX_CONSECUTIVE_NETWORK: usize = 5;
+const MAX_CONSECUTIVE_TRANSPORT: usize = 5;
+
+/// The note on a claim whose second timeout was recorded as its outcome.
+const TIMED_OUT_TWICE: &str = "timed out twice; long think or stuck server";
+
+/// What the default rule counts against the model, stated wherever its result shows.
+pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
 
 // ---- Settings
 
@@ -651,6 +657,8 @@ pub fn run(
 
     let prior = read_lines(dir, true)?;
     let done: HashSet<String> = prior.iter().map(|l| l.claim_id.clone()).collect();
+    let attempts_path = dir.join("attempts.json");
+    let mut attempts = read_attempts(&attempts_path)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -681,7 +689,7 @@ pub fn run(
         ));
     }
 
-    let mut pending: Vec<Line> = Vec::new();
+    let mut transport_run = 0usize;
     for (i, entry) in picked.iter().enumerate() {
         if done.contains(&entry.claim.id) {
             continue;
@@ -704,48 +712,100 @@ pub fn run(
             result = verify_one(chat, &cfg, &claim, &[]);
         }
         let wall = started.elapsed().as_secs_f64();
+        let mut transport_note: Option<&'static str> = None;
         let line = match result {
             Ok(v) => {
                 settled = true;
                 args.store.save_verdict(&v)?;
                 let found = quote_found(&v.evidence_quote, &evidence);
-                Line::from_verdict(sel, order, wall, &v, found)
+                Some(Line::from_verdict(sel, order, wall, &v, found))
             }
-            Err(e) => Line::from_error(sel, order, wall, &e),
+            Err(e) if is_transport(&e) => {
+                // Not an outcome: the server, not the model, failed. Nothing is
+                // recorded, so a resume tries the claim again.
+                transport_note = Some(if e.is_client_timeout() {
+                    "timeout"
+                } else {
+                    "network"
+                });
+                if e.is_client_timeout() {
+                    let a = attempts.entry(sel.id.clone()).or_default();
+                    a.timeouts += 1;
+                    a.last_error = crate::error::chain(&e);
+                    let twice = a.timeouts >= 2;
+                    let last = a.last_error.clone();
+                    write_json(&attempts_path, &attempts)?;
+                    twice.then(|| {
+                        let mut l = Line::from_error(sel, order, wall, &e);
+                        l.error = Some(format!("{TIMED_OUT_TWICE} (last: {last})"));
+                        l
+                    })
+                } else {
+                    None
+                }
+            }
+            Err(e) => Some(Line::from_error(sel, order, wall, &e)),
+        };
+        let shown = match (&line, transport_note) {
+            (Some(l), _) => l.final_verdict.map_or_else(
+                || format!("unusable:{}", l.error_code.as_deref().unwrap_or("?")),
+                |v| v.as_str().to_string(),
+            ),
+            (None, n) => format!(
+                "{} failure, not recorded; --resume retries it",
+                n.unwrap_or("transport")
+            ),
         };
         progress(&format!(
             "[{}/{}] {} gold={} -> {} ({:.1}s)",
             i + 1,
             picked.len(),
-            line.claim_id,
-            label_str(line.gold_label),
-            line.final_verdict.map_or_else(
-                || format!("unusable:{}", line.error_code.as_deref().unwrap_or("?")),
-                |v| v.as_str().to_string()
-            ),
+            sel.id,
+            label_str(sel.label),
+            shown,
             wall
         ));
-        if line.error_code.as_deref() == Some("network") {
-            // Held back: if the server is down these are not outcomes, and the run
-            // stops without recording them so a resume tries them again.
-            pending.push(line);
-            if pending.len() >= MAX_CONSECUTIVE_NETWORK {
+        if transport_note.is_some() {
+            transport_run += 1;
+            if transport_run >= MAX_CONSECUTIVE_TRANSPORT {
                 return Err(Error::Ollama(format!(
-                    "{} calls in a row could not reach the server; stopped (resume with --resume)",
-                    pending.len()
+                    "{transport_run} calls in a row could not reach the server; stopped (resume with --resume)",
                 )));
             }
         } else {
-            for held in pending.drain(..) {
-                append_line(&mut file, &held)?;
-            }
-            append_line(&mut file, &line)?;
+            transport_run = 0;
+        }
+        if let Some(l) = line {
+            append_line(&mut file, &l)?;
         }
     }
-    for held in pending.drain(..) {
-        append_line(&mut file, &held)?;
-    }
     report_dir(dir, None)
+}
+
+/// Per-claim timeout history, kept beside the outcomes. Not part of the manifest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct Attempt {
+    timeouts: u32,
+    last_error: String,
+}
+
+fn read_attempts(path: &Path) -> Result<BTreeMap<String, Attempt>> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => serde_json::from_str(&t).map_err(|e| Error::decode("attempts.json", e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) => Err(Error::io("reading attempts.json", e)),
+    }
+}
+
+/// A failure of the server or the wire, not of the model: no outcome is recorded.
+fn is_transport(e: &Error) -> bool {
+    match e {
+        Error::Http { .. } => true,
+        Error::Ollama(m) => m
+            .split_once(": http ")
+            .is_some_and(|(_, rest)| rest.starts_with('5')),
+        _ => false,
+    }
 }
 
 fn label_str(l: Label) -> &'static str {
@@ -822,8 +882,18 @@ pub struct Report {
     pub strata: Vec<Stratum>,
     pub cost: Cost,
     pub rule: Vec<RuleResult>,
-    /// Both grounded and reasoning pass.
+    /// Both grounded and reasoning pass, and no selected claim is waiting.
     pub passes_default: bool,
+    /// `complete`, or `incomplete` while selected claims have no recorded outcome.
+    pub status: String,
+    /// Selected claims with no recorded outcome (never tried, or only transport-failed).
+    pub pending: usize,
+    /// What to do about pending claims.
+    pub hint: Option<String>,
+    /// `pass`, `fail`, or `incomplete` (neither pass nor fail).
+    pub default_result: String,
+    /// What counts against the model in the default rule.
+    pub rule_note: String,
 }
 
 fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
@@ -882,7 +952,31 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         note: "gpu_cost_hr x wall seconds / 3600; boot and model pull time are not included and are the caller's to add".into(),
     };
     let rule = rule_report(&rows);
+    let recorded: HashSet<&str> = lines.iter().map(|l| l.claim_id.as_str()).collect();
+    let pending = m
+        .selected
+        .iter()
+        .filter(|s| !recorded.contains(s.id.as_str()))
+        .count();
+    let passes = pending == 0 && calibrate::passes_default(&rows);
+    let default_result = if pending > 0 {
+        "incomplete"
+    } else if passes {
+        "pass"
+    } else {
+        "fail"
+    };
     Report {
+        status: if pending > 0 {
+            "incomplete"
+        } else {
+            "complete"
+        }
+        .into(),
+        pending,
+        hint: (pending > 0).then(|| "rerun with --resume <dir>".to_string()),
+        default_result: default_result.into(),
+        rule_note: RULE_NOTE.into(),
         model: m.model.clone(),
         model_digest: m.model_digest.clone(),
         ollama_version: m.ollama_version.clone(),
@@ -890,7 +984,7 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         claims_selected: m.selected.len(),
         claims_attempted: lines.len(),
         unusable,
-        passes_default: calibrate::passes_default(&rows),
+        passes_default: passes,
         rows,
         strata,
         cost,
@@ -1042,7 +1136,14 @@ pub fn render_table(r: &Report) -> String {
         c.per_claim_usd
             .map_or("n/a".to_string(), |v| format!("${v:.5}")),
     ));
+    if r.pending > 0 {
+        out.push_str(&format!(
+            "status: incomplete, {} claims pending (no recorded outcome); rerun with --resume <dir>\n",
+            r.pending
+        ));
+    }
     out.push_str("default rule (grounded and reasoning; knowledge reported only):\n");
+    out.push_str(&format!("  note: {}\n", r.rule_note));
     for rule in &r.rule {
         let tag = if rule.counts { "" } else { " (reported only)" };
         if rule.criteria.is_empty() {
@@ -1066,7 +1167,11 @@ pub fn render_table(r: &Report) -> String {
     }
     out.push_str(&format!(
         "default rule overall: {}\n",
-        if r.passes_default { "PASS" } else { "FAIL" }
+        match r.default_result.as_str() {
+            "pass" => "PASS",
+            "incomplete" => "INCOMPLETE (neither pass nor fail)",
+            _ => "FAIL",
+        }
     ));
     out
 }
@@ -1496,7 +1601,7 @@ mod tests {
         let chat = Fake::new(|id, _| match id {
             "g1" => Err(Error::Truncated("stopped at its token limit".into())),
             "g2" => Ok(resp("I think it is fine")),
-            "g3" => Err(Error::Ollama("chat: http 500: boom".into())),
+            "g3" => Err(Error::Ollama("chat: model failed to load".into())),
             "g4" => Ok(resp(&reply("cannot_tell", ""))),
             _ => Ok(resp(&reply("unsupported", ""))),
         });
@@ -1641,26 +1746,159 @@ mod tests {
         let chat = Fake::new(|_, _| Err(net_error()));
         let e = go(&settings(), &dir, false, &chat, &Srv::new()).expect_err("down");
         assert!(e.to_string().contains("could not reach"), "{e}");
-        assert_eq!(chat.calls(), MAX_CONSECUTIVE_NETWORK);
+        assert_eq!(chat.calls(), MAX_CONSECUTIVE_TRANSPORT);
         assert!(read_lines(&dir, false).expect("lines").is_empty());
 
-        // A blip that clears is recorded, with the claims around it; so is one that
-        // comes on the very last claim.
-        for (name, blip) in [("blip", 2), ("tailblip", 7)] {
-            let d = tmp(name);
-            let n = RefCell::new(0);
-            let chat = Fake::new(move |_, _| {
-                *n.borrow_mut() += 1;
-                if *n.borrow() == blip {
-                    return Err(net_error());
-                }
-                Ok(resp(&reply("unsupported", "")))
-            });
-            let rep = go(&settings(), &d, false, &chat, &Srv::new()).expect("run");
-            assert_eq!(rep.claims_attempted, 7);
-            assert_eq!(rep.unusable.values().sum::<usize>(), 1);
-            cleanup(&[&d]);
-        }
+        cleanup(&[&dir]);
+    }
+
+    fn timeout_error() -> Error {
+        Error::http("chat", ureq::Error::Timeout(ureq::Timeout::Global))
+    }
+
+    /// Fails the first call for each id in `fail`, answers everything else.
+    fn flaky(fail: &'static [&'static str], err: fn() -> Error) -> Fake {
+        let seen = RefCell::new(HashSet::new());
+        Fake::new(move |id, _| {
+            if fail.contains(&id) && seen.borrow_mut().insert(id.to_string()) {
+                return Err(err());
+            }
+            Ok(resp(&reply("unsupported", "")))
+        })
+    }
+
+    #[test]
+    fn network_errors_are_retried_by_resume_and_never_recorded() {
+        let dir = tmp("flaky");
+        let chat = flaky(&["g2", "r1"], net_error);
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 2));
+        assert_eq!(rep.claims_attempted, 5);
+        assert!(rep.unusable.is_empty());
+        assert_eq!(rep.hint.as_deref(), Some("rerun with --resume <dir>"));
+        let lines = read_lines(&dir, false).expect("lines");
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.claim_id != "g2" && l.claim_id != "r1")
+        );
+        // The same on disk, and --report-only says the same.
+        let m: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("metrics.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(
+            (m["status"].as_str(), m["pending"].as_u64()),
+            (Some("incomplete"), Some(2))
+        );
+        let again = report_dir(&dir, None).expect("report only");
+        assert_eq!((again.status.as_str(), again.pending), ("incomplete", 2));
+
+        let rep = go(&settings(), &dir, true, &chat, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("complete", 0));
+        assert_eq!(rep.claims_attempted, 7);
+        assert!(rep.unusable.is_empty());
+        assert!(rep.rows.iter().all(|r| r.missing == 0));
+        assert_ne!(rep.default_result, "incomplete");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_second_timeout_on_one_claim_is_recorded_as_unusable() {
+        let dir = tmp("slow");
+        let chat = Fake::new(|id, _| {
+            if id == "g2" {
+                return Err(timeout_error());
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        let att: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("attempts.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(att["g2"]["timeouts"], 1);
+
+        let rep = go(&settings(), &dir, true, &chat, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("complete", 0));
+        let lines = read_lines(&dir, false).expect("lines");
+        let g2 = lines.iter().find(|l| l.claim_id == "g2").expect("g2");
+        assert_eq!(
+            (g2.status.as_str(), g2.error_code.as_deref()),
+            ("unusable", Some("timeout"))
+        );
+        assert!(
+            g2.error
+                .as_deref()
+                .expect("value")
+                .contains("timed out twice; long think or stuck server")
+        );
+        assert_eq!(rep.unusable.get("grounded"), Some(&1));
+        let att: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("attempts.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(att["g2"]["timeouts"], 2);
+        assert!(att["g2"]["last_error"].as_str().is_some());
+        // The recorded timeout counts against the model.
+        assert_eq!(rep.rows[0].missing, 1);
+        assert_eq!(rep.default_result, "fail");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_run_with_pending_claims_is_incomplete_not_failed() {
+        let dir = tmp("incomplete");
+        let chat = flaky(&["g1"], net_error);
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!(rep.default_result, "incomplete");
+        assert!(!rep.passes_default);
+        let table = render_table(&rep);
+        assert!(
+            table.contains("default rule overall: INCOMPLETE"),
+            "{table}"
+        );
+        assert!(table.contains("rerun with --resume"), "{table}");
+        assert!(table.contains("count as missing answers"), "{table}");
+        let m: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("metrics.json")).expect("value"),
+        )
+        .expect("value");
+        assert_eq!(m["default_result"], "incomplete");
+        assert!(
+            m["rule_note"]
+                .as_str()
+                .expect("value")
+                .contains("repeated timeout")
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn http_5xx_is_transport_and_a_bad_verdict_still_fails_the_model() {
+        let dir = tmp("fivexx");
+        let chat = flaky(&["g3"], || Error::Ollama("chat: http 503: busy".into()));
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        cleanup(&[&dir]);
+
+        let dir = tmp("badverdict");
+        let chat = Fake::new(|id, _| {
+            Ok(resp(&if id == "g2" {
+                "I think it is fine".to_string()
+            } else {
+                reply("unsupported", "")
+            }))
+        });
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!((rep.status.as_str(), rep.pending), ("complete", 0));
+        assert_eq!(rep.unusable.get("grounded"), Some(&1));
+        let lines = read_lines(&dir, false).expect("lines");
+        let g2 = lines.iter().find(|l| l.claim_id == "g2").expect("g2");
+        assert_eq!(g2.error_code.as_deref(), Some("bad_verdict"));
+        assert_eq!(rep.default_result, "fail");
+        assert!(!rep.passes_default);
         cleanup(&[&dir]);
     }
 
