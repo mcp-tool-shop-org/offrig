@@ -1,26 +1,23 @@
 # offrig: how it works
 
-Mapped at 2026-10-09 from commit 7674103 by Atlas 1.24.0.
+Mapped at 2026-10-09 from commit 6ed8143 by Atlas 1.24.0.
 
 ## What this is
 
 Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top. (written by a person)
 
-5 parts, mostly Rust (78 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
+5 parts, mostly Rust (81 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1), Python (1) and shell (1). Work enters through 7 doors; the busiest is release, which reaches 5 parts. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-10-08 (ab31154)
+## What changed since 2026-10-09 (7674103)
 
-- ci now also runs crates/offrig-cli/src/budget_menu.rs, crates/offrig-core/src/calibrate.rs, crates/offrig-core/src/index.rs and 7 more.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `run`, before `line`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `line`, before `open`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `open`, before `now_unix`.
-- And 11 more changes to the order of work.
-- 11 files added and 45 changed content, across 5 parts.
+- ci now also runs crates/offrig-cli/tests/verify_calibrate.rs and crates/offrig-core/src/calibrate_run.rs.
+- crates/offrig-core/tests/fixtures/calibrate-gold.jsonl is now read by crates/offrig-cli/tests/verify_calibrate.rs and crates/offrig-core/src/calibrate_run.rs.
+- 4 files added and 4 changed content, across 3 parts.
 
 ## What comes in
 
 1. **release.** When a tag matching `v*` is pushed; or by hand. Runs crates/offrig-app/build.rs; checks README.md, crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and 1 more.
-2. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 64 more; checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more.
+2. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 66 more; checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more.
 3. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 4. **offrig** (a command people run). Runs crates/offrig-cli/src/main.rs.
 5. **offrig-app** (a command people run). Runs crates/offrig-app/src/main.rs.
@@ -30,7 +27,7 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 ## What happens through release
 
 1. The workflow runs crates/offrig-app/build.rs in offrig-app; it checks crates/offrig-app/src/main.rs in offrig-app, crates/offrig-cli/src/main.rs in offrig-cli, crates/offrig-mcp/src/main.rs in offrig-mcp and README.md in root.
-2. That reaches offrig-core (32 files).
+2. That reaches offrig-core (33 files).
 3. It creates a GitHub release.
 
 ## Who reads the results
@@ -39,7 +36,7 @@ release writes nothing this map can see.
 
 ## The other doors
 
-**ci** runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 64 more, checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more, and uploads coverage to Codecov.
+**ci** runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 66 more, checks crates/offrig-cli/src/main.rs, crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and 1 more, and uploads coverage to Codecov.
 
 **Deploy site to GitHub Pages** runs site/astro.config.mjs and site/src/, and deploys the site.
 
@@ -60,7 +57,7 @@ release writes nothing this map can see.
 
 ## What tends to change together
 
-- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 10 of 16 commits, inside the offrig-core part.
+- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 10 of 17 commits, inside the offrig-core part.
 - **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 13 of 25 commits, inside the offrig-mcp part.
 - **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/spec.rs** changed together in 10 of 20 commits, inside the offrig-core part.
 - **crates/offrig-core/src/spec.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 9 of 18 commits, and the offrig-mcp part imports the offrig-core part.
@@ -94,7 +91,7 @@ No two parts export a helper that looks alike.
 
 ## Hand-authored
 
-People write root; 8 writes with paths built at run time may land here.
+People write root; 10 writes with paths built at run time may land here.
 
 ## Where to start
 
@@ -104,9 +101,8 @@ Read those in order to follow one run of offrig end to end. This path follows of
 
 ## What this map cannot see
 
-- 2 imports could not be resolved: `crates/offrig-cli/src/main.rs` imports `mod verify_cmd`; `crates/offrig-core/src/lib.rs` imports `mod calibrate_run`.
-- 8 writes and 6 reads use paths built at run time and are not named here.
-- 10 writes and 9 reads go to a path their caller passes, not to this repository.
+- 10 writes and 6 reads use paths built at run time and are not named here.
+- 12 writes and 13 reads go to a path their caller passes, not to this repository.
 - 4 writes go to a temporary directory, not to this repository.
 - 21 files belong to no part: scripts/verify.ps1, scripts/verify.sh, site/astro.config.mjs and 18 more.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
