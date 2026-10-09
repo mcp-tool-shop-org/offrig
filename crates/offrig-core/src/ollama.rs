@@ -42,6 +42,9 @@ pub struct Loaded {
     pub name: String,
     #[serde(default)]
     pub size_vram: u64,
+    /// Total bytes the loaded model occupies (VRAM plus any CPU share).
+    #[serde(default)]
+    pub size: u64,
     #[serde(default)]
     pub context_length: Option<u32>,
 }
@@ -418,11 +421,31 @@ pub struct ChatResponse {
     pub total_duration: Option<u64>,
 }
 
+/// Headroom below `num_ctx` that counts as full: prompt tokens plus reply tokens at or
+/// above `num_ctx - CTX_FULL_SLACK` mean the window was used up.
+pub const CTX_FULL_SLACK: u64 = 16;
+
+/// `Some(ContextOverflow)` when the prompt and the reply together filled `num_ctx`.
+///
+/// Ollama silently shifts or truncates context when that happens, so the reply may have
+/// been written without the start of the prompt. A prompt-only heuristic (a prompt count
+/// far below the estimate) is deliberately not used: `prompt_eval_count` also drops when
+/// Ollama reuses a cached prefix, so a low count is not evidence of truncation.
+pub fn context_overflow(num_ctx: u32, resp: &ChatResponse) -> Option<Error> {
+    let (p, e) = (resp.prompt_eval_count?, resp.eval_count.unwrap_or(0));
+    (p + e >= u64::from(num_ctx).saturating_sub(CTX_FULL_SLACK)).then(|| {
+        Error::ContextOverflow(format!(
+            "prompt_eval_count {p} + eval_count {e} = {} reached num_ctx {num_ctx}; the server may have dropped the start of the prompt",
+            p + e
+        ))
+    })
+}
+
 impl Ollama {
-    /// A non-streamed multi-message chat through the native API. A reply that stopped
-    /// at the token limit (`done_reason: length`) is a `Truncated` error, never a
-    /// short answer.
-    pub fn chat_messages(&self, req: &ChatRequest) -> Result<ChatResponse> {
+    /// One non-streamed chat through the native API, returned as the server answered it,
+    /// including a reply cut at the token limit. Used to measure a prompt with
+    /// `num_predict: 1`, where the cut is expected.
+    pub fn chat_raw(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let what = "chat";
         let v = self.post("/api/chat", &req.body(), what)?;
         if let Some(err) = v.get("error") {
@@ -432,15 +455,25 @@ impl Ollama {
         let content = message["content"]
             .as_str()
             .ok_or_else(|| Error::Ollama(format!("{what}: the reply carried no message")))?;
-        let resp = ChatResponse {
+        Ok(ChatResponse {
             content: content.to_string(),
             thinking: message["thinking"].as_str().unwrap_or_default().to_string(),
             done_reason: v["done_reason"].as_str().unwrap_or_default().to_string(),
             eval_count: v["eval_count"].as_u64(),
             prompt_eval_count: v["prompt_eval_count"].as_u64(),
             total_duration: v["total_duration"].as_u64(),
-        };
+        })
+    }
+
+    /// A non-streamed multi-message chat through the native API. A reply that stopped
+    /// at the token limit (`done_reason: length`) is a `Truncated` error, never a
+    /// short answer, unless the window was full: then it is a `ContextOverflow`.
+    pub fn chat_messages(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        let resp = self.chat_raw(req)?;
         if resp.done_reason == "length" {
+            if let Some(e) = req.num_ctx.and_then(|n| context_overflow(n, &resp)) {
+                return Err(e);
+            }
             return Err(Error::Truncated {
                 message: format!(
                     "{} stopped at its token limit after {} tokens; raise num_predict",
@@ -680,5 +713,21 @@ v0.35.1"
 v0.35.1"
         );
         assert_eq!(strip_thinking("<think>hmm</think>"), "");
+    }
+
+    #[test]
+    fn a_full_window_is_an_overflow_and_a_loaded_model_reports_its_split() {
+        let r = |p, e| ChatResponse {
+            prompt_eval_count: Some(p),
+            eval_count: Some(e),
+            ..Default::default()
+        };
+        assert!(context_overflow(1000, &r(900, 84)).is_some());
+        assert!(context_overflow(1000, &r(900, 83)).is_none());
+        assert!(context_overflow(1000, &ChatResponse::default()).is_none());
+        let l: Loaded =
+            serde_json::from_value(json!({"name": "m:1", "size": 100, "size_vram": 60}))
+                .expect("loaded");
+        assert_eq!((l.size, l.size_vram), (100, 60));
     }
 }

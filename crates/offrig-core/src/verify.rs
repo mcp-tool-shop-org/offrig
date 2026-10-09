@@ -19,7 +19,9 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::index::sha256_hex;
-use crate::ollama::{ChatRequest, ChatResponse, Msg, Ollama, ThinkLevel, strip_thinking};
+use crate::ollama::{
+    ChatRequest, ChatResponse, Msg, Ollama, ThinkLevel, context_overflow, strip_thinking,
+};
 use crate::roles::fingerprint;
 
 /// What kind of check a claim asks for. Each is calibrated on its own.
@@ -604,6 +606,10 @@ pub struct Pins {
     pub seed: i64,
     pub think: String,
     pub num_ctx: u32,
+    /// How `num_ctx` was chosen: `auto` (sized from the prompt) or `fixed` (asked for).
+    /// Verdicts stored before this was pinned were `fixed`.
+    #[serde(default = "ctx_mode_fixed")]
+    pub num_ctx_mode: String,
     pub num_predict: i32,
     /// False when the reply was parsed from plain text.
     pub structured: bool,
@@ -617,6 +623,10 @@ pub struct Pins {
 
 fn quote_rule_1() -> u32 {
     1
+}
+
+fn ctx_mode_fixed() -> String {
+    "fixed".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -656,11 +666,136 @@ pub struct Verdict {
 /// Anything that can answer a chat. The real one is [`Ollama`]; tests use a fake.
 pub trait ChatBackend {
     fn chat(&self, req: &ChatRequest) -> Result<ChatResponse>;
+
+    /// A call made only to read `prompt_eval_count` (sent with `num_predict: 1`): a reply
+    /// cut at the token limit is the expected answer, not an error. A backend that has
+    /// no such distinction (a fake) answers it like any chat.
+    fn probe(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        self.chat(req)
+    }
 }
 
 impl ChatBackend for Ollama {
     fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         self.chat_messages(req)
+    }
+
+    fn probe(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        self.chat_raw(req)
+    }
+}
+
+// ---- Sizing the context window
+
+/// How `num_ctx` is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtxMode {
+    /// Sized from the prompt and `num_predict`.
+    Auto,
+    /// The caller's number, sent as given.
+    Fixed,
+}
+
+impl CtxMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Fixed => "fixed",
+        }
+    }
+}
+
+/// Tokens assumed for what the chat template adds around the messages (role markers, the
+/// generation prompt, the thinking switch) on top of the text itself. Generous on
+/// purpose: an estimate that is too high costs a larger window, one that is too low
+/// costs a truncated prompt.
+pub const TEMPLATE_OVERHEAD_TOKENS: u64 = 256;
+
+/// Characters per token the estimator assumes. Real English prose runs near 4 and code
+/// or JSON near 3, so 3 over-counts prose and is the conservative side.
+pub const CHARS_PER_TOKEN: u64 = 3;
+
+/// The window sizes a one-off check picks from, smallest first.
+pub const CTX_TIERS: [u32; 6] = [16384, 24576, 32768, 49152, 65536, 131072];
+
+/// The cap on a window when the server does not say what the model supports.
+pub const DEFAULT_MODEL_MAX_CTX: u32 = 131072;
+
+/// A calibration window is a multiple of this.
+pub const CTX_ROUND: u32 = 2048;
+
+/// Conservative token estimate of some text: characters divided by 3, rounded up.
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.chars().count() as u64).div_ceil(CHARS_PER_TOKEN)
+}
+
+/// Estimated prompt tokens of a request: every message's text plus
+/// [`TEMPLATE_OVERHEAD_TOKENS`]. Ignores the reply schema (it constrains the reply, it
+/// is not part of the prompt).
+pub fn estimate_prompt_tokens(req: &ChatRequest) -> u64 {
+    req.messages
+        .iter()
+        .map(|m| estimate_tokens(&m.content))
+        .sum::<u64>()
+        + TEMPLATE_OVERHEAD_TOKENS
+}
+
+/// Headroom kept above prompt plus reply: 512 tokens or `pct` percent, whichever is more.
+pub fn ctx_margin(tokens: u64, pct: u64) -> u64 {
+    (tokens * pct / 100).max(512)
+}
+
+/// Round up to a multiple of [`CTX_ROUND`].
+pub fn round_ctx(n: u64) -> u64 {
+    n.div_ceil(u64::from(CTX_ROUND)) * u64::from(CTX_ROUND)
+}
+
+/// The smallest tier that holds `estimate + num_predict + margin`, capped at the model's
+/// maximum window. `Err` carries the tokens needed when even the cap is too small.
+pub fn pick_tier(estimate: u64, num_predict: i32, model_max: u32) -> std::result::Result<u32, u64> {
+    let need = estimate + u64::try_from(num_predict).unwrap_or(0);
+    let want = need + ctx_margin(need, 5);
+    let cap = model_max.min(*CTX_TIERS.last().expect("tiers"));
+    if need > u64::from(cap) {
+        return Err(need);
+    }
+    Ok(CTX_TIERS
+        .iter()
+        .copied()
+        .filter(|&t| t <= cap)
+        .find(|&t| u64::from(t) >= want)
+        .unwrap_or(cap))
+}
+
+/// Keeps the largest real/estimated token ratio seen in a run, so later estimates can
+/// be corrected upward. Never goes below 1: the estimate is never lowered under the
+/// conservative figure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenEstimator {
+    max_ratio: f64,
+}
+
+impl Default for TokenEstimator {
+    fn default() -> Self {
+        Self { max_ratio: 1.0 }
+    }
+}
+
+impl TokenEstimator {
+    /// The estimate corrected by the worst ratio seen so far.
+    pub fn correct(&self, raw: u64) -> u64 {
+        (raw as f64 * self.max_ratio).ceil() as u64
+    }
+
+    /// Record a reply's real prompt count against the raw estimate for that prompt.
+    pub fn observe(&mut self, raw: u64, real: u64) {
+        if raw > 0 {
+            self.max_ratio = self.max_ratio.max(real as f64 / raw as f64);
+        }
+    }
+
+    pub fn ratio(&self) -> f64 {
+        self.max_ratio
     }
 }
 
@@ -676,6 +811,8 @@ pub struct VerifyConfig {
     pub seed: i64,
     pub think: ThinkLevel,
     pub num_ctx: u32,
+    /// How `num_ctx` was chosen; pinned into the verdict.
+    pub num_ctx_mode: CtxMode,
     pub num_predict: i32,
     /// Send the reply schema as `format`. Off for models whose structured output
     /// collapses; the reply is then parsed from plain text.
@@ -696,6 +833,7 @@ impl VerifyConfig {
             seed: 0,
             think: ThinkLevel::On,
             num_ctx: 16384,
+            num_ctx_mode: CtxMode::Fixed,
             num_predict: 4096,
             structured: true,
             gpu_type: None,
@@ -704,17 +842,13 @@ impl VerifyConfig {
     }
 }
 
-const RETRY_NUDGE: &str = "That reply did not follow the schema ({why}). Reply again with only the JSON object described, with keys reasoning, verdict, evidence_quote, evidence_source.";
-
-/// Check one claim against its supplied context and the retrieved passages. A reply
-/// that fails its schema is retried once; a second failure is an error, never a
-/// verdict. A truncated reply or a server error is an error at once.
-pub fn verify_one(
-    chat: &dyn ChatBackend,
+/// The request `verify_one` sends for a claim, and the evidence it shows. The one place
+/// a prompt is rendered, so an estimate of it is an estimate of what is sent.
+pub fn build_request(
     cfg: &VerifyConfig,
     claim: &Claim,
     retrieved: &[Passage],
-) -> Result<Verdict> {
+) -> Result<(ChatRequest, Vec<Passage>)> {
     if claim.id.trim().is_empty() || claim.claim.trim().is_empty() {
         return Err(Error::Refused(
             "a claim needs an id and its text".to_string(),
@@ -728,7 +862,7 @@ pub fn verify_one(
             claim.check_type.as_str()
         )));
     }
-    let mut req = ChatRequest {
+    let req = ChatRequest {
         model: cfg.model.clone(),
         messages: vec![
             Msg::new("system", card_text()),
@@ -741,10 +875,68 @@ pub fn verify_one(
         num_ctx: Some(cfg.num_ctx),
         num_predict: Some(cfg.num_predict),
     };
+    Ok((req, evidence))
+}
+
+/// Estimated prompt tokens for a claim, without calling anything.
+pub fn estimate_claim_tokens(
+    cfg: &VerifyConfig,
+    claim: &Claim,
+    retrieved: &[Passage],
+) -> Result<u64> {
+    build_request(cfg, claim, retrieved).map(|(r, _)| estimate_prompt_tokens(&r))
+}
+
+/// A one-off check in `auto` mode: pick the window tier from the corrected estimate,
+/// check the claim, then feed the real prompt count back into `est`. `model_max` is the
+/// model's own window, when known.
+pub fn verify_one_auto(
+    chat: &dyn ChatBackend,
+    cfg: &VerifyConfig,
+    claim: &Claim,
+    retrieved: &[Passage],
+    model_max: Option<u32>,
+    est: &mut TokenEstimator,
+) -> Result<Verdict> {
+    let raw = estimate_claim_tokens(cfg, claim, retrieved)?;
+    let cap = model_max.unwrap_or(DEFAULT_MODEL_MAX_CTX);
+    let num_ctx = pick_tier(est.correct(raw), cfg.num_predict, cap).map_err(|need| {
+        Error::Refused(format!(
+            "claim {} needs about {need} tokens (estimated prompt {} + num_predict {}) but the model's window is {cap}; lower num_predict or shorten the evidence",
+            claim.id,
+            est.correct(raw),
+            cfg.num_predict
+        ))
+    })?;
+    let mut c = cfg.clone();
+    c.num_ctx = num_ctx;
+    c.num_ctx_mode = CtxMode::Auto;
+    let v = verify_one(chat, &c, claim, retrieved)?;
+    if v.timing.attempts == 1 {
+        est.observe(raw, v.timing.prompt_eval_count);
+    }
+    Ok(v)
+}
+
+const RETRY_NUDGE: &str = "That reply did not follow the schema ({why}). Reply again with only the JSON object described, with keys reasoning, verdict, evidence_quote, evidence_source.";
+
+/// Check one claim against its supplied context and the retrieved passages. A reply
+/// that fails its schema is retried once; a second failure is an error, never a
+/// verdict. A truncated reply or a server error is an error at once.
+pub fn verify_one(
+    chat: &dyn ChatBackend,
+    cfg: &VerifyConfig,
+    claim: &Claim,
+    retrieved: &[Passage],
+) -> Result<Verdict> {
+    let (mut req, evidence) = build_request(cfg, claim, retrieved)?;
     let mut timing = Timing::default();
     let mut last = String::new();
     for attempt in 1..=2 {
         let resp = chat.chat(&req)?;
+        if let Some(e) = context_overflow(cfg.num_ctx, &resp) {
+            return Err(e);
+        }
         timing.attempts = attempt;
         timing.eval_count += resp.eval_count.unwrap_or(0);
         timing.prompt_eval_count += resp.prompt_eval_count.unwrap_or(0);
@@ -797,6 +989,7 @@ fn finish(
             seed: cfg.seed,
             think: cfg.think.as_str().to_string(),
             num_ctx: cfg.num_ctx,
+            num_ctx_mode: cfg.num_ctx_mode.as_str().to_string(),
             num_predict: cfg.num_predict,
             structured: cfg.structured,
             quote_rule: QUOTE_RULE,
@@ -1433,5 +1626,137 @@ mod tests {
         blank.claim = "ok".into();
         blank.id = String::new();
         assert!(verify_one(&Fake::saying(&[]), &VerifyConfig::new("m"), &blank, &[]).is_err());
+    }
+
+    // ---- Adaptive context window
+
+    #[test]
+    fn token_estimate_is_chars_over_three_rounded_up_plus_template_overhead() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abc"), 1);
+        assert_eq!(estimate_tokens("abcd"), 2);
+        // Characters, not bytes.
+        assert_eq!(estimate_tokens("ééé"), 1);
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![Msg::new("system", "abcdef"), Msg::new("user", "abcd")],
+            format: None,
+            think: None,
+            temperature: None,
+            seed: None,
+            num_ctx: None,
+            num_predict: None,
+        };
+        assert_eq!(
+            estimate_prompt_tokens(&req),
+            2 + 2 + TEMPLATE_OVERHEAD_TOKENS
+        );
+        // The estimate is of exactly what verify_one sends.
+        let c = claim(CheckType::Grounded, "x", vec![ev("a", "text")]);
+        let cfg = VerifyConfig::new("m");
+        let (sent, _) = build_request(&cfg, &c, &[]).expect("req");
+        assert_eq!(
+            estimate_claim_tokens(&cfg, &c, &[]).expect("est"),
+            estimate_prompt_tokens(&sent)
+        );
+    }
+
+    #[test]
+    fn the_running_ratio_only_corrects_upward() {
+        let mut e = TokenEstimator::default();
+        assert_eq!(e.correct(1000), 1000);
+        e.observe(1000, 600);
+        assert_eq!(
+            e.correct(1000),
+            1000,
+            "never below the conservative estimate"
+        );
+        e.observe(1000, 1250);
+        assert_eq!(e.correct(1000), 1250);
+        e.observe(1000, 1100);
+        assert!(
+            (e.ratio() - 1.25).abs() < 1e-9,
+            "keeps the worst ratio seen"
+        );
+        e.observe(0, 5);
+        assert_eq!(e.correct(2000), 2500);
+    }
+
+    #[test]
+    fn one_off_tiers_pick_the_smallest_that_fits_and_respect_the_model_maximum() {
+        // 1000 + 4096 = 5096 + 512 margin: first tier.
+        assert_eq!(pick_tier(1000, 4096, 131_072), Ok(16_384));
+        // 12000 + 4096 = 16096; margin 804 -> 16900 > 16384 -> next tier.
+        assert_eq!(pick_tier(12_000, 4096, 131_072), Ok(24_576));
+        assert_eq!(pick_tier(28_000, 4096, 131_072), Ok(49_152));
+        assert_eq!(pick_tier(100_000, 4096, 131_072), Ok(131_072));
+        // Capped at the model's window: fits the need, not the margin.
+        assert_eq!(pick_tier(30_000, 2000, 32_768), Ok(32_768));
+        // The model's window is smaller than the first tier.
+        assert_eq!(pick_tier(1000, 1000, 8192), Ok(8192));
+        // Cannot fit at all.
+        assert_eq!(pick_tier(30_000, 4096, 32_768), Err(34_096));
+        assert_eq!(pick_tier(130_000, 4096, 262_144), Err(134_096));
+    }
+
+    #[test]
+    fn verify_one_auto_sizes_the_window_and_pins_the_mode() {
+        let big = "x".repeat(90_000); // ~30000 tokens
+        let c = claim(CheckType::Grounded, "the limit", vec![ev("a.md", &big)]);
+        let fake = Fake::saying(&[&reply_json("unsupported", "")]);
+        let mut est = TokenEstimator::default();
+        let v = verify_one_auto(&fake, &VerifyConfig::new("m"), &c, &[], None, &mut est)
+            .expect("verdict");
+        // Estimated ~30000 + card/template; + 4096 + margin -> the 49152 tier.
+        assert_eq!(fake.seen.borrow()[0].num_ctx, Some(49_152));
+        assert_eq!(
+            (v.pins.num_ctx, v.pins.num_ctx_mode.as_str()),
+            (49_152, "auto")
+        );
+        // The fake's real count (100) is far under the estimate: no upward correction.
+        assert_eq!(est.ratio(), 1.0);
+        // A model whose window is too small refuses, naming the claim.
+        let e = verify_one_auto(
+            &fake,
+            &VerifyConfig::new("m"),
+            &c,
+            &[],
+            Some(16_384),
+            &mut est,
+        )
+        .expect_err("too big");
+        assert!(e.to_string().contains("claim c1") && e.to_string().contains("16384"));
+    }
+
+    #[test]
+    fn a_reply_that_filled_the_window_is_a_context_overflow_never_a_verdict() {
+        let c = claim(CheckType::Grounded, "x", vec![ev("a", "text")]);
+        let mut cfg = VerifyConfig::new("m");
+        cfg.num_ctx = 16_384;
+        let full = ChatResponse {
+            prompt_eval_count: Some(16_000),
+            eval_count: Some(370),
+            ..resp(&reply_json("supported", "text"))
+        };
+        let e = verify_one(&Fake::new(vec![Ok(full)]), &cfg, &c, &[]).expect_err("overflow");
+        assert_eq!(e.code(), "context_overflow");
+        assert!(e.to_string().contains("16000") && e.to_string().contains("370"));
+        // One token under the slack is fine.
+        let ok = ChatResponse {
+            prompt_eval_count: Some(16_000),
+            eval_count: Some(367),
+            ..resp(&reply_json("supported", "text"))
+        };
+        assert!(verify_one(&Fake::new(vec![Ok(ok)]), &cfg, &c, &[]).is_ok());
+    }
+
+    #[test]
+    fn pins_stored_before_the_mode_existed_read_as_fixed() {
+        let v = sample_verdict("c1", VerdictKind::Supported);
+        let mut j = serde_json::to_value(&v.pins).expect("json");
+        j.as_object_mut().expect("obj").remove("num_ctx_mode");
+        let old: Pins = serde_json::from_value(j).expect("old pins");
+        assert_eq!(old.num_ctx_mode, "fixed");
+        assert_eq!(VerifyConfig::new("m").num_ctx_mode, CtxMode::Fixed);
     }
 }
