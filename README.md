@@ -180,8 +180,9 @@ here in Role OS's formats: game-designer, systems-designer, narrative-designer,
 lore-keeper. The budget cap is set only by a human:
 
 ```text
-offrig budget 15          set this project's cap (run in the project directory)
-offrig budget             show cap, committed, spent, remaining
+offrig budget --provider runpod 30       RunPod's cap (run in the project directory)
+offrig budget --provider openrouter 8    OpenRouter's cap
+offrig budget --show                     every cap, beside each provider's own balance
 ```
 
 Every launch starts a **watchdog**: a separate process that terminates the pod at the

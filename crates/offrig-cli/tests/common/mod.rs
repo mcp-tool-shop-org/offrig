@@ -241,6 +241,7 @@ impl Rig {
                 offrig_core::zed::api_key_env_name(&self.cfg.zed_provider),
                 "offrig-tunnel",
             )
+            .env_remove("OPENROUTER_API_KEY")
             .env_remove("RUST_BACKTRACE");
         c
     }

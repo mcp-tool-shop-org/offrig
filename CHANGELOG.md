@@ -6,6 +6,16 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **A cap per provider.** RunPod and OpenRouter hold separate money, so each now has its
+  own cap: `offrig budget --provider runpod <usd>` and `--provider openrouter <usd>`. A pod
+  is checked against the RunPod cap, an OpenRouter completion against the OpenRouter cap,
+  and both against the overall ceiling when one is set. `offrig budget --show` and
+  `offrig_status` print each cap with its committed, spent and remaining, beside the
+  balance the provider itself reports (RunPod's account balance, OpenRouter's credits),
+  and warn when a cap is above what the account holds. A project with one cap behaves as
+  before: that cap is the overall ceiling and each provider's starting cap.
+  `--clear-overall` drops the ceiling once both provider caps are set. Only a person sets
+  caps.
 - **`verify calibrate --keep-thinking`** writes each claim's thinking text to
   `thinking.jsonl` in the run directory, every reply included (a truncated one too), to
   show what a model was doing. It's a diagnosis aid: never scored, stored, or part of the

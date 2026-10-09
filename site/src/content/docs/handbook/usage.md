@@ -44,7 +44,7 @@ running.
 | `offrig zed [<profile>]` / `offrig zed-remove` | Write or remove offrig's provider in Zed's settings | no |
 | `offrig connect [/workspace]` | Open the pod in Zed for remote editing | the pod's rate |
 | `offrig down <profile> --yes` | Terminate the pod; its disk goes with it | stops billing |
-| `offrig budget [<usd>]` | Set this project's cap for agent sessions (human only). With no amount in a terminal, a menu; `--show` prints it. Never below spent + committed | no |
+| `offrig budget [--provider runpod\|openrouter] [<usd>]` | Set this project's caps (human only): one per provider, plus an optional overall ceiling. With no amount in a terminal, a menu; `--show` prints every cap beside each provider's own balance. Never below spent + committed | no |
 | `offrig stage <profile> --dc <DC> [--yes]` | Stage a recipe profile's weights on a network volume | **yes, monthly** |
 
 `offrig up` refuses when your runway with the pod running would be under one hour,

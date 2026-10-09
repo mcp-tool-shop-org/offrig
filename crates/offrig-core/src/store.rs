@@ -480,6 +480,72 @@ impl Budget {
     }
 }
 
+/// Who is paid. Derived from the ledger row, never stored: a row that references a
+/// plan is RunPod money, a row that references a completion is OpenRouter money
+/// (the ledger's CHECK makes it exactly one), so no schema change is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    RunPod,
+    OpenRouter,
+}
+
+impl Provider {
+    pub const ALL: [Provider; 2] = [Provider::RunPod, Provider::OpenRouter];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::RunPod => "runpod",
+            Provider::OpenRouter => "openrouter",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Provider> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "runpod" => Some(Provider::RunPod),
+            "openrouter" => Some(Provider::OpenRouter),
+            _ => None,
+        }
+    }
+
+    /// The `settings` key holding this provider's explicit cap.
+    fn setting_key(self) -> &'static str {
+        match self {
+            Provider::RunPod => "budget_cap.runpod",
+            Provider::OpenRouter => "budget_cap.openrouter",
+        }
+    }
+
+    /// The ledger predicate that selects this provider's rows.
+    fn ledger_filter(self) -> &'static str {
+        match self {
+            Provider::RunPod => "plan_id IS NOT NULL",
+            Provider::OpenRouter => "completion_id IS NOT NULL",
+        }
+    }
+}
+
+impl std::fmt::Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Which cap said no, and what it had left.
+/// Whether `amount` fits in `remaining`. Anything not a clear fit, NaN included, is a no.
+fn fits(amount: f64, remaining: f64) -> bool {
+    matches!(
+        amount.partial_cmp(&(remaining + 1e-9)),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    )
+}
+
+struct Refusal {
+    scope: String,
+    remaining: f64,
+    cap: f64,
+}
+
 /// One OpenRouter completion: its worst case committed against the budget before the
 /// call, its real charge recorded after (see docs/sidecar-design.md, "The OpenRouter lane").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -919,13 +985,24 @@ impl Store {
     /// committed to open plans: money allocated to a running plan stays allocated, so
     /// a cap change can't strand a training run mid-way. The lowest cap
     /// ([`Budget::floor`]) leaves nothing for a new plan.
+    ///
+    /// How the caps combine (the rule every check follows):
+    /// - Each provider has its own cap (`budget_cap.<provider>`). A provider with no
+    ///   explicit cap falls back to the overall `budget_cap`, so a project that only
+    ///   ever set one cap behaves exactly as before, with no migration.
+    /// - The overall `budget_cap` is also a ceiling over everything spent. If it is
+    ///   missing, there is no ceiling only when at least one provider cap is set
+    ///   explicitly; if nothing at all is set, the cap is 0 and nothing is allowed.
+    /// - A spend must fit BOTH its provider's remaining and the overall remaining
+    ///   (when a ceiling exists).
     pub fn set_budget_cap(&self, usd: f64) -> Result<()> {
         if !(usd.is_finite() && usd >= 0.0) {
             return Err(Error::Refused(format!(
                 "budget cap {usd} must be a non-negative amount"
             )));
         }
-        let b = self.budget()?;
+        // The floor comes from the ledger alone, so a corrupt cap can always be replaced.
+        let b = self.ledger_floor(None)?;
         if usd + 1e-9 < b.floor() {
             return Err(Error::Refused(format!(
                 "the cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open plans and completions. ${:.2} stops new paid sessions and leaves running ones alone",
@@ -935,27 +1012,112 @@ impl Store {
                 b.floor()
             )));
         }
+        self.put_setting("budget_cap", usd)
+    }
+
+    /// Set one provider's cap, under the same rule as [`Store::set_budget_cap`]: not
+    /// below that provider's own spent plus committed, and a non-negative finite amount.
+    pub fn set_provider_cap(&self, provider: Provider, usd: f64) -> Result<()> {
+        if !(usd.is_finite() && usd >= 0.0) {
+            return Err(Error::Refused(format!(
+                "{provider} budget cap {usd} must be a non-negative amount"
+            )));
+        }
+        let b = self.ledger_floor(Some(provider))?;
+        if usd + 1e-9 < b.floor() {
+            return Err(Error::Refused(format!(
+                "the {provider} cap can't go below ${:.2}: ${:.2} is spent and ${:.2} is committed to open {provider} plans and completions. ${:.2} stops new {provider} spending and leaves running work alone",
+                b.floor(),
+                b.spent,
+                b.committed,
+                b.floor()
+            )));
+        }
+        self.put_setting(provider.setting_key(), usd)
+    }
+
+    /// Remove the overall ceiling. Allowed only when every provider has its own explicit
+    /// cap; otherwise the provider without one would be left with no cap at all (it
+    /// would have been using the overall value).
+    pub fn clear_budget_cap(&self) -> Result<()> {
+        for p in Provider::ALL {
+            if self.cap_setting(p.setting_key())?.is_none() {
+                return Err(Error::Refused(format!(
+                    "the overall cap can't be cleared while the {p} cap is unset: it is the {p} cap today. Set it with `offrig budget --provider {p} <usd>` first"
+                )));
+            }
+        }
+        self.conn
+            .execute("DELETE FROM settings WHERE key = 'budget_cap'", [])
+            .map_err(db("clearing the overall budget cap"))?;
+        Ok(())
+    }
+
+    fn put_setting(&self, key: &str, usd: f64) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO settings(key, value) VALUES ('budget_cap', ?1)
+                "INSERT INTO settings(key, value) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![usd.to_string()],
+                params![key, usd.to_string()],
             )
             .map_err(db("setting the budget cap"))?;
         Ok(())
     }
 
-    fn budget_cap(&self) -> Result<f64> {
+    /// An explicit cap, or `None` when the key is absent (or not a number).
+    fn cap_setting(&self, key: &str) -> Result<Option<f64>> {
         let v: Option<String> = self
             .conn
             .query_row(
-                "SELECT value FROM settings WHERE key = 'budget_cap'",
-                [],
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
                 |r| r.get(0),
             )
             .optional()
             .map_err(db("reading the budget cap"))?;
-        Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0.0))
+        // Absent is "not set". Present but unreadable (garbage, NaN, inf, negative) fails
+        // closed: no spend is allowed until a person sets the cap again.
+        match v {
+            None => Ok(None),
+            Some(text) => match text.trim().parse::<f64>() {
+                Ok(c) if c.is_finite() && c >= 0.0 => Ok(Some(c)),
+                _ => Err(Error::Refused(format!(
+                    "the setting {key} holds {text:?}, which is not a usable cap; nothing is spent until a person sets it again with `offrig budget`"
+                ))),
+            },
+        }
+    }
+
+    /// The cap in force for one provider: its own, else the overall one, else 0.
+    fn provider_cap(&self, p: Provider) -> Result<f64> {
+        Ok(match self.cap_setting(p.setting_key())? {
+            Some(c) => c,
+            None => self.cap_setting("budget_cap")?.unwrap_or(0.0),
+        })
+    }
+
+    /// The overall cap in force, or `None` when there is no overall ceiling (no
+    /// overall cap, but at least one provider cap set explicitly).
+    fn overall_ceiling(&self) -> Result<Option<f64>> {
+        if let Some(c) = self.cap_setting("budget_cap")? {
+            return Ok(Some(c));
+        }
+        for p in Provider::ALL {
+            if self.cap_setting(p.setting_key())?.is_some() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(0.0))
+    }
+
+    /// True when an overall ceiling is in force.
+    pub fn has_overall_ceiling(&self) -> Result<bool> {
+        Ok(self.overall_ceiling()?.is_some())
+    }
+
+    /// True when the provider has its own explicit cap (not the overall fallback).
+    pub fn provider_cap_is_explicit(&self, p: Provider) -> Result<bool> {
+        Ok(self.cap_setting(p.setting_key())?.is_some())
     }
 
     // ---- records
@@ -1450,12 +1612,55 @@ impl Store {
 
     // ---- plans, budget, journal
 
+    /// The overall view. With an overall ceiling its cap is that ceiling; without one
+    /// the cap is the sum of the provider caps in force.
     pub fn budget(&self) -> Result<Budget> {
-        let cap = self.budget_cap()?;
+        let cap = match self.overall_ceiling()? {
+            Some(c) => c,
+            None => {
+                self.provider_cap(Provider::RunPod)? + self.provider_cap(Provider::OpenRouter)?
+            }
+        };
+        let (committed, spent) = self.ledger_totals(None)?;
+        Ok(Budget {
+            cap,
+            committed,
+            spent,
+            remaining: cap - committed - spent,
+        })
+    }
+
+    /// One provider's view: its cap in force, and only its own ledger rows.
+    pub fn budget_for(&self, provider: Provider) -> Result<Budget> {
+        let cap = self.provider_cap(provider)?;
+        let (committed, spent) = self.ledger_totals(Some(provider))?;
+        Ok(Budget {
+            cap,
+            committed,
+            spent,
+            remaining: cap - committed - spent,
+        })
+    }
+
+    /// Spent and committed from the ledger, without reading any cap.
+    fn ledger_floor(&self, provider: Option<Provider>) -> Result<Budget> {
+        let (committed, spent) = self.ledger_totals(provider)?;
+        Ok(Budget {
+            cap: 0.0,
+            committed,
+            spent,
+            remaining: 0.0,
+        })
+    }
+
+    fn ledger_totals(&self, provider: Option<Provider>) -> Result<(f64, f64)> {
+        let filter = provider.map_or("1 = 1", Provider::ledger_filter);
         let sum = |kind: &str| -> Result<f64> {
             self.conn
                 .query_row(
-                    "SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind = ?1",
+                    &format!(
+                        "SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind = ?1 AND {filter}"
+                    ),
                     params![kind],
                     |r| r.get(0),
                 )
@@ -1463,14 +1668,32 @@ impl Store {
         };
         let (commits, actuals, releases) = (sum("commit")?, sum("actual")?, sum("release")?);
         // A closed plan releases its whole commit and records its actual spend.
-        let committed = (commits - releases).max(0.0);
-        let spent = actuals;
-        Ok(Budget {
-            cap,
-            committed,
-            spent,
-            remaining: cap - committed - spent,
-        })
+        Ok(((commits - releases).max(0.0), actuals))
+    }
+
+    /// Does `amount` fit the provider's remaining AND the overall remaining (when an
+    /// overall ceiling exists)? `Some` names the cap that refused, the provider's first.
+    fn refusal(&self, provider: Provider, amount: f64) -> Result<Option<Refusal>> {
+        let p = self.budget_for(provider)?;
+        // Written so that anything not a clear "fits" (NaN included) refuses.
+        if !fits(amount, p.remaining) {
+            return Ok(Some(Refusal {
+                scope: format!("{provider} cap"),
+                remaining: p.remaining,
+                cap: p.cap,
+            }));
+        }
+        if self.overall_ceiling()?.is_some() {
+            let o = self.budget()?;
+            if !fits(amount, o.remaining) {
+                return Ok(Some(Refusal {
+                    scope: "overall cap".into(),
+                    remaining: o.remaining,
+                    cap: o.cap,
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// A plan prices the worst case (max price x max hours) and is refused if that
@@ -1485,12 +1708,11 @@ impl Store {
             ));
         }
         let worst = (p.max_price_hr * p.max_hours * 100.0).ceil() / 100.0;
-        let b = self.budget()?;
-        if worst > b.remaining + 1e-9 {
+        if let Some(r) = self.refusal(Provider::RunPod, worst)? {
             return Err(Error::Budget(format!(
-                "worst case ${worst:.2} ({}h at ${:.2}/hr) exceeds the ${:.2} left of the ${:.2} budget; \
-                 shorten max_hours, pick a cheaper profile, or raise the cap",
-                p.max_hours, p.max_price_hr, b.remaining, b.cap
+                "worst case ${worst:.2} ({}h at ${:.2}/hr) exceeds the ${:.2} left of the ${:.2} budget ({}); \
+                 shorten max_hours, pick a cheaper profile, or raise that cap",
+                p.max_hours, p.max_price_hr, r.remaining, r.cap, r.scope
             )));
         }
         self.conn
@@ -1556,28 +1778,43 @@ impl Store {
             "planned" => {}
             s => return Err(Error::Refused(format!("plan {id} is {s}; make a new plan"))),
         }
-        let b = self.budget()?;
-        if plan.worst_case > b.remaining + 1e-9 {
-            return Err(Error::Refused(format!(
-                "plan {id} needs ${:.2} but only ${:.2} of the budget is left",
-                plan.worst_case, b.remaining
-            )));
-        }
-        let tx = self
-            .conn
-            .unchecked_transaction()
+        // The check and the commit run under one write lock (`BEGIN IMMEDIATE`), as for
+        // completions, so a plan and a completion committed at once from two processes
+        // cannot both pass the shared overall ceiling.
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
             .map_err(db("starting a plan commit"))?;
-        tx.execute(
-            "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
-            params![id, plan.worst_case, now_unix()],
-        )
-        .map_err(db("writing a commit"))?;
-        tx.execute(
-            "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1",
-            params![id, now_unix()],
-        )
-        .map_err(db("marking the plan committed"))?;
-        tx.commit().map_err(db("committing a plan"))?;
+        let res = (|| -> Result<()> {
+            if let Some(r) = self.refusal(Provider::RunPod, plan.worst_case)? {
+                return Err(Error::Refused(format!(
+                    "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
+                    plan.worst_case, r.remaining, r.scope
+                )));
+            }
+            self.conn
+                .execute(
+                    "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
+                    params![id, plan.worst_case, now_unix()],
+                )
+                .map_err(db("writing a commit"))?;
+            self.conn
+                .execute(
+                    "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1",
+                    params![id, now_unix()],
+                )
+                .map_err(db("marking the plan committed"))?;
+            Ok(())
+        })();
+        match res {
+            Ok(()) => self
+                .conn
+                .execute_batch("COMMIT")
+                .map_err(db("committing a plan"))?,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
         self.plan(id)?
             .ok_or_else(|| Error::Refused("plan vanished after commit".into()))
     }
@@ -1831,18 +2068,18 @@ impl Store {
     }
 
     fn commit_completion_locked(&self, c: &NewCompletion) -> Result<i64> {
-        let b = self.budget()?;
-        if c.worst_case > b.remaining + 1e-9 {
+        if let Some(r) = self.refusal(Provider::OpenRouter, c.worst_case)? {
             return Err(Error::Budget(format!(
                 "worst case ${:.2} (at most {} tokens in and {} out, at ${}/M in and ${}/M out) \
-                 exceeds the ${:.2} left of the ${:.2} budget; lower max_tokens or ask Mike to raise the cap",
+                 exceeds the ${:.2} left of the ${:.2} budget ({}); lower max_tokens or ask Mike to raise that cap",
                 c.worst_case,
                 c.input_bound,
                 c.max_tokens,
                 c.price_in_m,
                 c.price_out_m,
-                b.remaining,
-                b.cap
+                r.remaining,
+                r.cap,
+                r.scope
             )));
         }
         let now = now_unix();
@@ -2768,6 +3005,61 @@ mod tests {
         assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");
     }
 
+    #[test]
+    fn an_unreadable_cap_refuses_every_spend() {
+        for key in ["budget_cap", "budget_cap.runpod", "budget_cap.openrouter"] {
+            for bad in ["garbage", "NaN", "inf", "-1"] {
+                let s = store();
+                s.set_provider_cap(Provider::RunPod, 50.0).expect("cap");
+                s.set_provider_cap(Provider::OpenRouter, 50.0).expect("cap");
+                s.set_budget_cap(50.0).expect("cap");
+                s.conn
+                    .execute(
+                        "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        params![key, bad],
+                    )
+                    .expect("corrupt");
+                let plan = s.create_plan(NewPlan {
+                    profile: "p".into(),
+                    gpu_count: 1,
+                    gpu_types: vec!["NVIDIA GeForce RTX 5090".into()],
+                    max_hours: 0.1,
+                    max_price_hr: 0.1,
+                    note: None,
+                });
+                let completion = s.commit_completion(new_completion(0.01));
+                // A provider key only governs its own provider; the overall key governs both.
+                let plan_bad = key != "budget_cap.openrouter";
+                let completion_bad = key != "budget_cap.runpod";
+                assert_eq!(plan.is_err(), plan_bad, "{key}={bad}: plan {plan:?}");
+                assert_eq!(
+                    completion.is_err(),
+                    completion_bad,
+                    "{key}={bad}: completion {completion:?}"
+                );
+                if plan_bad {
+                    let e = plan.expect_err("refused").to_string();
+                    assert!(e.contains(key), "{e}");
+                }
+                // A person can always replace the broken value.
+                match key {
+                    "budget_cap" => s.set_budget_cap(20.0).expect("reset"),
+                    "budget_cap.runpod" => {
+                        s.set_provider_cap(Provider::RunPod, 20.0).expect("reset")
+                    }
+                    _ => s
+                        .set_provider_cap(Provider::OpenRouter, 20.0)
+                        .expect("reset"),
+                }
+                assert!(
+                    s.commit_completion(new_completion(0.01)).is_ok(),
+                    "{key}={bad} after reset"
+                );
+            }
+        }
+    }
+
     fn new_completion(worst: f64) -> NewCompletion {
         NewCompletion {
             model: "moonshotai/kimi-k3".into(),
@@ -2886,6 +3178,163 @@ mod tests {
             note: None,
         });
         assert!(matches!(plan, Err(Error::Budget(_))), "1.96 > 1.49 left");
+    }
+
+    fn jam_plan(s: &Store, hours: f64, price: f64) -> Plan {
+        s.create_plan(NewPlan {
+            profile: "jam".into(),
+            gpu_count: 1,
+            gpu_types: vec![],
+            max_hours: hours,
+            max_price_hr: price,
+            note: None,
+        })
+        .expect("plan")
+    }
+
+    #[test]
+    fn ledger_rows_belong_to_the_provider_they_reference() {
+        let s = store();
+        s.set_budget_cap(100.0).expect("cap");
+        let p = jam_plan(&s, 2.0, 1.0);
+        s.commit_plan(p.id).expect("commit");
+        s.commit_completion(new_completion(3.01))
+            .expect("completion");
+        let (rp, or) = (
+            s.budget_for(Provider::RunPod).expect("rp"),
+            s.budget_for(Provider::OpenRouter).expect("or"),
+        );
+        assert!((rp.committed - 2.0).abs() < 1e-9, "{rp:?}");
+        assert!((or.committed - 3.01).abs() < 1e-9, "{or:?}");
+        s.close_plan(p.id, 0.5).expect("close");
+        let rp = s.budget_for(Provider::RunPod).expect("rp");
+        assert!((rp.spent - 0.5).abs() < 1e-9 && rp.committed.abs() < 1e-9);
+        assert!(s.budget_for(Provider::OpenRouter).expect("or").spent.abs() < 1e-9);
+        let all = s.budget().expect("all");
+        assert!((all.committed - 3.01).abs() < 1e-9 && (all.spent - 0.5).abs() < 1e-9);
+        assert_eq!(Provider::parse(" RunPod "), Some(Provider::RunPod));
+        assert_eq!(Provider::parse("openrouter"), Some(Provider::OpenRouter));
+        assert_eq!(Provider::parse("aws"), None);
+    }
+
+    #[test]
+    fn a_provider_without_its_own_cap_falls_back_to_the_overall_one() {
+        let s = store();
+        // Nothing set: nothing allowed, as before.
+        assert_eq!(s.budget().expect("b").cap, 0.0);
+        assert_eq!(s.budget_for(Provider::RunPod).expect("b").cap, 0.0);
+        assert!(s.has_overall_ceiling().expect("c"));
+        s.set_budget_cap(15.0).expect("overall");
+        for p in Provider::ALL {
+            assert_eq!(s.budget_for(p).expect("b").cap, 15.0, "{p}");
+            assert!(!s.provider_cap_is_explicit(p).expect("e"));
+        }
+        s.set_provider_cap(Provider::OpenRouter, 8.0).expect("or");
+        assert_eq!(s.budget_for(Provider::OpenRouter).expect("b").cap, 8.0);
+        assert_eq!(s.budget_for(Provider::RunPod).expect("b").cap, 15.0);
+        assert_eq!(
+            s.budget().expect("b").cap,
+            15.0,
+            "the overall view is unchanged"
+        );
+    }
+
+    #[test]
+    fn only_provider_caps_means_no_overall_ceiling() {
+        let s = store();
+        s.set_provider_cap(Provider::RunPod, 30.0).expect("rp");
+        assert!(!s.has_overall_ceiling().expect("c"));
+        // The other provider has no cap at all: 0.
+        assert_eq!(s.budget_for(Provider::OpenRouter).expect("b").cap, 0.0);
+        assert!(s.commit_completion(new_completion(0.01)).is_err());
+        s.set_provider_cap(Provider::OpenRouter, 8.0).expect("or");
+        assert_eq!(s.budget().expect("b").cap, 38.0, "sum of the provider caps");
+        s.commit_completion(new_completion(3.01)).expect("fits");
+        let p = jam_plan(&s, 10.0, 2.0);
+        assert!((p.worst_case - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_spend_must_fit_its_provider_cap_and_the_overall_cap() {
+        let s = store();
+        s.set_budget_cap(10.0).expect("overall");
+        s.set_provider_cap(Provider::RunPod, 6.0).expect("rp");
+        s.set_provider_cap(Provider::OpenRouter, 8.0).expect("or");
+        // The provider refuses: 7 > 6 left of the RunPod cap, though 10 is left overall.
+        let err = s
+            .create_plan(NewPlan {
+                profile: "jam".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 7.0,
+                max_price_hr: 1.0,
+                note: None,
+            })
+            .expect_err("provider cap");
+        assert!(matches!(err, Error::Budget(_)), "{err}");
+        assert!(err.to_string().contains("runpod cap"), "{err}");
+        // The overall ceiling refuses: 5 fits OpenRouter's 8, then 4 more does not fit 10.
+        let p = jam_plan(&s, 5.0, 1.0);
+        s.commit_plan(p.id).expect("5 of 6 and of 10");
+        let err = s
+            .commit_completion(new_completion(5.01))
+            .expect_err("overall cap");
+        assert!(err.to_string().contains("overall cap"), "{err}");
+        assert!(err.to_string().contains("$5.00 left"), "{err}");
+        assert!(s.open_completions().expect("open").is_empty());
+        // OpenRouter's own cap refuses when it is the tighter one.
+        s.set_provider_cap(Provider::OpenRouter, 2.0)
+            .expect("lower");
+        let err = s
+            .commit_completion(new_completion(3.01))
+            .expect_err("or cap");
+        assert!(err.to_string().contains("openrouter cap"), "{err}");
+        s.commit_completion(new_completion(2.0)).expect("fits both");
+    }
+
+    #[test]
+    fn provider_floors_are_per_provider() {
+        let s = store();
+        s.set_budget_cap(50.0).expect("overall");
+        s.commit_completion(new_completion(3.01)).expect("commit");
+        let p = jam_plan(&s, 2.0, 1.0);
+        s.commit_plan(p.id).expect("commit");
+        // OpenRouter holds 3.01 and RunPod 2.00: each floor is its own.
+        let err = s
+            .set_provider_cap(Provider::OpenRouter, 3.0)
+            .expect_err("below its floor");
+        assert!(
+            err.to_string()
+                .contains("openrouter cap can't go below $3.01"),
+            "{err}"
+        );
+        s.set_provider_cap(Provider::OpenRouter, 3.01)
+            .expect("at floor");
+        s.set_provider_cap(Provider::RunPod, 2.0)
+            .expect("runpod floor is 2.00, not 5.01");
+        assert!(s.set_provider_cap(Provider::RunPod, 1.99).is_err());
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                s.set_provider_cap(Provider::RunPod, bad),
+                Err(Error::Refused(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_overall_cap_clears_only_when_every_provider_has_its_own() {
+        let s = store();
+        s.set_budget_cap(15.0).expect("overall");
+        let err = s.clear_budget_cap().expect_err("no provider caps");
+        assert!(err.to_string().contains("runpod"), "{err}");
+        s.set_provider_cap(Provider::RunPod, 10.0).expect("rp");
+        let err = s.clear_budget_cap().expect_err("openrouter unset");
+        assert!(err.to_string().contains("openrouter"), "{err}");
+        s.set_provider_cap(Provider::OpenRouter, 5.0).expect("or");
+        s.clear_budget_cap().expect("both set");
+        assert!(!s.has_overall_ceiling().expect("c"));
+        assert_eq!(s.budget_for(Provider::RunPod).expect("b").cap, 10.0);
+        s.clear_budget_cap().expect("clearing twice is harmless");
     }
 
     #[test]

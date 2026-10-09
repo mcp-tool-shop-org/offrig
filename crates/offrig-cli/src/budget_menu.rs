@@ -2,13 +2,15 @@
 //! or stop new spending. Money already given to a run is never taken back: the cap
 //! can't go below spent plus committed (`Budget::floor`), so a running plan always
 //! keeps its allocation. Scripts and agents (no terminal on stdout) get the plain
-//! one-line budget, as before, and `offrig budget <USD>` still sets the cap directly,
-//! under the same floor.
+//! budget lines, and `offrig budget <USD>` still sets the overall cap directly, under
+//! the same floor. The menu manages the overall cap only; per-provider caps are set
+//! with `offrig budget --provider runpod|openrouter <USD>`.
 
 use std::io::{BufRead, Write};
 
 use anyhow::Result;
-use offrig_core::store::{Budget, Store};
+use offrig_core::balances::{self, Balance};
+use offrig_core::store::{Budget, Provider, Store};
 
 /// One line: cap, committed, spent, remaining.
 pub fn line(b: &Budget) -> String {
@@ -16,6 +18,45 @@ pub fn line(b: &Budget) -> String {
         "cap ${:.2}  committed ${:.2}  spent ${:.2}  remaining ${:.2}",
         b.cap, b.committed, b.spent, b.remaining
     )
+}
+
+/// The budget report: one line per provider (cap, committed, spent, remaining and the
+/// balance the provider itself reports), the overall line, then a WARNING line for each
+/// provider whose cap is above its reported balance. `balance` is called once per
+/// provider and is best effort: an unknown balance is shown with its reason.
+pub fn report(store: &Store, balance: &dyn Fn(Provider) -> Balance) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    let mut warnings = Vec::new();
+    for p in Provider::ALL {
+        let b = store.budget_for(p)?;
+        let bal = balance(p);
+        let own = if store.provider_cap_is_explicit(p)? {
+            ""
+        } else {
+            " (overall cap)"
+        };
+        lines.push(format!(
+            "{:<10}  {}{own}  balance {}",
+            p.as_str(),
+            line(&b),
+            bal.text()
+        ));
+        if let Some(w) = balances::cap_exceeds_balance(p, b.cap, &bal) {
+            warnings.push(w);
+        }
+    }
+    let kind = if store.has_overall_ceiling()? {
+        ""
+    } else {
+        " (no ceiling; sum of provider caps)"
+    };
+    lines.push(format!(
+        "{:<10}  {}{kind}",
+        "overall",
+        line(&store.budget()?)
+    ));
+    lines.extend(warnings);
+    Ok(lines)
 }
 
 /// Run the menu until the person quits (or input ends). `project` is a display name
@@ -251,6 +292,55 @@ y
             s.budget().expect("b").cap,
             50.0,
             "no confirmation, no change"
+        );
+    }
+
+    #[test]
+    fn the_report_has_a_line_per_provider_then_the_overall_and_warns_above_the_balance() {
+        let (_d, s) = store();
+        s.set_provider_cap(Provider::RunPod, 30.0).expect("rp");
+        s.set_provider_cap(Provider::OpenRouter, 20.0).expect("or");
+        let bal = |p: Provider| match p {
+            Provider::RunPod => Balance::Known(31.1),
+            Provider::OpenRouter => Balance::Known(8.25),
+        };
+        let r = report(&s, &bal).expect("report");
+        assert_eq!(r.len(), 4, "{r:#?}");
+        assert!(
+            r[0].starts_with("runpod") && r[0].contains("cap $30.00"),
+            "{}",
+            r[0]
+        );
+        assert!(r[0].contains("balance $31.10") && !r[0].contains("overall cap"));
+        assert!(r[1].starts_with("openrouter") && r[1].contains("balance $8.25"));
+        assert!(r[2].starts_with("overall") && r[2].contains("cap $50.00"));
+        assert!(
+            r[3].starts_with("WARNING") && r[3].contains("openrouter"),
+            "{}",
+            r[3]
+        );
+        assert!(
+            !r.iter()
+                .any(|l| l.starts_with("WARNING") && l.contains("runpod"))
+        );
+    }
+
+    #[test]
+    fn an_unknown_balance_shows_why_and_a_fallback_cap_says_so() {
+        let (_d, s) = store();
+        let none = |_: Provider| Balance::Unknown("OPENROUTER_API_KEY is not set".into());
+        let r = report(&s, &none).expect("report");
+        assert!(r[0].contains("(overall cap)"), "{}", r[0]);
+        assert!(r[1].contains("balance unknown (OPENROUTER_API_KEY is not set)"));
+        assert_eq!(r.len(), 3, "no warning without a known balance");
+        s.set_provider_cap(Provider::RunPod, 1.0).expect("rp");
+        s.set_provider_cap(Provider::OpenRouter, 1.0).expect("or");
+        s.clear_budget_cap().expect("clear");
+        let r = report(&s, &none).expect("report");
+        assert!(
+            r[2].contains("no ceiling") && r[2].contains("cap $2.00"),
+            "{}",
+            r[2]
         );
     }
 
