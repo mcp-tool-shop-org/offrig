@@ -51,10 +51,11 @@ const TIMED_OUT_TWICE: &str = "timed out twice; long think or stuck server";
 /// it answered before, is failing on that model's reply (Ollama cancels the task
 /// mid-generation), so it counts against the model, as a repeated timeout does. A server
 /// that is down or out of memory fails the check too, so nothing is charged to the model.
-const SERVER_ERROR_TWICE: &str = "server error (5xx) twice on this claim; the reply, not the wire";
+const SERVER_ERROR_TWICE: &str =
+    "server error or dropped reply twice on this claim; the reply, not the wire";
 
 /// What the default rule counts against the model, stated wherever its result shows.
-pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
+pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error or dropped reply) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
 
 // ---- Settings
 
@@ -811,10 +812,14 @@ pub fn run(
             Err(e) if is_transport(&e) => {
                 // Not an outcome: the server, not the model, failed. Nothing is
                 // recorded, so a resume tries the claim again.
-                let server = is_server_error(&e);
+                // A 5xx, or a connection that drops mid-reply: Ollama can abort one
+                // generation with a 500 whose body never arrives, which the client sees as
+                // a network failure. Both are judged by the same repeat-and-health-check
+                // rule; a server that is down fails the check, so nothing is charged.
+                let server = !e.is_client_timeout();
                 transport_note = Some(if e.is_client_timeout() {
                     "timeout"
-                } else if server {
+                } else if is_server_error(&e) {
                     "server (5xx)"
                 } else {
                     "network"
@@ -2118,7 +2123,7 @@ mod tests {
         );
         let err = g2.error.as_deref().expect("value");
         assert!(
-            err.contains("server error (5xx) twice") && err.contains("http 500"),
+            err.contains("server error or dropped reply twice") && err.contains("http 500"),
             "{err}"
         );
         assert_eq!(rep.unusable.get("grounded"), Some(&1));
@@ -2158,6 +2163,54 @@ mod tests {
             ),
             (Some(1), Some(1))
         );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_reply_dropped_twice_on_one_claim_is_recorded_once_the_server_is_healthy() {
+        // Ollama aborting one generation can reach the client as a dropped connection,
+        // not a 500. Two on the same claim, with the server answering others, count.
+        let dir = tmp("dropped");
+        let chat = Fake::new(|id, _| {
+            if id == "g2" {
+                return Err(net_error());
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        let rep = go(&settings(), &dir, true, &chat, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("complete", 0));
+        let lines = read_lines(&dir, false).expect("lines");
+        let g2 = lines.iter().find(|l| l.claim_id == "g2").expect("g2");
+        assert_eq!(
+            (g2.status.as_str(), g2.error_code.as_deref()),
+            ("unusable", Some("server_error"))
+        );
+        assert!(
+            g2.error
+                .as_deref()
+                .expect("value")
+                .contains("dropped reply twice")
+        );
+        assert_eq!(rep.default_result, "fail");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_server_that_cannot_be_reached_on_resume_charges_nothing() {
+        let dir = tmp("refused-later");
+        let first = Fake::new(|id, _| {
+            if id == "g2" {
+                return Err(net_error());
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        go(&settings(), &dir, false, &first, &Srv::new()).expect("run");
+        let down = Fake::new(|_, _| Err(net_error()));
+        let rep = go(&settings(), &dir, true, &down, &Srv::new()).expect("resume");
+        assert_eq!((rep.status.as_str(), rep.pending), ("incomplete", 1));
+        assert!(rep.unusable.is_empty());
         cleanup(&[&dir]);
     }
 
