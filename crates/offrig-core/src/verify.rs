@@ -493,14 +493,70 @@ pub fn normalise(s: &str) -> String {
 }
 
 /// A quote shorter than this, once normalised, proves nothing: a word like "the" is
-/// found in almost any passage. Such a quote counts as not found.
+/// found in almost any passage. Such a quote counts as not found, unless it is a whole
+/// evidence line (see [`MIN_LINE_QUOTE_CHARS`]).
 pub const MIN_QUOTE_CHARS: usize = 12;
 
-/// True when the normalised quote is at least [`MIN_QUOTE_CHARS`] long and sits inside
-/// one evidence passage, normalised.
+/// The shortest quote accepted when it is a complete evidence line, such as `return v`
+/// or `x += 1`: a whole line of code is specific where a fragment of prose is not.
+pub const MIN_LINE_QUOTE_CHARS: usize = 5;
+
+/// The version of the quote rule, pinned into every verdict. 1 matched the quote in the
+/// passage text only. 2 also matches it with each line's leading diff and comment
+/// markers removed, and accepts a short quote that is a whole evidence line.
+pub const QUOTE_RULE: u32 = 2;
+
+/// One evidence line without its leading markers: a diff `+` or `-`, then a comment
+/// marker (`///`, `//!`, `//`, `#`, `*`, `--`). Models quote the words, not the markers
+/// that wrap them, and a quote across a wrapped `///` comment would otherwise never match.
+fn strip_markers(line: &str) -> &str {
+    let mut t = line.trim_start();
+    if let Some(rest) = t.strip_prefix(['+', '-'])
+        && !rest.starts_with(['+', '-'])
+    {
+        t = rest.trim_start();
+    }
+    for m in ["///", "//!", "//", "#", "*", "--"] {
+        if let Some(rest) = t.strip_prefix(m) {
+            return rest.trim_start();
+        }
+    }
+    t
+}
+
+/// A passage with every line's leading markers removed, then normalised.
+fn normalise_unmarked(text: &str) -> String {
+    normalise(
+        &text
+            .lines()
+            .map(strip_markers)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// True when the normalised quote sits inside one evidence passage, normalised, either as
+/// written or with each line's leading diff and comment markers removed; and it is at
+/// least [`MIN_QUOTE_CHARS`] long, or is a whole evidence line of at least
+/// [`MIN_LINE_QUOTE_CHARS`] with a letter or digit in it.
 pub fn quote_found(quote: &str, evidence: &[Passage]) -> bool {
     let q = normalise(quote);
-    q.chars().count() >= MIN_QUOTE_CHARS && evidence.iter().any(|p| normalise(&p.text).contains(&q))
+    let len = q.chars().count();
+    if len == 0 {
+        return false;
+    }
+    if len >= MIN_QUOTE_CHARS {
+        return evidence
+            .iter()
+            .any(|p| normalise(&p.text).contains(&q) || normalise_unmarked(&p.text).contains(&q));
+    }
+    len >= MIN_LINE_QUOTE_CHARS
+        && q.chars().any(char::is_alphanumeric)
+        && evidence.iter().any(|p| {
+            p.text
+                .lines()
+                .any(|l| normalise(l) == q || normalise(strip_markers(l)) == q)
+        })
 }
 
 /// The reason recorded when the quote rule turns a verdict into `cannot_tell`.
@@ -551,8 +607,16 @@ pub struct Pins {
     pub num_predict: i32,
     /// False when the reply was parsed from plain text.
     pub structured: bool,
+    /// The quote rule the verdict was judged by ([`QUOTE_RULE`]). Verdicts stored before
+    /// it was pinned were judged by rule 1.
+    #[serde(default = "quote_rule_1")]
+    pub quote_rule: u32,
     pub gpu_type: Option<String>,
     pub plan_id: Option<i64>,
+}
+
+fn quote_rule_1() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -735,6 +799,7 @@ fn finish(
             num_ctx: cfg.num_ctx,
             num_predict: cfg.num_predict,
             structured: cfg.structured,
+            quote_rule: QUOTE_RULE,
             gpu_type: cfg.gpu_type.clone(),
             plan_id: cfg.plan_id,
         },
@@ -1094,6 +1159,72 @@ mod tests {
         assert!(!quote_found("the", &e), "one common word proves nothing");
         assert!(!quote_found("the next", &e), "under the minimum length");
         assert!(quote_found("cleared on the next start", &e));
+    }
+
+    #[test]
+    fn a_short_quote_that_is_a_whole_line_is_found() {
+        let e = [passage("p", "def f(v):\n    v = v * 3\n    return v\n}")];
+        assert!(quote_found("v = v * 3", &e));
+        assert!(quote_found("return v", &e));
+        assert!(
+            !quote_found("v * 3", &e),
+            "a fragment of a line, under the minimum"
+        );
+        assert!(
+            !quote_found("}", &e),
+            "a brace is a whole line but proves nothing"
+        );
+        assert!(!quote_found("v = v", &e), "not the whole line");
+        let d = [passage("d", "@@ -1,3 +1,3 @@\n-    x += 1\n+    x += 2")];
+        assert!(
+            quote_found("x += 2", &d),
+            "a whole diff line, marker removed"
+        );
+    }
+
+    #[test]
+    fn quotes_match_across_comment_and_diff_markers() {
+        let e = [passage(
+            "p",
+            "/// Lane ports are two apart: the plain lane uses 11435 and\n/// the handoff runner's second tunnel the next one.\nfn ports() {}",
+        )];
+        assert!(quote_found(
+            "Lane ports are two apart: the plain lane uses 11435 and the handoff runner's second tunnel",
+            &e
+        ));
+        let d = [passage(
+            "d",
+            "-    // retries twice before giving up\n+    // retries three times before giving up",
+        )];
+        assert!(quote_found("retries three times before giving up", &d));
+        assert!(
+            quote_found("+    // retries three times", &d),
+            "the raw text still matches"
+        );
+        let py = [passage(
+            "py",
+            "# The budget is checked\n# before every launch.",
+        )];
+        assert!(quote_found(
+            "The budget is checked before every launch.",
+            &py
+        ));
+        // Still verbatim: paraphrase and elision are not found.
+        assert!(!quote_found("retries 3 times before giving up", &d));
+        assert!(!quote_found("Lane ports ... second tunnel", &e));
+        // A marker inside a line is text, not a marker.
+        let m = [passage("m", "x = a - b // the difference")];
+        assert!(!quote_found("x = a b the difference", &m));
+    }
+
+    #[test]
+    fn markers_are_removed_only_at_the_start_of_a_line() {
+        assert_eq!(strip_markers("  /// doc"), "doc");
+        assert_eq!(strip_markers("+// added"), "added");
+        assert_eq!(strip_markers("- # removed"), "removed");
+        assert_eq!(strip_markers("--- a/file.rs"), "- a/file.rs");
+        assert_eq!(strip_markers("a // b"), "a // b");
+        assert_eq!(strip_markers(" * item"), "item");
     }
 
     fn raw(verdict: VerdictKind, quote: &str) -> RawReply {

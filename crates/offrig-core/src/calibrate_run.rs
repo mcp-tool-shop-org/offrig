@@ -195,6 +195,7 @@ impl Settings {
             "temperature": self.temperature,
             "num_ctx": self.num_ctx,
             "num_predict": self.num_predict,
+            "quote_rule": crate::verify::QUOTE_RULE,
         })
     }
 }
