@@ -12,7 +12,9 @@
 //! Nothing here touches the network or the disk. `verify_one` talks to a
 //! [`ChatBackend`], so the tests use a fake and the real one is [`Ollama`].
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -659,6 +661,31 @@ pub struct Verdict {
     pub pins: Pins,
     pub timing: Timing,
     pub untrusted: bool,
+    /// How a thinking policy reached this verdict. Absent for a fixed think level, and for
+    /// verdicts stored before policies existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<Escalation>,
+}
+
+/// What an escalating think policy did for one claim: the first call, whether a second was
+/// made, and why a fallback verdict was given when it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Escalation {
+    pub first_think: String,
+    /// The first call's final verdict (after the quote rule); None when it failed.
+    pub first_verdict: Option<VerdictKind>,
+    /// The first call's error code (`truncated` or `bad_verdict`), when it failed.
+    pub first_error: Option<String>,
+    /// Whether a second call was made.
+    pub escalated: bool,
+    pub then_think: String,
+    /// The second call's final verdict, when it answered (even if a loop then overruled it).
+    pub then_verdict: Option<VerdictKind>,
+    /// `truncated`, `bad_verdict` or `loop` when the second call gave no usable answer and
+    /// the verdict is the `think_fallback:<..>` cannot_tell.
+    pub fallback: Option<String>,
+    pub first_eval_count: u64,
+    pub then_eval_count: u64,
 }
 
 // ---- Running one check
@@ -819,6 +846,9 @@ pub struct VerifyConfig {
     pub structured: bool,
     pub gpu_type: Option<String>,
     pub plan_id: Option<i64>,
+    /// Under an escalating think policy, treat a looping second reply as no answer (see
+    /// [`thinking_loops`]). Off by default: it is turned on per model after a false-hit check.
+    pub loop_stop: bool,
 }
 
 impl VerifyConfig {
@@ -838,6 +868,7 @@ impl VerifyConfig {
             structured: true,
             gpu_type: None,
             plan_id: None,
+            loop_stop: false,
         }
     }
 }
@@ -929,29 +960,88 @@ pub fn verify_one(
     claim: &Claim,
     retrieved: &[Passage],
 ) -> Result<Verdict> {
-    let (mut req, evidence) = build_request(cfg, claim, retrieved)?;
+    verify_inner(chat, cfg, claim, retrieved).result
+}
+
+/// What one `verify_one` call produced, with what a thinking policy needs besides the
+/// verdict: the reply's thinking text and the timing of the calls made, failed or not.
+struct Inner {
+    result: Result<Verdict>,
+    /// Thinking of every reply read (a schema retry makes two); for a truncated reply, the
+    /// thinking the error carries. Empty when the call failed before any reply.
+    thinking: String,
+    /// Replies that came back and were counted: on success exactly the verdict's timing.
+    /// On a failure it also counts a reply cut at its token limit.
+    timing: Timing,
+}
+
+fn verify_inner(
+    chat: &dyn ChatBackend,
+    cfg: &VerifyConfig,
+    claim: &Claim,
+    retrieved: &[Passage],
+) -> Inner {
+    let (mut req, evidence) = match build_request(cfg, claim, retrieved) {
+        Ok(x) => x,
+        Err(e) => {
+            return Inner {
+                result: Err(e),
+                thinking: String::new(),
+                timing: Timing::default(),
+            };
+        }
+    };
     let mut timing = Timing::default();
+    let mut thinking = String::new();
     let mut last = String::new();
     for attempt in 1..=2 {
-        let resp = chat.chat(&req)?;
+        let resp = match chat.chat(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Error::Truncated { thinking: t, .. } = &e {
+                    push_thinking(&mut thinking, t);
+                }
+                return Inner {
+                    result: Err(e),
+                    thinking,
+                    timing,
+                };
+            }
+        };
+        push_thinking(&mut thinking, &resp.thinking);
         if resp.done_reason == "length" {
             // The reply stopped at a limit: the window filling is the server's doing,
             // reaching num_predict is the reply's own.
-            return Err(context_overflow(cfg.num_ctx, Some(cfg.num_predict), &resp)
-                .unwrap_or_else(|| {
+            let err =
+                context_overflow(cfg.num_ctx, Some(cfg.num_predict), &resp).unwrap_or_else(|| {
                     Error::truncated(format!(
                         "{} stopped at its token limit after {} tokens; raise num_predict",
                         cfg.model,
                         resp.eval_count.unwrap_or(0)
                     ))
-                }));
+                });
+            timing.attempts = attempt;
+            timing.eval_count += resp.eval_count.unwrap_or(0);
+            timing.prompt_eval_count += resp.prompt_eval_count.unwrap_or(0);
+            timing.total_duration_ns += resp.total_duration.unwrap_or(0);
+            return Inner {
+                result: Err(err),
+                thinking,
+                timing,
+            };
         }
         timing.attempts = attempt;
         timing.eval_count += resp.eval_count.unwrap_or(0);
         timing.prompt_eval_count += resp.prompt_eval_count.unwrap_or(0);
         timing.total_duration_ns += resp.total_duration.unwrap_or(0);
         match parse_reply(&resp.content) {
-            Ok(reply) => return Ok(finish(cfg, claim, &evidence, reply, timing)),
+            Ok(reply) => {
+                return Inner {
+                    result: Ok(finish(cfg, claim, &evidence, reply, timing)),
+                    thinking,
+                    timing,
+                };
+            }
             Err(why) => {
                 req.messages.push(Msg::new("assistant", resp.content));
                 req.messages
@@ -960,10 +1050,24 @@ pub fn verify_one(
             }
         }
     }
-    Err(Error::BadVerdict(format!(
-        "claim {}: {last}, on both attempts",
-        claim.id
-    )))
+    Inner {
+        result: Err(Error::BadVerdict(format!(
+            "claim {}: {last}, on both attempts",
+            claim.id
+        ))),
+        thinking,
+        timing,
+    }
+}
+
+fn push_thinking(all: &mut String, t: &str) {
+    if t.is_empty() {
+        return;
+    }
+    if !all.is_empty() {
+        all.push('\n');
+    }
+    all.push_str(t);
 }
 
 fn finish(
@@ -1007,6 +1111,368 @@ fn finish(
         },
         timing,
         untrusted: true,
+        escalation: None,
+    }
+}
+
+// ---- The thinking policy
+
+/// `--think-policy` grammar, for the error messages.
+const POLICY_GRAMMAR: &str =
+    "off|on|low|medium|high, or escalate:<first>><then> (for example escalate:off>on)";
+
+fn parse_level(s: &str) -> Option<ThinkLevel> {
+    match s {
+        "off" => Some(ThinkLevel::Off),
+        "on" => Some(ThinkLevel::On),
+        "low" => Some(ThinkLevel::Low),
+        "medium" => Some(ThinkLevel::Medium),
+        "high" => Some(ThinkLevel::High),
+        _ => None,
+    }
+}
+
+/// How much a verifier thinks about one claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkPolicy {
+    /// One call at one level: the original behaviour.
+    Fixed(ThinkLevel),
+    /// Ask at `first`. An `unsupported` answer stands (a false reject is the cheap error).
+    /// Anything else, including a first call that broke its own reply, is asked again at
+    /// `then` ("think before accepting"), with `then_num_predict` as the reply limit when
+    /// given. The second answer stands unless it is broken or loops, in which case the
+    /// verdict is a `think_fallback:<why>` cannot_tell for a person: never the first call's
+    /// `supported`.
+    Escalate {
+        first: ThinkLevel,
+        then: ThinkLevel,
+        then_num_predict: Option<i32>,
+    },
+}
+
+impl ThinkPolicy {
+    /// Parse `off|on|low|medium|high` or `escalate:<first>><then>`.
+    pub fn parse(s: &str) -> Result<Self> {
+        let bad = || Error::Refused(format!("think policy must be {POLICY_GRAMMAR}, not {s:?}"));
+        if let Some(rest) = s.strip_prefix("escalate:") {
+            let (a, b) = rest.split_once('>').ok_or_else(bad)?;
+            return match (parse_level(a), parse_level(b)) {
+                (Some(first), Some(then)) => Ok(Self::Escalate {
+                    first,
+                    then,
+                    then_num_predict: None,
+                }),
+                _ => Err(bad()),
+            };
+        }
+        parse_level(s).map(Self::Fixed).ok_or_else(bad)
+    }
+
+    /// The spec string; `parse` reads it back. The escalation call's reply limit is not
+    /// part of it (it is its own setting).
+    pub fn as_str(&self) -> String {
+        match self {
+            Self::Fixed(l) => l.as_str().to_string(),
+            Self::Escalate { first, then, .. } => {
+                format!("escalate:{}>{}", first.as_str(), then.as_str())
+            }
+        }
+    }
+
+    /// The level of the first (or only) call.
+    pub fn first_level(&self) -> ThinkLevel {
+        match self {
+            Self::Fixed(l) => *l,
+            Self::Escalate { first, .. } => *first,
+        }
+    }
+
+    pub fn is_escalate(&self) -> bool {
+        matches!(self, Self::Escalate { .. })
+    }
+
+    /// An escalating policy with `then_num_predict` set; a fixed one is unchanged.
+    pub fn with_then_num_predict(self, n: Option<i32>) -> Self {
+        match self {
+            Self::Escalate { first, then, .. } => Self::Escalate {
+                first,
+                then,
+                then_num_predict: n,
+            },
+            fixed => fixed,
+        }
+    }
+}
+
+/// A think policy per check type; a type not listed takes `default`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThinkPolicies {
+    pub default: ThinkPolicy,
+    pub by_type: BTreeMap<CheckType, ThinkPolicy>,
+}
+
+impl ThinkPolicies {
+    /// The same fixed level for every check type: what a plain `--think` means.
+    pub fn fixed(level: ThinkLevel) -> Self {
+        Self {
+            default: ThinkPolicy::Fixed(level),
+            by_type: BTreeMap::new(),
+        }
+    }
+
+    pub fn for_type(&self, t: CheckType) -> ThinkPolicy {
+        self.by_type.get(&t).copied().unwrap_or(self.default)
+    }
+
+    /// Parse the `--think-policy` value: one policy (every type), or a comma list
+    /// `grounded=off,reasoning=escalate:off>on`. A type not listed takes the plain
+    /// `--think` level, `think`, as a fixed policy; `default=<policy>` in the list
+    /// overrides that. Unknown type names and repeated keys are refused.
+    pub fn parse(spec: &str, think: ThinkLevel) -> Result<Self> {
+        let spec = spec.trim();
+        if !spec.contains('=') {
+            return Ok(Self {
+                default: ThinkPolicy::parse(spec)?,
+                by_type: BTreeMap::new(),
+            });
+        }
+        let mut out = Self::fixed(think);
+        let mut seen: Vec<&str> = vec![];
+        for item in spec.split(',') {
+            let item = item.trim();
+            let (name, pol) = item.split_once('=').ok_or_else(|| {
+                Error::Refused(format!(
+                    "think policy list entries are <check-type>=<policy>, not {item:?}"
+                ))
+            })?;
+            let name = name.trim();
+            if seen.contains(&name) {
+                return Err(Error::Refused(format!("think policy names {name:?} twice")));
+            }
+            seen.push(name);
+            let pol = ThinkPolicy::parse(pol.trim())?;
+            if name == "default" {
+                out.default = pol;
+            } else {
+                let t = CheckType::parse(name).ok_or_else(|| {
+                    Error::Refused(format!(
+                        "think policy names an unknown check type {name:?}; use grounded, reasoning or knowledge"
+                    ))
+                })?;
+                out.by_type.insert(t, pol);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The canonical spec, as the run records it; `parse` reads it back.
+    pub fn spec(&self) -> String {
+        if self.by_type.is_empty() {
+            return self.default.as_str();
+        }
+        let mut parts = vec![format!("default={}", self.default.as_str())];
+        parts.extend(
+            self.by_type
+                .iter()
+                .map(|(t, p)| format!("{}={}", t.as_str(), p.as_str())),
+        );
+        parts.join(",")
+    }
+
+    pub fn any_escalate(&self) -> bool {
+        self.default.is_escalate() || self.by_type.values().any(ThinkPolicy::is_escalate)
+    }
+
+    /// Every escalating policy gets `n` as its second call's reply limit.
+    pub fn with_then_num_predict(mut self, n: Option<i32>) -> Self {
+        self.default = self.default.with_then_num_predict(n);
+        for p in self.by_type.values_mut() {
+            *p = p.with_then_num_predict(n);
+        }
+        self
+    }
+}
+
+/// Words per window of the loop detector.
+pub const LOOP_NGRAM: usize = 8;
+/// How many times one window must occur for the text to count as a loop.
+pub const LOOP_REPEATS: usize = 40;
+
+/// Whether `text` loops: some run of `n` consecutive whitespace-separated words occurs at
+/// least `k` times. Windows are compared by a 64-bit rolling hash, so a long text costs
+/// one pass; a collision could in principle merge two windows, which only matters for a
+/// text already near the threshold.
+pub fn thinking_loops(text: &str, n: usize, k: usize) -> bool {
+    if n == 0 || k == 0 {
+        return false;
+    }
+    let words: Vec<u64> = text
+        .split_whitespace()
+        .map(|w| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            w.hash(&mut h);
+            h.finish()
+        })
+        .collect();
+    if words.len() < n {
+        return false;
+    }
+    const BASE: u64 = 0x0000_0100_0000_01b3;
+    // BASE^(n-1), to take the outgoing word off the front of the window.
+    let top = (1..n).fold(1u64, |p, _| p.wrapping_mul(BASE));
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    let mut h = words[..n]
+        .iter()
+        .fold(0u64, |h, &w| h.wrapping_mul(BASE).wrapping_add(w));
+    for i in 0..=words.len() - n {
+        if i > 0 {
+            h = h
+                .wrapping_sub(words[i - 1].wrapping_mul(top))
+                .wrapping_mul(BASE)
+                .wrapping_add(words[i + n - 1]);
+        }
+        let c = counts.entry(h).or_insert(0);
+        *c += 1;
+        if *c >= k {
+            return true;
+        }
+    }
+    false
+}
+
+/// The reason on a verdict given when the second, longer-thinking call gave no answer.
+pub const THINK_FALLBACK: &str = "think_fallback";
+
+/// Check one claim under a think policy.
+///
+/// `Fixed(level)` is `verify_one` with `cfg.think = level`, nothing more. `Escalate` asks
+/// at `first`; an `unsupported` stands with that one call. A `supported` or `cannot_tell`,
+/// or a first reply that was truncated or broke its schema twice, is asked again at
+/// `then` (reply limit `then_num_predict`, else `cfg.num_predict`). The second answer
+/// stands. If the second is truncated or broken, or (with `cfg.loop_stop`) its thinking
+/// loops, the verdict is `cannot_tell` for a person with the reason
+/// `think_fallback:<truncated|bad_verdict|loop>`; it is never the first call's `supported`.
+///
+/// Server, network, timeout and context-overflow errors, from either call, are returned
+/// as they are: they are not model outcomes, and the caller's retry and window handling
+/// applies. The fallback verdict keeps `model_verdict` from the first call when it
+/// answered (else cannot_tell) and leaves reasoning, quote and source empty, so a
+/// first-call quote is never shown beside a verdict it does not support.
+pub fn verify_policy(
+    chat: &dyn ChatBackend,
+    cfg: &VerifyConfig,
+    policy: &ThinkPolicy,
+    claim: &Claim,
+    retrieved: &[Passage],
+) -> Result<Verdict> {
+    let (first, then, then_np) = match *policy {
+        ThinkPolicy::Fixed(level) => {
+            let mut c = cfg.clone();
+            c.think = level;
+            return verify_one(chat, &c, claim, retrieved);
+        }
+        ThinkPolicy::Escalate {
+            first,
+            then,
+            then_num_predict,
+        } => (first, then, then_num_predict),
+    };
+    let spec = policy.as_str();
+    let mut c1 = cfg.clone();
+    c1.think = first;
+    let one = verify_inner(chat, &c1, claim, retrieved);
+    let (first_verdict, first_error) = match one.result {
+        Ok(mut v) if v.verdict == VerdictKind::Unsupported => {
+            v.pins.think = spec;
+            v.escalation = Some(Escalation {
+                first_think: first.as_str().to_string(),
+                first_verdict: Some(v.verdict),
+                first_error: None,
+                escalated: false,
+                then_think: then.as_str().to_string(),
+                then_verdict: None,
+                fallback: None,
+                first_eval_count: v.timing.eval_count,
+                then_eval_count: 0,
+            });
+            return Ok(v);
+        }
+        Ok(v) => (Some(v), None),
+        Err(e @ (Error::Truncated { .. } | Error::BadVerdict(_))) => (None, Some(e)),
+        Err(e) => return Err(e),
+    };
+
+    let mut c2 = cfg.clone();
+    c2.think = then;
+    c2.num_predict = then_np.unwrap_or(cfg.num_predict);
+    let two = verify_inner(chat, &c2, claim, retrieved);
+    let timing = sum_timing(one.timing, two.timing);
+    let mut escalation = Escalation {
+        first_think: first.as_str().to_string(),
+        first_verdict: first_verdict.as_ref().map(|v| v.verdict),
+        first_error: first_error.as_ref().map(|e| e.code().to_string()),
+        escalated: true,
+        then_think: then.as_str().to_string(),
+        then_verdict: None,
+        fallback: None,
+        first_eval_count: one.timing.eval_count,
+        then_eval_count: two.timing.eval_count,
+    };
+    let loops = cfg.loop_stop && thinking_loops(&two.thinking, LOOP_NGRAM, LOOP_REPEATS);
+    let why = match two.result {
+        Ok(mut v) => {
+            escalation.then_verdict = Some(v.verdict);
+            if !loops {
+                v.timing = timing;
+                v.pins.think = spec;
+                v.escalation = Some(escalation);
+                return Ok(v);
+            }
+            "loop"
+        }
+        Err(Error::Truncated { .. }) => {
+            if loops {
+                "loop"
+            } else {
+                "truncated"
+            }
+        }
+        Err(Error::BadVerdict(_)) => {
+            if loops {
+                "loop"
+            } else {
+                "bad_verdict"
+            }
+        }
+        Err(e) => return Err(e),
+    };
+    escalation.fallback = Some(why.to_string());
+    let evidence = build_request(&c2, claim, retrieved)
+        .map(|(_, ev)| ev)
+        .unwrap_or_default();
+    let blank = RawReply {
+        reasoning: String::new(),
+        verdict: VerdictKind::CannotTell,
+        evidence_quote: String::new(),
+        evidence_source: String::new(),
+    };
+    let mut v = finish(&c2, claim, &evidence, blank, timing);
+    v.model_verdict = first_verdict
+        .as_ref()
+        .map_or(VerdictKind::CannotTell, |f| f.model_verdict);
+    v.reason = Some(format!("{THINK_FALLBACK}:{why}"));
+    v.needs_human = true;
+    v.pins.think = spec;
+    v.escalation = Some(escalation);
+    Ok(v)
+}
+
+fn sum_timing(a: Timing, b: Timing) -> Timing {
+    Timing {
+        attempts: a.attempts + b.attempts,
+        eval_count: a.eval_count + b.eval_count,
+        prompt_eval_count: a.prompt_eval_count + b.prompt_eval_count,
+        total_duration_ns: a.total_duration_ns + b.total_duration_ns,
     }
 }
 
@@ -1789,5 +2255,577 @@ mod tests {
         let old: Pins = serde_json::from_value(j).expect("old pins");
         assert_eq!(old.num_ctx_mode, "fixed");
         assert_eq!(VerifyConfig::new("m").num_ctx_mode, CtxMode::Fixed);
+    }
+
+    // ---- The thinking policy
+
+    fn esc(first: ThinkLevel, then: ThinkLevel) -> ThinkPolicy {
+        ThinkPolicy::Escalate {
+            first,
+            then,
+            then_num_predict: None,
+        }
+    }
+
+    fn grounded() -> Claim {
+        claim(
+            CheckType::Grounded,
+            "The limit is 25 MB.",
+            vec![ev("CHANGELOG.md", "Raised the upload limit to 25 MB.")],
+        )
+    }
+
+    const GOOD_QUOTE: &str = "upload limit to 25 MB";
+
+    fn thinking_resp(content: &str, thinking: &str) -> ChatResponse {
+        ChatResponse {
+            thinking: thinking.to_string(),
+            ..resp(content)
+        }
+    }
+
+    fn looping_text() -> String {
+        "check the second passage again before answering ".repeat(45)
+    }
+
+    #[test]
+    fn policy_grammar_round_trips_and_refuses_what_it_does_not_know() {
+        for spec in [
+            "off",
+            "on",
+            "low",
+            "medium",
+            "high",
+            "escalate:off>on",
+            "escalate:off>medium",
+            "escalate:low>high",
+        ] {
+            let p = ThinkPolicy::parse(spec).expect(spec);
+            assert_eq!(p.as_str(), spec);
+            assert_eq!(ThinkPolicy::parse(&p.as_str()).expect("again"), p);
+        }
+        assert_eq!(
+            ThinkPolicy::parse("escalate:off>on").expect("p"),
+            esc(ThinkLevel::Off, ThinkLevel::On)
+        );
+        assert_eq!(
+            ThinkPolicy::parse("high").expect("p"),
+            ThinkPolicy::Fixed(ThinkLevel::High)
+        );
+        for bad in [
+            "",
+            "ON",
+            "maybe",
+            "escalate:",
+            "escalate:off",
+            "escalate:off>",
+            "escalate:off>sometimes",
+            "escalate:loud>on",
+            "escalate:off->on",
+            "escalate:off>on>high",
+            "esc:off>on",
+        ] {
+            let e = ThinkPolicy::parse(bad).expect_err(bad);
+            assert_eq!(e.code(), "refused", "{bad}");
+            assert!(e.to_string().contains(&format!("{bad:?}")), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_policy_map_takes_one_policy_or_a_list_by_check_type() {
+        let on = ThinkLevel::On;
+        let one = ThinkPolicies::parse("escalate:off>on", on).expect("one");
+        for t in [
+            CheckType::Grounded,
+            CheckType::Reasoning,
+            CheckType::Knowledge,
+        ] {
+            assert_eq!(one.for_type(t), esc(ThinkLevel::Off, on));
+        }
+        assert_eq!(one.spec(), "escalate:off>on");
+
+        let list =
+            ThinkPolicies::parse("grounded=off, reasoning=escalate:off>on", ThinkLevel::High)
+                .expect("list");
+        assert_eq!(
+            list.for_type(CheckType::Grounded),
+            ThinkPolicy::Fixed(ThinkLevel::Off)
+        );
+        assert_eq!(
+            list.for_type(CheckType::Reasoning),
+            esc(ThinkLevel::Off, ThinkLevel::On)
+        );
+        // Not listed: the plain --think level, fixed.
+        assert_eq!(
+            list.for_type(CheckType::Knowledge),
+            ThinkPolicy::Fixed(ThinkLevel::High)
+        );
+        assert!(list.any_escalate());
+        assert_eq!(
+            ThinkPolicies::parse(&list.spec(), ThinkLevel::Low).expect("round trip"),
+            list
+        );
+        let overridden =
+            ThinkPolicies::parse("default=low,knowledge=off", ThinkLevel::High).expect("d");
+        assert_eq!(
+            overridden.for_type(CheckType::Grounded),
+            ThinkPolicy::Fixed(ThinkLevel::Low)
+        );
+        assert!(!overridden.any_escalate());
+
+        for (bad, needle) in [
+            ("grounded=off,planning=on", "planning"),
+            ("grounded=off,grounded=on", "twice"),
+            ("grounded=sometimes", "sometimes"),
+            ("grounded=off,reasoning", "reasoning"),
+            ("maybe", "maybe"),
+        ] {
+            let e = ThinkPolicies::parse(bad, on).expect_err(bad);
+            assert_eq!(e.code(), "refused");
+            assert!(e.to_string().contains(needle), "{bad}: {e}");
+        }
+        let np = ThinkPolicies::parse("grounded=escalate:off>on,reasoning=off", on)
+            .expect("p")
+            .with_then_num_predict(Some(8192));
+        assert_eq!(
+            np.for_type(CheckType::Grounded),
+            ThinkPolicy::Escalate {
+                first: ThinkLevel::Off,
+                then: ThinkLevel::On,
+                then_num_predict: Some(8192)
+            }
+        );
+        assert_eq!(
+            np.for_type(CheckType::Reasoning),
+            ThinkPolicy::Fixed(ThinkLevel::Off)
+        );
+    }
+
+    #[test]
+    fn a_fixed_policy_is_verify_one_byte_for_byte() {
+        let c = grounded();
+        let body = reply_json("supported", GOOD_QUOTE);
+        let mut cfg = VerifyConfig::new("m");
+        cfg.think = ThinkLevel::Medium;
+        let a = Fake::saying(&[&body]);
+        let plain = verify_one(&a, &cfg, &c, &[]).expect("plain");
+        let b = Fake::saying(&[&body]);
+        // The policy decides the level: cfg.think is overridden by it.
+        let v = verify_policy(&b, &cfg, &ThinkPolicy::Fixed(ThinkLevel::Medium), &c, &[])
+            .expect("policy");
+        assert_eq!(a.seen.borrow()[0].body(), b.seen.borrow()[0].body());
+        assert_eq!(
+            serde_json::to_string(&plain).expect("a"),
+            serde_json::to_string(&v).expect("b")
+        );
+        assert!(v.escalation.is_none());
+        assert!(!serde_json::to_string(&v).expect("j").contains("escalation"));
+        assert_eq!(v.pins.think, "medium");
+        // A fixed level different from cfg.think is the one sent.
+        let d = Fake::saying(&[&body]);
+        let v =
+            verify_policy(&d, &cfg, &ThinkPolicy::Fixed(ThinkLevel::Off), &c, &[]).expect("off");
+        assert_eq!(d.seen.borrow()[0].think, Some(ThinkLevel::Off));
+        assert_eq!(v.pins.think, "off");
+    }
+
+    #[test]
+    fn verdicts_stored_before_policies_still_read() {
+        let v = sample_verdict("c1", VerdictKind::Supported);
+        let j = serde_json::to_value(&v).expect("json");
+        assert!(j.as_object().expect("obj").get("escalation").is_none());
+        let back: Verdict = serde_json::from_value(j).expect("old verdict");
+        assert!(back.escalation.is_none());
+    }
+
+    #[test]
+    fn an_unsupported_first_answer_stands_with_one_call() {
+        let c = grounded();
+        let fake = Fake::saying(&[&reply_json("unsupported", "")]);
+        let cfg = VerifyConfig::new("m");
+        let p = esc(ThinkLevel::Off, ThinkLevel::On);
+        let v = verify_policy(&fake, &cfg, &p, &c, &[]).expect("verdict");
+        assert_eq!(fake.seen.borrow().len(), 1);
+        assert_eq!(fake.seen.borrow()[0].think, Some(ThinkLevel::Off));
+        assert_eq!(v.verdict, VerdictKind::Unsupported);
+        assert_eq!(v.pins.think, "escalate:off>on");
+        let e = v.escalation.expect("escalation");
+        assert!(!e.escalated);
+        assert_eq!(e.first_verdict, Some(VerdictKind::Unsupported));
+        assert_eq!((e.then_verdict, e.fallback), (None, None));
+        assert_eq!(e.then_think, "on");
+    }
+
+    #[test]
+    fn a_supported_first_answer_is_asked_again_and_the_second_stands() {
+        let c = grounded();
+        let fake = Fake::saying(&[
+            &reply_json("supported", GOOD_QUOTE),
+            &reply_json("unsupported", ""),
+        ]);
+        let mut cfg = VerifyConfig::new("m");
+        cfg.num_predict = 1000;
+        let p = ThinkPolicy::Escalate {
+            first: ThinkLevel::Off,
+            then: ThinkLevel::Medium,
+            then_num_predict: Some(6000),
+        };
+        let v = verify_policy(&fake, &cfg, &p, &c, &[]).expect("verdict");
+        let seen = fake.seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            (seen[0].think, seen[0].num_predict),
+            (Some(ThinkLevel::Off), Some(1000))
+        );
+        assert_eq!(
+            (seen[1].think, seen[1].num_predict),
+            (Some(ThinkLevel::Medium), Some(6000))
+        );
+        assert_eq!(v.verdict, VerdictKind::Unsupported);
+        assert_eq!(v.pins.think, "escalate:off>medium");
+        assert_eq!(v.pins.num_predict, 6000);
+        let e = v.escalation.as_ref().expect("escalation");
+        assert!(e.escalated);
+        assert_eq!(e.first_verdict, Some(VerdictKind::Supported));
+        assert_eq!(e.then_verdict, Some(VerdictKind::Unsupported));
+        assert_eq!(e.fallback, None);
+        // Both calls are in the timing: 10 tokens, 100 prompt tokens, 1000 ns each.
+        assert_eq!(
+            v.timing,
+            Timing {
+                attempts: 2,
+                eval_count: 20,
+                prompt_eval_count: 200,
+                total_duration_ns: 2_000
+            }
+        );
+        assert_eq!((e.first_eval_count, e.then_eval_count), (10, 10));
+        // The second request is the same prompt, asked at the other level.
+        assert_eq!(seen[0].messages, seen[1].messages);
+    }
+
+    #[test]
+    fn a_second_supported_answer_stands_and_still_needs_its_quote() {
+        let c = grounded();
+        let fake = Fake::saying(&[
+            &reply_json("supported", GOOD_QUOTE),
+            &reply_json("supported", "a made-up sentence nobody wrote"),
+        ]);
+        let cfg = VerifyConfig::new("m");
+        let v = verify_policy(&fake, &cfg, &esc(ThinkLevel::Off, ThinkLevel::On), &c, &[])
+            .expect("verdict");
+        // The quote rule applies to the second answer, as usual.
+        assert_eq!(v.verdict, VerdictKind::CannotTell);
+        assert_eq!(v.model_verdict, VerdictKind::Supported);
+        assert_eq!(v.reason.as_deref(), Some(QUOTE_NOT_FOUND));
+        assert!(v.needs_human);
+        let e = v.escalation.expect("escalation");
+        assert_eq!(e.then_verdict, Some(VerdictKind::CannotTell));
+        assert_eq!(e.fallback, None);
+    }
+
+    #[test]
+    fn a_cannot_tell_first_answer_escalates() {
+        let c = grounded();
+        let fake = Fake::saying(&[
+            &reply_json("cannot_tell", ""),
+            &reply_json("supported", GOOD_QUOTE),
+        ]);
+        let cfg = VerifyConfig::new("m");
+        let v = verify_policy(&fake, &cfg, &esc(ThinkLevel::Off, ThinkLevel::On), &c, &[])
+            .expect("verdict");
+        assert_eq!(fake.seen.borrow().len(), 2);
+        assert_eq!(v.verdict, VerdictKind::Supported);
+        let e = v.escalation.expect("escalation");
+        assert_eq!(e.first_verdict, Some(VerdictKind::CannotTell));
+        assert!(e.escalated);
+    }
+
+    #[test]
+    fn a_first_answer_that_the_quote_rule_downgraded_is_not_an_unsupported_that_stands() {
+        // supported with an invented quote is a cannot_tell after the rule: it escalates.
+        let c = grounded();
+        let fake = Fake::saying(&[
+            &reply_json("supported", "invented quote about something else"),
+            &reply_json("unsupported", ""),
+        ]);
+        let v = verify_policy(
+            &fake,
+            &VerifyConfig::new("m"),
+            &esc(ThinkLevel::Off, ThinkLevel::On),
+            &c,
+            &[],
+        )
+        .expect("verdict");
+        assert_eq!(fake.seen.borrow().len(), 2);
+        assert_eq!(v.verdict, VerdictKind::Unsupported);
+        assert_eq!(
+            v.escalation.expect("e").first_verdict,
+            Some(VerdictKind::CannotTell)
+        );
+    }
+
+    #[test]
+    fn a_truncated_first_call_escalates() {
+        let c = grounded();
+        let fake = Fake::new(vec![
+            Err(Error::truncated("out of tokens")),
+            Ok(resp(&reply_json("supported", GOOD_QUOTE))),
+        ]);
+        let v = verify_policy(
+            &fake,
+            &VerifyConfig::new("m"),
+            &esc(ThinkLevel::Off, ThinkLevel::On),
+            &c,
+            &[],
+        )
+        .expect("verdict");
+        assert_eq!(v.verdict, VerdictKind::Supported);
+        let e = v.escalation.expect("e");
+        assert_eq!(e.first_verdict, None);
+        assert_eq!(e.first_error.as_deref(), Some("truncated"));
+        assert!(e.escalated);
+    }
+
+    #[test]
+    fn a_first_call_that_broke_its_schema_escalates() {
+        let c = grounded();
+        // Two bad replies make the first call's BadVerdict; the escalation call answers.
+        let fake = Fake::saying(&["not json", "still not json", &reply_json("unsupported", "")]);
+        let v = verify_policy(
+            &fake,
+            &VerifyConfig::new("m"),
+            &esc(ThinkLevel::Off, ThinkLevel::On),
+            &c,
+            &[],
+        )
+        .expect("verdict");
+        assert_eq!(fake.seen.borrow().len(), 3);
+        assert_eq!(v.verdict, VerdictKind::Unsupported);
+        assert_eq!(
+            v.escalation.expect("e").first_error.as_deref(),
+            Some("bad_verdict")
+        );
+        // The failed first call's two replies are in the attempt count: 2 + 1.
+        assert_eq!(v.timing.attempts, 3);
+    }
+
+    #[test]
+    fn a_truncated_second_call_is_a_cannot_tell_fallback_never_the_first_supported() {
+        let c = grounded();
+        for first in [
+            Ok(resp(&reply_json("supported", GOOD_QUOTE))),
+            Err(Error::truncated("first cut off")),
+        ] {
+            let had_first = first.is_ok();
+            let fake = Fake::new(vec![first, Err(Error::truncated("second cut off"))]);
+            let v = verify_policy(
+                &fake,
+                &VerifyConfig::new("m"),
+                &esc(ThinkLevel::Off, ThinkLevel::On),
+                &c,
+                &[],
+            )
+            .expect("a fallback verdict, not an error");
+            assert_eq!(v.verdict, VerdictKind::CannotTell);
+            assert_ne!(v.verdict, VerdictKind::Supported);
+            assert!(v.needs_human && v.untrusted);
+            assert_eq!(v.reason.as_deref(), Some("think_fallback:truncated"));
+            assert_eq!(
+                v.model_verdict,
+                if had_first {
+                    VerdictKind::Supported
+                } else {
+                    VerdictKind::CannotTell
+                }
+            );
+            // Nothing of the first reply's case for the claim is shown beside the verdict.
+            assert!(v.reasoning.is_empty() && v.evidence_quote.is_empty());
+            assert!(v.evidence_source.is_empty());
+            assert_eq!(v.pins.think, "escalate:off>on");
+            assert_eq!(v.pins.evidence_ids, ["ctx1"]);
+            let e = v.escalation.expect("e");
+            assert_eq!(e.fallback.as_deref(), Some("truncated"));
+            assert_eq!(e.then_verdict, None);
+        }
+    }
+
+    #[test]
+    fn a_second_call_that_breaks_its_schema_twice_is_a_bad_verdict_fallback() {
+        let c = grounded();
+        let fake = Fake::saying(&[&reply_json("cannot_tell", ""), "not json", "also not json"]);
+        let v = verify_policy(
+            &fake,
+            &VerifyConfig::new("m"),
+            &esc(ThinkLevel::Off, ThinkLevel::On),
+            &c,
+            &[],
+        )
+        .expect("fallback");
+        assert_eq!(v.verdict, VerdictKind::CannotTell);
+        assert_eq!(v.reason.as_deref(), Some("think_fallback:bad_verdict"));
+        assert!(v.needs_human);
+        assert_eq!(v.timing.attempts, 3);
+        assert_eq!(
+            v.escalation.expect("e").fallback.as_deref(),
+            Some("bad_verdict")
+        );
+    }
+
+    #[test]
+    fn a_looping_second_reply_falls_back_only_when_loop_stop_is_on() {
+        let c = grounded();
+        let answers = || {
+            Fake::new(vec![
+                Ok(resp(&reply_json("supported", GOOD_QUOTE))),
+                Ok(thinking_resp(
+                    &reply_json("supported", GOOD_QUOTE),
+                    &looping_text(),
+                )),
+            ])
+        };
+        let p = esc(ThinkLevel::Off, ThinkLevel::On);
+        // Off (the default): a looping-but-answered reply stands.
+        let mut cfg = VerifyConfig::new("m");
+        let v = verify_policy(&answers(), &cfg, &p, &c, &[]).expect("stands");
+        assert_eq!(v.verdict, VerdictKind::Supported);
+        assert_eq!(v.escalation.expect("e").fallback, None);
+        // On: the loop makes it no answer.
+        cfg.loop_stop = true;
+        let v = verify_policy(&answers(), &cfg, &p, &c, &[]).expect("fallback");
+        assert_eq!(v.verdict, VerdictKind::CannotTell);
+        assert_eq!(v.reason.as_deref(), Some("think_fallback:loop"));
+        assert!(v.needs_human);
+        let e = v.escalation.expect("e");
+        assert_eq!(e.fallback.as_deref(), Some("loop"));
+        // What the second call said is recorded, but did not stand.
+        assert_eq!(e.then_verdict, Some(VerdictKind::Supported));
+        // A loop in the first call's thinking is not looked at.
+        let first_loops = Fake::new(vec![
+            Ok(thinking_resp(
+                &reply_json("supported", GOOD_QUOTE),
+                &looping_text(),
+            )),
+            Ok(resp(&reply_json("supported", GOOD_QUOTE))),
+        ]);
+        let v = verify_policy(&first_loops, &cfg, &p, &c, &[]).expect("stands");
+        assert_eq!(v.verdict, VerdictKind::Supported);
+        // A clean second reply is never a loop.
+        let clean = Fake::new(vec![
+            Ok(resp(&reply_json("supported", GOOD_QUOTE))),
+            Ok(thinking_resp(
+                &reply_json("supported", GOOD_QUOTE),
+                "the changelog says the limit is 25 MB",
+            )),
+        ]);
+        let v = verify_policy(&clean, &cfg, &p, &c, &[]).expect("stands");
+        assert_eq!(v.verdict, VerdictKind::Supported);
+    }
+
+    #[test]
+    fn a_truncated_second_reply_that_looped_is_labelled_a_loop() {
+        let c = grounded();
+        let mut cfg = VerifyConfig::new("m");
+        cfg.loop_stop = true;
+        let looped = Error::Truncated {
+            message: "stopped".into(),
+            thinking: looping_text(),
+        };
+        let fake = Fake::new(vec![Ok(resp(&reply_json("cannot_tell", ""))), Err(looped)]);
+        let v = verify_policy(&fake, &cfg, &esc(ThinkLevel::Off, ThinkLevel::On), &c, &[])
+            .expect("fallback");
+        assert_eq!(v.reason.as_deref(), Some("think_fallback:loop"));
+        // Without the flag the same reply is plainly truncated.
+        cfg.loop_stop = false;
+        let looped = Error::Truncated {
+            message: "stopped".into(),
+            thinking: looping_text(),
+        };
+        let fake = Fake::new(vec![Ok(resp(&reply_json("cannot_tell", ""))), Err(looped)]);
+        let v = verify_policy(&fake, &cfg, &esc(ThinkLevel::Off, ThinkLevel::On), &c, &[])
+            .expect("fallback");
+        assert_eq!(v.reason.as_deref(), Some("think_fallback:truncated"));
+    }
+
+    #[test]
+    fn transport_and_overflow_errors_propagate_from_either_call() {
+        let c = grounded();
+        let cfg = VerifyConfig::new("m");
+        let p = esc(ThinkLevel::Off, ThinkLevel::On);
+        let server = || Error::Ollama("chat: http 500: cancelled".into());
+        // First call.
+        let fake = Fake::new(vec![Err(server())]);
+        let e = verify_policy(&fake, &cfg, &p, &c, &[]).expect_err("first");
+        assert_eq!(e.code(), "model_server");
+        assert_eq!(fake.seen.borrow().len(), 1);
+        // Second call.
+        let fake = Fake::new(vec![
+            Ok(resp(&reply_json("supported", GOOD_QUOTE))),
+            Err(server()),
+        ]);
+        let e = verify_policy(&fake, &cfg, &p, &c, &[]).expect_err("second");
+        assert_eq!(e.code(), "model_server");
+        assert_eq!(fake.seen.borrow().len(), 2);
+        // A dropped connection.
+        let net = ureq::get("http://127.0.0.1:1/").call().expect_err("closed");
+        let fake = Fake::new(vec![Err(Error::http("chat", net))]);
+        let e = verify_policy(&fake, &cfg, &p, &c, &[]).expect_err("network");
+        assert_eq!(e.code(), "network");
+        // A window that filled, on either call, is offrig's sizing failure: it propagates
+        // and is never turned into a fallback verdict.
+        let full = |eval| ChatResponse {
+            prompt_eval_count: Some(16_000),
+            eval_count: Some(eval),
+            done_reason: "length".into(),
+            ..resp("{")
+        };
+        let mut cfg = VerifyConfig::new("m");
+        cfg.num_ctx = 16_384;
+        let fake = Fake::new(vec![Ok(full(370))]);
+        let e = verify_policy(&fake, &cfg, &p, &c, &[]).expect_err("first overflow");
+        assert_eq!(e.code(), "context_overflow");
+        assert_eq!(fake.seen.borrow().len(), 1);
+        let fake = Fake::new(vec![
+            Ok(resp(&reply_json("cannot_tell", ""))),
+            Ok(full(370)),
+        ]);
+        let e = verify_policy(&fake, &cfg, &p, &c, &[]).expect_err("second overflow");
+        assert_eq!(e.code(), "context_overflow");
+        assert_eq!(fake.seen.borrow().len(), 2);
+        // A refused claim (no evidence) is the caller's error too.
+        let none = claim(CheckType::Grounded, "x", vec![]);
+        let fake = Fake::saying(&[]);
+        let e = verify_policy(&fake, &cfg, &p, &none, &[]).expect_err("refused");
+        assert_eq!(e.code(), "refused");
+    }
+
+    #[test]
+    fn the_loop_detector_counts_repeated_eight_word_windows() {
+        assert!(!thinking_loops("", LOOP_NGRAM, LOOP_REPEATS));
+        assert!(!thinking_loops("a short thought", LOOP_NGRAM, LOOP_REPEATS));
+        let clean: String = (0..5000).map(|i| format!("word{i} ")).collect();
+        assert!(!thinking_loops(&clean, LOOP_NGRAM, LOOP_REPEATS));
+        let phrase = "the quick brown fox jumps over the lazy ";
+        assert!(thinking_loops(&phrase.repeat(40), 8, 40));
+        assert!(!thinking_loops(&phrase.repeat(39), 8, 40));
+        // Surrounding prose and any whitespace do not matter.
+        let text = format!(
+            "first some different words \n{}\n then a conclusion",
+            phrase.repeat(40).replace(' ', "  ")
+        );
+        assert!(thinking_loops(&text, 8, 40));
+        // One word repeated is a loop of any window length.
+        assert!(thinking_loops(&"hmm ".repeat(60), 8, 40));
+        assert!(
+            !thinking_loops(&"hmm ".repeat(40), 8, 40),
+            "only 33 windows"
+        );
+        // Fewer words than the window.
+        assert!(!thinking_loops("a b c d e f g", 8, 1));
+        // A long text is one pass.
+        let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa ".repeat(7000);
+        assert!(thinking_loops(&long, 8, 40));
+        let varied: String = (0..60_000).map(|i| format!("w{} ", i % 5000)).collect();
+        assert!(!thinking_loops(&varied, 8, 40));
     }
 }

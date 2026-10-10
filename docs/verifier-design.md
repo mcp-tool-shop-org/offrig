@@ -280,6 +280,48 @@ The checks on each reply:
 - Every verdict is marked untrusted model output and stored in the `verdicts` table with
   the pins listed under PIN_PER_STEP.
 
+#### Thinking policy
+
+A verifier's thinking level can be set per check type (`--think-policy`), as one fixed
+level or as an escalation. This is "think before accepting".
+
+- `off|on|low|medium|high` is the original behaviour: one call at that level, requests
+  and verdicts unchanged. A plain `--think` is this policy for every check type.
+- `escalate:<first>><then>` (say `escalate:off>on`) asks at `first` and decides by the
+  answer:
+  - `unsupported` stands, with no second call. A false reject costs a person a look; a
+    false accept is the error calibration exists to prevent.
+  - `supported` or `cannot_tell` is asked again at `then`, because acceptance is where
+    thinking pays. So is a first call that broke its own reply (truncated, or a schema
+    failure twice). The second answer stands, after the quote rule as usual.
+  - If the second call is truncated, breaks its schema twice or (with `--loop-stop`)
+    loops, the claim ends as `cannot_tell`, `needs_human`, with the reason
+    `think_fallback:<truncated|bad_verdict|loop>`. It is never the first call's
+    `supported`. The fallback keeps the first call's model verdict but leaves reasoning,
+    quote and source empty, so the first call's case for the claim isn't shown beside a
+    verdict that doesn't rest on it.
+  - Server, network, timeout and `context_overflow` errors from either call are not model
+    outcomes: they propagate unchanged and the caller's existing retry, health-check and
+    overflow handling applies.
+- A list sets types separately: `grounded=off,reasoning=escalate:off>on`. A type not
+  listed uses the plain `--think` level; `default=<policy>` changes that.
+- `--think-num-predict` gives the second call its own reply limit. The run's window is
+  sized for the larger of the two.
+- Loop detector: with `--loop-stop`, the second reply's thinking is a loop when one
+  8-word window occurs 40 or more times. It is off by default and is turned on for a
+  model only after checking it doesn't flag good thinking. Off, a looping reply that
+  still answered stands.
+- Each verdict from an escalating policy pins the policy string (`escalate:off>on`) as
+  its `think`, adds an `escalation` record (first and second level and verdict, whether
+  it escalated, the fallback, the tokens each call spent), and sums both calls in its
+  timing. The store keeps the record inside the verdict's `timing` column, so the schema
+  version is unchanged. Fixed policies add nothing, so stored verdicts and fingerprints
+  don't change.
+  A run records `think_policy`, `think_num_predict` and `loop_stop` in its settings only
+  when set, so a plain `--think` run's manifest is what it always was; a resume under a
+  different policy is refused. The report adds each type's escalation rate and fallback
+  count, so a policy can be judged on the same gold set as the plain level.
+
 ### 3. One-off: `offrig verify`
 
 - **Input:** `offrig verify <claims.jsonl | --claim "..."> [--evidence path…]`, and the

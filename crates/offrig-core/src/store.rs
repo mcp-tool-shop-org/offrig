@@ -1576,8 +1576,18 @@ impl Store {
     pub fn save_verdict(&self, v: &Verdict) -> Result<i64> {
         let pins =
             serde_json::to_string(&v.pins).map_err(|e| Error::decode("a verdict's pins", e))?;
-        let timing =
-            serde_json::to_string(&v.timing).map_err(|e| Error::decode("a verdict's timing", e))?;
+        // The escalation record rides in the timing column as an extra key, so the table
+        // (and the schema version older offrig builds check) stays as it was; a verdict
+        // with no escalation writes exactly the timing it always did.
+        let mut timing_json =
+            serde_json::to_value(v.timing).map_err(|e| Error::decode("a verdict's timing", e))?;
+        if let (Some(e), Some(obj)) = (&v.escalation, timing_json.as_object_mut()) {
+            obj.insert(
+                "escalation".to_string(),
+                serde_json::to_value(e).map_err(|e| Error::decode("a verdict's escalation", e))?,
+            );
+        }
+        let timing = timing_json.to_string();
         self.conn
             .execute(
                 "INSERT INTO verdicts(claim_id, claim_sha256, check_type, verdict, model_verdict, reason,
@@ -1685,6 +1695,12 @@ impl Store {
                             timing: serde_json::from_str(&timing)
                                 .map_err(|e| Error::decode("a verdict's timing", e))?,
                             untrusted: true,
+                            escalation: serde_json::from_str::<serde_json::Value>(&timing)
+                                .ok()
+                                .and_then(|t| t.get("escalation").cloned())
+                                .map(serde_json::from_value)
+                                .transpose()
+                                .map_err(|e| Error::decode("a verdict's escalation", e))?,
                         },
                     })
                 },
