@@ -310,7 +310,12 @@ level or as an escalation. This is "think before accepting".
 - Loop detector: with `--loop-stop`, the second reply's thinking is a loop when one
   8-word window occurs 40 or more times. It is off by default and is turned on for a
   model only after checking it doesn't flag good thinking. Off, a looping reply that
-  still answered stands.
+  still answered stands. The check runs after the reply returns, so it saves no tokens:
+  only `--think-num-predict` bounds what a loop costs. Stopping a loop while it streams
+  is later work (contract v3).
+- Discarding a looping reply that still answered is conservative, and right only for a
+  model whose clean replies never reach 40 repeats. That false-hit check comes first,
+  per model, before `--loop-stop` is used with it.
 - Each verdict from an escalating policy pins the policy string (`escalate:off>on`) as
   its `think`, adds an `escalation` record (first and second level and verdict, whether
   it escalated, the fallback, the tokens each call spent), and sums both calls in its
