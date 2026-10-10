@@ -35,9 +35,9 @@ use crate::index::sha256_hex;
 use crate::ollama::{ChatRequest, ChatResponse, Loaded, Ollama, Tag, ThinkLevel};
 use crate::store::Store;
 use crate::verify::{
-    ChatBackend, CheckType, Claim, CtxMode, DEFAULT_MODEL_MAX_CTX, Label, Pins, Timing,
-    TokenEstimator, Verdict, VerdictKind, VerifyConfig, build_request, ctx_margin,
-    estimate_claim_tokens, evidence_list, quote_found, round_ctx, verify_one,
+    ChatBackend, CheckType, Claim, CtxMode, DEFAULT_MODEL_MAX_CTX, Label, Pins, ThinkPolicies,
+    Timing, TokenEstimator, Verdict, VerdictKind, VerifyConfig, build_request, ctx_margin,
+    estimate_claim_tokens, evidence_list, quote_found, round_ctx, verify_one, verify_policy,
 };
 
 /// Consecutive transport failures after which the run stops (and stays resumable)
@@ -56,7 +56,10 @@ const SERVER_ERROR_TWICE: &str =
     "server error or dropped reply twice on this claim; the reply, not the wire";
 
 /// What the default rule counts against the model, stated wherever its result shows.
-pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error or dropped reply) count as missing answers and fail the rule; a fail can come from those, not only from false accepts. context_overflow outcomes are offrig's sizing failure, not the model's: they are not counted against it and leave the run incomplete";
+pub const RULE_NOTE: &str = "model-caused unusable outcomes (bad_verdict, truncated, repeated timeout, repeated server error or dropped reply) count as missing answers and fail the rule; a fail can come from those, not only from false accepts";
+
+/// Added to the rule note only when the run has a `context_overflow` outcome.
+pub const OVERFLOW_NOTE: &str = "context_overflow outcomes are offrig's sizing failure, not the model's: they are not counted against it and leave the run incomplete";
 
 // ---- Settings
 
@@ -164,6 +167,13 @@ pub struct Settings {
     pub num_ctx: u32,
     pub num_predict: i32,
     pub gpu_cost_hr: f64,
+    /// A thinking policy per check type (`--think-policy`). None is the plain `--think`:
+    /// `Fixed(think)` for every type, as before policies existed.
+    pub think_policy: Option<ThinkPolicies>,
+    /// The escalation call's reply limit (`--think-num-predict`); None uses `num_predict`.
+    pub think_num_predict: Option<i32>,
+    /// Treat a looping escalation reply as no answer (`--loop-stop`).
+    pub loop_stop: bool,
 }
 
 impl Settings {
@@ -184,13 +194,33 @@ impl Settings {
             num_ctx: d.num_ctx,
             num_predict: d.num_predict,
             gpu_cost_hr: 0.0,
+            think_policy: None,
+            think_num_predict: None,
+            loop_stop: false,
+        }
+    }
+
+    /// The policies a run applies: the plain `--think` level for every type, or the
+    /// `--think-policy` map with `--think-num-predict` set on its escalations.
+    pub fn policies(&self) -> ThinkPolicies {
+        match &self.think_policy {
+            None => ThinkPolicies::fixed(self.think),
+            Some(p) => p.clone().with_then_num_predict(self.think_num_predict),
+        }
+    }
+
+    /// The largest reply limit any call of the run may use: it sizes the window.
+    fn max_predict(&self) -> i32 {
+        match self.think_num_predict {
+            Some(n) if self.policies().any_escalate() => n.max(self.num_predict),
+            _ => self.num_predict,
         }
     }
 
     /// The part of the settings that must not change across a resume. `num_ctx` is the
     /// window actually used: the fixed number, or the one an `auto` run chose.
     fn record(&self, num_ctx: u32) -> Value {
-        serde_json::json!({
+        let mut rec = serde_json::json!({
             "model": self.model,
             "url": self.url,
             "think": self.think.as_str(),
@@ -208,7 +238,20 @@ impl Settings {
             "num_ctx": num_ctx,
             "num_predict": self.num_predict,
             "quote_rule": crate::verify::QUOTE_RULE,
-        })
+        });
+        // Only when set, so a plain --think run records exactly what it always did.
+        if let Some(obj) = rec.as_object_mut() {
+            if let Some(p) = &self.think_policy {
+                obj.insert("think_policy".into(), p.spec().into());
+            }
+            if let Some(n) = self.think_num_predict {
+                obj.insert("think_num_predict".into(), n.into());
+            }
+            if self.loop_stop {
+                obj.insert("loop_stop".into(), true.into());
+            }
+        }
+        rec
     }
 }
 
@@ -424,6 +467,18 @@ pub struct Line {
     pub wall_seconds: f64,
     pub timing: Option<Timing>,
     pub pins: Option<Pins>,
+    /// Under an escalating think policy: whether a second call was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalated: Option<bool>,
+    /// The first call's final verdict (None when it failed, or without a policy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_verdict: Option<VerdictKind>,
+    /// The escalation call's verdict, when it answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then_verdict: Option<VerdictKind>,
+    /// `truncated`, `bad_verdict` or `loop` when the verdict is a think fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 }
 
 impl Line {
@@ -450,6 +505,10 @@ impl Line {
             wall_seconds: wall,
             timing: None,
             pins: None,
+            escalated: None,
+            first_verdict: None,
+            then_verdict: None,
+            fallback: None,
         }
     }
 
@@ -464,6 +523,12 @@ impl Line {
         l.evidence_quote = Some(v.evidence_quote.clone());
         l.timing = Some(v.timing);
         l.pins = Some(v.pins.clone());
+        if let Some(e) = &v.escalation {
+            l.escalated = Some(e.escalated);
+            l.first_verdict = e.first_verdict;
+            l.then_verdict = e.then_verdict;
+            l.fallback = e.fallback.clone();
+        }
         l
     }
 
@@ -536,6 +601,10 @@ fn append_line(file: &mut std::fs::File, line: &Line) -> Result<()> {
         .map_err(|e| Error::io("appending to verdicts.jsonl", e))
 }
 
+/// Settings a run records only when they are set. A resume that sets one the original
+/// run did not is a change; keys that older runs predate (`num_ctx_mode`) are not.
+const OPTIONAL_SETTINGS: [&str; 3] = ["think_policy", "think_num_predict", "loop_stop"];
+
 /// Refuse a resume when the run being resumed was made differently.
 fn check_resume(m: &Manifest, now: &Manifest) -> Result<()> {
     let differs = |what: &str, was: String, is: String| {
@@ -548,6 +617,13 @@ fn check_resume(m: &Manifest, now: &Manifest) -> Result<()> {
             let is = b.get(k).cloned().unwrap_or(Value::Null);
             if *was != is {
                 return differs(k, was.to_string(), is.to_string());
+            }
+        }
+        // A setting the old run never recorded (think_policy, think_num_predict and
+        // loop_stop are recorded only when set) is a change too.
+        for (k, is) in b {
+            if OPTIONAL_SETTINGS.contains(&k.as_str()) && !a.contains_key(k) {
+                return differs(k, "not set".to_string(), is.to_string());
             }
         }
     }
@@ -769,7 +845,7 @@ fn resolve_ctx(
         .copied()
         .max_by_key(|&(i, e)| (e, usize::MAX - i));
     let longest_est = longest.map(|(_, e)| e);
-    let np = s.num_predict;
+    let np = s.max_predict();
 
     if let Some(old) = old {
         let was = old
@@ -1189,12 +1265,17 @@ pub fn run(
     let mut answered: Vec<usize> = (0..picked.len())
         .filter(|&j| ok_ids.contains(picked[j].claim.id.as_str()))
         .collect();
+    let policies = s.policies();
+    cfg.loop_stop = s.loop_stop;
+    // The health check is a plain call at the first level the claim's policy asks at.
     let server_answers = |j: usize, cfg: &VerifyConfig| {
         let mut c = picked[j].claim.clone();
         if s.swap_evidence {
             c.context.reverse();
         }
-        verify_one(chat, cfg, &c, &[]).is_ok()
+        let mut cfg = cfg.clone();
+        cfg.think = policies.for_type(c.check_type).first_level();
+        verify_one(chat, &cfg, &c, &[]).is_ok()
     };
 
     let mut transport_run = 0usize;
@@ -1213,28 +1294,29 @@ pub fn run(
         // The conservative estimate, corrected by the worst real/estimated ratio seen so far.
         let raw_estimate = estimate_claim_tokens(&cfg, &claim, &[]).ok();
         if let Some(raw) = raw_estimate {
-            let need = estimator.correct(raw) + u64::try_from(cfg.num_predict).unwrap_or(0);
+            let need = estimator.correct(raw) + u64::try_from(s.max_predict()).unwrap_or(0);
             if need + 16 >= u64::from(cfg.num_ctx) {
                 progress(&format!(
                     "warning: {} may overflow num_ctx {} (estimated prompt {} + num_predict {})",
                     sel.id,
                     cfg.num_ctx,
                     estimator.correct(raw),
-                    cfg.num_predict
+                    s.max_predict()
                 ));
             }
         }
         let started = Instant::now();
         recorder.seen.borrow_mut().clear();
-        let mut result = verify_one(chat, &cfg, &claim, &[]);
+        let policy = policies.for_type(claim.check_type);
+        let mut result = verify_policy(chat, &cfg, &policy, &claim, &[]);
         if s.structured == Structured::Auto
             && cfg.structured
             && !settled
-            && matches!(result, Err(Error::BadVerdict(_)))
+            && broke_its_schema(&result)
         {
             progress("structured output failed its schema; continuing in plain text");
             cfg.structured = false;
-            result = verify_one(chat, &cfg, &claim, &[]);
+            result = verify_policy(chat, &cfg, &policy, &claim, &[]);
         }
         let wall = started.elapsed().as_secs_f64();
         if let Some(f) = thinking_file.as_mut() {
@@ -1254,7 +1336,7 @@ pub fn run(
         let mut transport_note: Option<&'static str> = None;
         let line = match result {
             Ok(v) => {
-                settled = true;
+                settled = !broke_its_schema(&Ok(v.clone()));
                 if let (Some(raw), 1) = (raw_estimate, v.timing.attempts) {
                     estimator.observe(raw, v.timing.prompt_eval_count);
                 }
@@ -1409,6 +1491,19 @@ fn is_server_error(e: &Error) -> bool {
         .is_some_and(|(_, rest)| rest.starts_with('5')))
 }
 
+/// Whether a reply broke its schema: an error, or (under an escalating think policy) a
+/// fallback verdict whose second call did. Either says the structured mode may be failing.
+fn broke_its_schema(r: &Result<Verdict>) -> bool {
+    match r {
+        Err(Error::BadVerdict(_)) => true,
+        Ok(v) => v
+            .escalation
+            .as_ref()
+            .is_some_and(|e| e.fallback.as_deref() == Some("bad_verdict")),
+        Err(_) => false,
+    }
+}
+
 /// An outcome recorded because the window was too small. It is offrig's sizing failure:
 /// it is neither scored nor counted against the model.
 fn is_overflow(l: &Line) -> bool {
@@ -1475,6 +1570,20 @@ pub struct RuleResult {
     pub pass: bool,
 }
 
+/// How an escalating think policy did on one check type.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EscalationStats {
+    pub check_type: CheckType,
+    /// Claims answered under an escalating policy.
+    pub claims: usize,
+    /// Of those, the ones asked a second time.
+    pub escalated: usize,
+    /// `escalated / claims`.
+    pub escalation_rate: f64,
+    /// Of the escalated, the ones that ended as a `think_fallback` cannot_tell.
+    pub fallbacks: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Report {
     pub model: String,
@@ -1487,6 +1596,9 @@ pub struct Report {
     pub unusable: BTreeMap<String, usize>,
     pub rows: Vec<CheckMetrics>,
     pub strata: Vec<Stratum>,
+    /// Per check type under an escalating think policy; empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub escalation: Vec<EscalationStats>,
     pub cost: Cost,
     pub rule: Vec<RuleResult>,
     /// Both grounded and reasoning pass, and no selected claim is waiting.
@@ -1564,6 +1676,28 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         per_claim_usd: (!lines.is_empty()).then(|| total / lines.len() as f64),
         note: "gpu_cost_hr x wall seconds / 3600; boot and model pull time are not included and are the caller's to add".into(),
     };
+    let mut escalation = Vec::new();
+    for ct in [
+        CheckType::Grounded,
+        CheckType::Reasoning,
+        CheckType::Knowledge,
+    ] {
+        let mine: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.is_ok() && l.check_type == ct && l.escalated.is_some())
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let escalated = mine.iter().filter(|l| l.escalated == Some(true)).count();
+        escalation.push(EscalationStats {
+            check_type: ct,
+            claims: mine.len(),
+            escalated,
+            escalation_rate: escalated as f64 / mine.len() as f64,
+            fallbacks: mine.iter().filter(|l| l.fallback.is_some()).count(),
+        });
+    }
     let rule = rule_report(&rows);
     // An overflowed claim has no answer the model could have given: it stays pending.
     let recorded: HashSet<&str> = lines
@@ -1602,7 +1736,11 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
             ),
         }),
         default_result: default_result.into(),
-        rule_note: RULE_NOTE.into(),
+        rule_note: if overflow > 0 {
+            format!("{RULE_NOTE}. {OVERFLOW_NOTE}")
+        } else {
+            RULE_NOTE.to_string()
+        },
         context_overflow: overflow,
         ctx: m.ctx.clone(),
         model: m.model.clone(),
@@ -1615,6 +1753,7 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         passes_default: passes,
         rows,
         strata,
+        escalation,
         cost,
         rule,
     }
@@ -1753,6 +1892,19 @@ pub fn render_table(r: &Report) -> String {
                     fmt_opt(row.decided_balanced_accuracy),
                 ));
             }
+        }
+    }
+    if !r.escalation.is_empty() {
+        out.push_str("think policy (escalating):\n");
+        for e in &r.escalation {
+            out.push_str(&format!(
+                "  {:<10} escalated {}/{} ({:.1}%)  think_fallback {}\n",
+                e.check_type.as_str(),
+                e.escalated,
+                e.claims,
+                e.escalation_rate * 100.0,
+                e.fallbacks
+            ));
         }
     }
     let c = &r.cost;
@@ -3709,5 +3861,382 @@ mod tests {
             }
         }
         cleanup(&[&dir]);
+    }
+
+    // ---- Thinking policy
+
+    fn policy_settings(spec: &str) -> Settings {
+        let mut s = settings();
+        s.think_policy = Some(ThinkPolicies::parse(spec, s.think).expect("policy"));
+        s
+    }
+
+    /// The scripted model, thinking off; with thinking on it also catches the near miss g2.
+    fn thinks_twice() -> Fake {
+        Fake::new(|id, req| {
+            let think_on = req.think == Some(ThinkLevel::On);
+            Ok(resp(&match id {
+                "g1" | "g5" => reply("supported", QUOTE),
+                "g2" if think_on => reply("unsupported", ""),
+                "g2" => reply("supported", QUOTE),
+                "g3" => reply("unsupported", ""),
+                "g4" => reply("cannot_tell", ""),
+                "r1" => reply("supported", "this text is not in the diff at all"),
+                "r2" => reply("unsupported", "+ for attempt in 0..3 { try_send() }"),
+                _ => reply("unsupported", ""),
+            }))
+        })
+    }
+
+    #[test]
+    fn a_policy_run_asks_again_before_accepting_and_records_what_it_did() {
+        let dir = tmp("policy");
+        let store = Store::open_in_memory().expect("store");
+        let chat = thinks_twice();
+        let s = policy_settings("escalate:off>on");
+        let rep = go_store(&s, &gold(), &dir, false, &chat, &Srv::new(), &store).expect("run");
+        // unsupported answers (g3, r2, k1) stand with one call; the other four are asked
+        // again: g1 supported, g2 supported, g4 cannot_tell, r1 (quote not found).
+        assert_eq!(chat.calls(), 3 + 4 * 2);
+        let seen = chat.seen.borrow();
+        assert!(
+            seen.iter()
+                .all(|r| matches!(r.think, Some(ThinkLevel::Off | ThinkLevel::On)))
+        );
+        drop(seen);
+        // The second look caught g2, the near miss the first look accepted.
+        let g = &rep.rows[0];
+        assert_eq!((g.false_accept.hits, g.false_accept.of), (0, 3));
+        let lines = read_lines(&dir, false).expect("lines");
+        let find = |id: &str| lines.iter().find(|l| l.claim_id == id).expect("line");
+        let g2 = find("g2");
+        assert_eq!(g2.escalated, Some(true));
+        assert_eq!(g2.first_verdict, Some(VerdictKind::Supported));
+        assert_eq!(g2.then_verdict, Some(VerdictKind::Unsupported));
+        assert_eq!(g2.final_verdict, Some(VerdictKind::Unsupported));
+        assert_eq!(g2.fallback, None);
+        assert_eq!(g2.pins.as_ref().expect("pins").think, "escalate:off>on");
+        let g3 = find("g3");
+        assert_eq!(g3.escalated, Some(false));
+        assert_eq!(
+            (g3.first_verdict, g3.then_verdict),
+            (Some(VerdictKind::Unsupported), None)
+        );
+        assert_eq!(g3.timing.expect("timing").attempts, 1);
+        assert_eq!(g2.timing.expect("timing").attempts, 2);
+        // The store keeps the escalation record with the verdict.
+        let stored = store.verdicts_for_claim("g2").expect("rows");
+        let e = stored[0]
+            .verdict
+            .escalation
+            .as_ref()
+            .expect("stored escalation");
+        assert_eq!(
+            (e.escalated, e.first_verdict, e.then_verdict),
+            (
+                true,
+                Some(VerdictKind::Supported),
+                Some(VerdictKind::Unsupported)
+            )
+        );
+        assert_eq!(stored[0].verdict.timing.attempts, 2);
+        let first_only = store.verdicts_for_claim("g3").expect("rows");
+        let e3 = first_only[0]
+            .verdict
+            .escalation
+            .as_ref()
+            .expect("g3 record");
+        assert!(!e3.escalated && first_only[0].verdict.timing.attempts == 1);
+        // The settings record names the policy; the report counts the escalations.
+        let man = read_manifest(&dir).expect("manifest");
+        assert_eq!(man.settings["think_policy"], "escalate:off>on");
+        assert!(man.settings.get("think_num_predict").is_none());
+        assert!(man.settings.get("loop_stop").is_none());
+        let e = &rep.escalation[0];
+        assert_eq!(e.check_type, CheckType::Grounded);
+        assert_eq!((e.claims, e.escalated, e.fallbacks), (4, 3, 0));
+        close(e.escalation_rate, 0.75);
+        let table = render_table(&rep);
+        assert!(table.contains("think policy (escalating)"), "{table}");
+        assert!(
+            table.contains("escalated 3/4 (75.0%)  think_fallback 0"),
+            "{table}"
+        );
+        let m: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("metrics.json")).expect("metrics"),
+        )
+        .expect("json");
+        assert_eq!(m["escalation"][0]["escalated"], 3);
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_policy_by_check_type_leaves_the_other_types_on_the_plain_level() {
+        let dir = tmp("policy-by-type");
+        let chat = thinks_twice();
+        let s = policy_settings("reasoning=escalate:off>on");
+        let rep = go(&s, &dir, false, &chat, &Srv::new()).expect("run");
+        // Only r1 (quote not found, so cannot_tell) is asked twice.
+        assert_eq!(chat.calls(), 7 + 1);
+        let seen = chat.seen.borrow();
+        // Grounded and knowledge claims go out at the plain level (on), reasoning at off first.
+        let think_of = |id: &str| -> Vec<Option<ThinkLevel>> {
+            seen.iter()
+                .filter(|r| claim_id(r) == id)
+                .map(|r| r.think)
+                .collect()
+        };
+        assert_eq!(think_of("g1"), [Some(ThinkLevel::On)]);
+        assert_eq!(think_of("k1"), [Some(ThinkLevel::On)]);
+        assert_eq!(
+            think_of("r1"),
+            [Some(ThinkLevel::Off), Some(ThinkLevel::On)]
+        );
+        assert_eq!(think_of("r2"), [Some(ThinkLevel::Off)]);
+        drop(seen);
+        assert_eq!(rep.escalation.len(), 1);
+        assert_eq!(rep.escalation[0].check_type, CheckType::Reasoning);
+        let lines = read_lines(&dir, false).expect("lines");
+        let g1 = lines.iter().find(|l| l.claim_id == "g1").expect("g1");
+        assert_eq!(g1.escalated, None);
+        assert_eq!(g1.pins.as_ref().expect("pins").think, "on");
+        let man = read_manifest(&dir).expect("manifest");
+        assert_eq!(
+            man.settings["think_policy"],
+            "default=on,reasoning=escalate:off>on"
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_second_call_that_gives_no_answer_is_counted_as_a_think_fallback() {
+        let dir = tmp("policy-fallback");
+        let store = Store::open_in_memory().expect("store");
+        let chat = Fake::new(|id, req| {
+            let think_on = req.think == Some(ThinkLevel::On);
+            if id == "g1" && think_on {
+                return Err(Error::truncated("cut off while thinking"));
+            }
+            Ok(resp(&match id {
+                "g1" | "g2" | "g5" => reply("supported", QUOTE),
+                "g3" => reply("unsupported", ""),
+                "g4" => reply("cannot_tell", ""),
+                _ => reply("unsupported", ""),
+            }))
+        });
+        let mut s = policy_settings("grounded=escalate:off>on");
+        s.think_num_predict = Some(8192);
+        let rep = go_store(&s, &gold(), &dir, false, &chat, &Srv::new(), &store).expect("run");
+        let lines = read_lines(&dir, false).expect("lines");
+        let g1 = lines.iter().find(|l| l.claim_id == "g1").expect("g1");
+        // Not unusable, and never the first call's supported.
+        assert_eq!(g1.status, "ok");
+        assert_eq!(g1.final_verdict, Some(VerdictKind::CannotTell));
+        assert_eq!(g1.model_verdict, Some(VerdictKind::Supported));
+        assert_eq!(g1.reason.as_deref(), Some("think_fallback:truncated"));
+        assert_eq!(g1.fallback.as_deref(), Some("truncated"));
+        assert_eq!(g1.needs_human, Some(true));
+        assert!(rep.unusable.is_empty());
+        assert_eq!(rep.escalation[0].fallbacks, 1);
+        assert!(render_table(&rep).contains("think_fallback 1"));
+        // The escalation call carried the longer reply limit; the first did not.
+        let seen = chat.seen.borrow();
+        let g1_calls: Vec<_> = seen.iter().filter(|r| claim_id(r) == "g1").collect();
+        assert_eq!(g1_calls[0].num_predict, Some(4096));
+        assert_eq!(g1_calls[1].num_predict, Some(8192));
+        drop(seen);
+        let man = read_manifest(&dir).expect("manifest");
+        assert_eq!(man.settings["think_num_predict"], 8192);
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn loop_stop_is_part_of_the_run_and_turns_a_looping_reply_into_a_fallback() {
+        let looping = "check the second passage again before answering ".repeat(45);
+        let make = || {
+            let looping = looping.clone();
+            Fake::new(move |id, req| {
+                let think_on = req.think == Some(ThinkLevel::On);
+                let body = match id {
+                    "g1" | "g2" | "g5" => reply("supported", QUOTE),
+                    "g4" => reply("cannot_tell", ""),
+                    _ => reply("unsupported", ""),
+                };
+                Ok(ChatResponse {
+                    thinking: if think_on && id == "g1" {
+                        looping.clone()
+                    } else {
+                        String::new()
+                    },
+                    ..resp(&body)
+                })
+            })
+        };
+        let dir = tmp("loop-off");
+        let s = policy_settings("grounded=escalate:off>on");
+        go(&s, &dir, false, &make(), &Srv::new()).expect("run");
+        let g1 = |dir: &Path| {
+            read_lines(dir, false)
+                .expect("lines")
+                .into_iter()
+                .find(|l| l.claim_id == "g1")
+                .expect("g1")
+        };
+        // Flag off: the looping-but-answered reply stands.
+        assert_eq!(g1(&dir).final_verdict, Some(VerdictKind::Supported));
+        assert!(
+            read_manifest(&dir)
+                .expect("m")
+                .settings
+                .get("loop_stop")
+                .is_none()
+        );
+        let dir2 = tmp("loop-on");
+        let mut s2 = policy_settings("grounded=escalate:off>on");
+        s2.loop_stop = true;
+        go(&s2, &dir2, false, &make(), &Srv::new()).expect("run");
+        let l = g1(&dir2);
+        assert_eq!(l.final_verdict, Some(VerdictKind::CannotTell));
+        assert_eq!(l.fallback.as_deref(), Some("loop"));
+        assert_eq!(read_manifest(&dir2).expect("m").settings["loop_stop"], true);
+        cleanup(&[&dir, &dir2]);
+    }
+
+    #[test]
+    fn a_plain_think_run_records_exactly_what_it_always_did() {
+        let dir = tmp("plain-record");
+        let chat = scripted();
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        let man = read_manifest(&dir).expect("manifest");
+        let mut keys: Vec<&str> = man
+            .settings
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "check_type",
+                "limit",
+                "model",
+                "num_ctx",
+                "num_ctx_mode",
+                "num_predict",
+                "quote_rule",
+                "seed",
+                "shift",
+                "split",
+                "structured",
+                "swap_evidence",
+                "temperature",
+                "think",
+                "truncate",
+                "url",
+            ]
+        );
+        // Plain results carry no escalation fields at all.
+        let text = std::fs::read_to_string(dir.join("verdicts.jsonl")).expect("lines");
+        for key in ["escalated", "first_verdict", "then_verdict", "fallback"] {
+            assert!(!text.contains(key), "{key}");
+        }
+        let metrics = std::fs::read_to_string(dir.join("metrics.json")).expect("metrics");
+        assert!(!metrics.contains("\"escalation\""));
+        assert!(rep.escalation.is_empty());
+        assert!(!render_table(&rep).contains("think policy"));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_resume_with_a_different_think_policy_is_refused() {
+        let dir = tmp("policy-resume");
+        let store = Store::open_in_memory().expect("store");
+        let run = |s: &Settings, resume: bool| {
+            go_store(
+                s,
+                &gold(),
+                &dir,
+                resume,
+                &thinks_twice(),
+                &Srv::new(),
+                &store,
+            )
+        };
+        let base = policy_settings("escalate:off>on");
+        run(&base, false).expect("first");
+        // The same policy resumes.
+        run(&base, true).expect("same policy");
+        let mut other_num = base.clone();
+        other_num.think_num_predict = Some(9000);
+        let mut loop_on = base.clone();
+        loop_on.loop_stop = true;
+        let cases = [
+            (policy_settings("escalate:off>medium"), "think_policy"),
+            (policy_settings("reasoning=escalate:off>on"), "think_policy"),
+            (policy_settings("off"), "think_policy"),
+            (settings(), "think_policy"),
+            (other_num, "think_num_predict"),
+            (loop_on, "loop_stop"),
+        ];
+        for (s, what) in cases {
+            let e = run(&s, true).expect_err(what);
+            let msg = e.to_string();
+            assert!(
+                msg.contains("cannot resume") && msg.contains(what),
+                "{what}: {msg}"
+            );
+        }
+        // And a plain run cannot be resumed under a policy.
+        let plain_dir = tmp("policy-resume-plain");
+        go(&settings(), &plain_dir, false, &scripted(), &Srv::new()).expect("plain");
+        let e = go(&base, &plain_dir, true, &scripted(), &Srv::new()).expect_err("plain to policy");
+        assert!(
+            e.to_string().contains("cannot resume") && e.to_string().contains("think_policy"),
+            "{e}"
+        );
+        cleanup(&[&dir, &plain_dir]);
+    }
+
+    #[test]
+    fn the_overflow_sentence_appears_only_when_a_claim_overflowed() {
+        let dir = tmp("note-plain");
+        let rep = go(&settings(), &dir, false, &scripted(), &Srv::new()).expect("run");
+        assert_eq!(rep.context_overflow, 0);
+        assert!(!rep.rule_note.contains("context_overflow"));
+        assert!(rep.rule_note.contains("repeated timeout"));
+        assert!(!render_table(&rep).contains("context_overflow"));
+        let m = std::fs::read_to_string(dir.join("metrics.json")).expect("metrics");
+        assert!(!m.contains("leave the run incomplete"));
+        cleanup(&[&dir]);
+
+        // One overflow brings the sentence back.
+        let dir = tmp("note-overflow");
+        let chat = Fake::new(|id, _| {
+            if id == "g2" {
+                return Err(Error::ContextOverflow("filled the window".into()));
+            }
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let rep = go(&settings(), &dir, false, &chat, &Srv::new()).expect("run");
+        assert_eq!(rep.context_overflow, 1);
+        assert!(rep.rule_note.contains("leave the run incomplete"));
+        assert!(rep.rule_note.contains("repeated timeout"));
+        assert!(render_table(&rep).contains("leave the run incomplete"));
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn a_larger_escalation_reply_limit_sizes_the_window() {
+        let mut s = auto_settings();
+        s.think_policy = Some(ThinkPolicies::parse("escalate:off>on", s.think).expect("p"));
+        s.think_num_predict = Some(20_000);
+        assert_eq!(s.max_predict(), 20_000);
+        // Without an escalating policy the extra limit is unused.
+        s.think_policy = Some(ThinkPolicies::parse("off", s.think).expect("p"));
+        assert_eq!(s.max_predict(), s.num_predict);
+        s.think_policy = None;
+        assert_eq!(s.max_predict(), s.num_predict);
     }
 }

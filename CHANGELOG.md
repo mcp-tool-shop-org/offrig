@@ -6,6 +6,24 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **The verifier can think before it accepts.** `verify calibrate --think-policy` sets the
+  thinking level per check type, and a type can escalate: `escalate:off>on` asks with
+  thinking off first.
+  - An `unsupported` answer stands after one call. A `supported`, a `cannot_tell` or a
+    first reply that was cut off or broke its schema is asked again with thinking on, and
+    that second answer stands.
+  - If the second call is cut off, breaks its schema or (with `--loop-stop`) loops, the
+    claim becomes a `cannot_tell` for a person with the reason `think_fallback:<why>`,
+    never the first call's `supported`. Server, network and `context_overflow` errors
+    from either call are passed on unchanged.
+  - `--think-policy grounded=off,reasoning=escalate:off>on` sets types separately; a type
+    not listed uses `--think`. `--think-num-predict` gives the second call its own reply
+    limit, and the run's window is sized for the larger one.
+  - Each escalated verdict pins the policy, carries an `escalation` record and sums both
+    calls' timing; the report adds the escalation rate and fallback count per type. A plain
+    `--think` run is unchanged, byte for byte, and a resume under another policy is refused.
+  - The calibration report only mentions `context_overflow` leaving a run incomplete when
+    the run had one.
 - **The verifier sizes its own context window, and never lets it overflow silently.**
   `--num-ctx` now defaults to `auto`.
   - `verify calibrate` measures the longest prompts in the claim set (a handful of one-token

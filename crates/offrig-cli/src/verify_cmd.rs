@@ -12,6 +12,7 @@ use offrig_core::cost::now_unix;
 use offrig_core::ollama::Ollama;
 use offrig_core::store::Store;
 use offrig_core::trace::{self, Level};
+use offrig_core::verify::ThinkPolicies;
 
 #[derive(Subcommand)]
 pub enum VerifyCmd {
@@ -43,6 +44,25 @@ pub struct CalibrateArgs {
     /// How much the model thinks before it answers
     #[arg(long, default_value = "on", value_parser = ["off", "on", "low", "medium", "high"])]
     think: String,
+    /// Think before accepting: a thinking policy per check type. One policy for every
+    /// type (`off|on|low|medium|high`, or `escalate:<first>><then>`, say `escalate:off>on`),
+    /// or a list `grounded=off,reasoning=escalate:off>on` where a type not listed uses
+    /// --think. An escalating policy asks at the first level; `unsupported` stands, and
+    /// anything else is asked again at the second level, whose answer stands. If that
+    /// second answer is cut off, broken or (with --loop-stop) loops, the claim ends as
+    /// cannot_tell with the reason think_fallback:<why>, never as the first call's
+    /// supported. Recorded in the run's settings only when given.
+    #[arg(long)]
+    think_policy: Option<String>,
+    /// Reply token limit of the escalation call (default: --num-predict). The window is
+    /// sized for the larger of the two.
+    #[arg(long, requires = "think_policy")]
+    think_num_predict: Option<i32>,
+    /// With an escalating --think-policy, treat an escalation reply whose thinking loops
+    /// (one 8-word phrase 40 times or more) as no answer. Off by default: turn it on for a
+    /// model only after checking that it does not flag good thinking.
+    #[arg(long, requires = "think_policy")]
+    loop_stop: bool,
     /// Send the reply schema as `format` (auto falls back to plain text if it collapses)
     #[arg(long, default_value = "auto", value_parser = ["auto", "on", "off"])]
     structured: String,
@@ -119,6 +139,11 @@ fn calibrate(a: CalibrateArgs) -> Result<()> {
     let model = a.model.clone().context("--model is required")?;
     let mut s = Settings::new(&model, &a.url);
     s.think = parse_think(&a.think)?;
+    if let Some(spec) = &a.think_policy {
+        s.think_policy = Some(ThinkPolicies::parse(spec, s.think)?);
+    }
+    s.think_num_predict = a.think_num_predict;
+    s.loop_stop = a.loop_stop;
     s.structured = Structured::parse(&a.structured)?;
     s.split = Split::parse(&a.split)?;
     s.check_type = parse_check_filter(&a.check_type)?;
