@@ -658,7 +658,7 @@ impl Sidecar {
 impl Sidecar {
     #[tool(
         name = "offrig_status",
-        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods, other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
+        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods (each names gpu_count and gpus, as 2x the type, beside the plan's planned_gpu_count; gpu_mismatch is true when the record differs from the plan, with gpu_mismatch_source record, and null when the record omits the count until offrig_job measures it; the warning is in next_action and nothing is shut down), other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
         annotations(title = "offrig status", read_only_hint = true, open_world_hint = true)
     )]
     async fn offrig_status(&self) -> CallToolResult {
@@ -703,6 +703,7 @@ impl Sidecar {
                         "container_disk_gb": s.plan_container_disk_gb(p.id).ok().flatten().or_else(|| cfg.as_ref().and_then(|c| c.profile(&p.profile).ok().map(|x| x.container_disk_gb))),
                         "pod_id": p.pod_id,
                         "gpus": p.gpu_types,
+                        "planned_gpu_count": p.gpu_count,
                         "max_price_hr": round2(p.max_price_hr),
                         "min_cuda": s.plan_min_cuda(p.id).ok().flatten(),
                         "deadline": p.deadline().map(when),
@@ -794,10 +795,38 @@ impl Sidecar {
             plan_pods.contains(&p.id.as_str())
                 || own_cfg.as_ref().is_some_and(|c| c.owns_pod(&p.name))
         };
+        let planned_of = |id: &str| -> Option<u32> {
+            open_plans
+                .iter()
+                .find(|plan| plan["pod_id"].as_str() == Some(id))
+                .and_then(|plan| plan["planned_gpu_count"].as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let mut count_warnings = Vec::new();
         let ours: Vec<Value> = pods
             .iter()
             .filter(|p| is_ours(p))
-            .map(|p| json!({"name": p.name, "id": p.id, "status": p.desired_status, "cost_per_hr": p.cost_per_hr, "gpu": p.gpu_type(), "host_cuda": p.host_cuda()}))
+            .map(|p| {
+                let count = planning::describe_gpu_count(
+                    p,
+                    planned_of(&p.id),
+                    planning::MeasuredGpus::NotRead,
+                );
+                count_warnings.extend(count.warnings.iter().cloned());
+                json!({
+                    "name": p.name,
+                    "id": p.id,
+                    "status": p.desired_status,
+                    "cost_per_hr": p.cost_per_hr,
+                    "gpu": p.gpu_type(),
+                    "host_cuda": p.host_cuda(),
+                    "gpu_count": count.gpu_count,
+                    "gpus": count.gpus,
+                    "planned_gpu_count": count.planned_gpu_count,
+                    "gpu_mismatch": count.gpu_mismatch,
+                    "gpu_mismatch_source": count.gpu_mismatch_source.map(|s| s.as_str()),
+                })
+            })
             .collect();
         // Everything else on the account: another lane's pods are named (lane, project,
         // and the plan read from that project's store, read-only); only pods offrig did
@@ -843,6 +872,16 @@ impl Sidecar {
             "queue handoffs, each with an acceptance check".into()
         } else {
             "record the project brief and constraints, then queue handoffs".into()
+        };
+        // A card count other than the plan's is reported here. Nothing is shut down
+        // for it: the human or the coordinator decides.
+        let next = if count_warnings.is_empty() {
+            next
+        } else {
+            format!(
+                "WARNING, read before using this pod: {} Then: {next}",
+                count_warnings.join(" ")
+            )
         };
         ok(json!({
             // A folder name, never the path: status output carries no local paths.
@@ -1715,7 +1754,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up, 0 when that reading lists no cards; gpu_mismatch is true when the record or the measurement differs from the plan, and gpu_mismatch_source is record, measured or both; a loud warning names that source and nothing is shut down) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1809,13 +1848,20 @@ impl Sidecar {
                 warnings.join(" ")
             )
         };
+        let rented = &job.progress["rented"];
         ok(json!({
             "project": self.project.display().to_string(),
             "job_id": job.id,
             "plan_id": job.plan_id,
             "state": job.state,
             "progress": progress,
-            "rented": job.progress["rented"],
+            "rented": rented,
+            "gpu_count": rented["gpu_count"],
+            "gpus": rented["gpus"],
+            "planned_gpu_count": rented["planned_gpu_count"],
+            "gpu_mismatch": rented["gpu_mismatch"],
+            "gpu_mismatch_source": rented["gpu_mismatch_source"],
+            "measured_gpu_count": rented["measured_gpu_count"],
             "warnings": warnings,
             "error": job.error,
             "code": failure["code"],

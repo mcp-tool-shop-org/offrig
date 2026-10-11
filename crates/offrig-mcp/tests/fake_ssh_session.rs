@@ -10,7 +10,9 @@ mod common;
 
 use common::{Hits, count, free_port, install_fake_tools, mock, path_with, temp};
 use offrig_core::config::Config;
-use offrig_core::store::Store;
+use offrig_core::planning::{self, MeasuredGpus};
+use offrig_core::runpod::Pod;
+use offrig_core::store::{NewPlan, Store};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
@@ -59,10 +61,16 @@ fn runpod(pods: Pods, gpu: String) -> impl Fn(&str, &str, usize) -> (u16, String
             "GET /pods" => (200, Value::Array(pods.clone()).to_string()),
             "POST /pods" => {
                 let want: Value = serde_json::from_str(body).unwrap_or_default();
+                let count = want
+                    .get("gpu")
+                    .and_then(|g| g.get("count"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0);
                 let p = json!({
                     "id": "pod1", "name": want["name"], "desiredStatus": "RUNNING",
                     "costPerHr": 0.25, "publicIp": "203.0.113.9",
                     "portMappings": {"22": 40022}, "ports": ["22/tcp"],
+                    "gpuCount": count,
                     "machine": {"gpuTypeId": gpu, "dataCenterId": "EU-RO-1"}
                 });
                 pods.push(p.clone());
@@ -157,19 +165,30 @@ struct Rig {
     session: Session,
     runpod_hits: Hits,
     fake: std::path::PathBuf,
+    pods: Pods,
 }
 
 impl Rig {
     async fn start(name: &str, gpu: String, models: &[String]) -> Rig {
+        Self::start_in(name, gpu, models, |_| {}).await
+    }
+
+    async fn start_in(
+        name: &str,
+        gpu: String,
+        models: &[String],
+        setup: impl FnOnce(&std::path::Path),
+    ) -> Rig {
         let dir = temp(name);
         let pods: Pods = Arc::default();
-        let (url, runpod_hits) = mock(runpod(pods, gpu));
+        let (url, runpod_hits) = mock(runpod(Arc::clone(&pods), gpu));
         let (ollama, _) = model(models.to_vec());
         let (bin, fake) = install_fake_tools(&dir);
         {
             let s = Store::open(&dir.join(".offrig").join("offrig.db")).expect("store");
             s.set_budget_cap(15.0).expect("cap");
         }
+        setup(&dir);
         let upstream = ollama.trim_start_matches("http://").to_string();
         let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_offrig-mcp")).configure(|c| {
             c.arg("--project").arg(&dir);
@@ -189,6 +208,7 @@ impl Rig {
             session: Session { client },
             runpod_hits,
             fake,
+            pods,
         }
     }
 
@@ -259,6 +279,25 @@ async fn a_model_session_launches_asks_runs_the_queue_and_shuts_down() {
     // measurement was added to it (it did not replace the GPU and price).
     assert_eq!(job["rented"]["cuda_version"], "12.8", "{job:?}");
     assert_eq!(job["rented"]["cuda_source"], "nvidia-smi", "{job:?}");
+    // The small profile asks for one card. The header-only nvidia-smi ran and listed
+    // none, so the measured count is 0 and that is a mismatch. Nothing is shut down.
+    assert_eq!(job["gpu_count"], 1, "{job:?}");
+    assert_eq!(job["planned_gpu_count"], 1, "{job:?}");
+    assert_eq!(job["gpu_mismatch"], true, "{job:?}");
+    assert_eq!(job["gpu_mismatch_source"], "measured", "{job:?}");
+    assert_eq!(job["measured_gpu_count"], 0, "{job:?}");
+    let next = job["next_action"].as_str().expect("next");
+    assert!(
+        next.contains("nvidia-smi lists no GPUs")
+            && next.contains("source measured")
+            && next.contains("Nothing was shut down"),
+        "{next}"
+    );
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/pod1"), 0);
+    assert!(
+        job["gpus"].as_str().is_some_and(|g| g.starts_with("1x ")),
+        "{job:?}"
+    );
     assert!(job["rented"]["gpu"].is_string(), "{job:?}");
     assert!(job["rented"]["cost_per_hr"].is_number(), "{job:?}");
     assert!(
@@ -327,7 +366,12 @@ async fn a_job_pod_runs_commands_and_moves_files_then_shuts_down() {
     let rig = Rig::start("job-session", gpu_ids("job")[0].clone(), &[]).await;
     let s = &rig.session;
     rig.rules(json!([
-        {"contains": "nvidia-smi", "stdout": "CUDA Version: 12.8\n"},
+        {"contains": "nvidia-smi", "stdout": "\
+| NVIDIA-SMI 570.1  Driver Version: 570.1  CUDA Version: 12.8 |
+|   0  NVIDIA RTX PRO 6000 Blackwell Server Edition  Off |
+|   1  NVIDIA RTX PRO 6000 Blackwell Server Edition  Off |
+|    0   N/A  N/A   1234  C   python |
+"},
         {"contains": "setsid nohup", "stdout": "started\n"},
         {"contains": "tail -n", "stdout": "exited 0\nstep 1\nstep 2\n"},
         {"contains": "kill -TERM", "stdout": "ok\n"},
@@ -360,6 +404,23 @@ async fn a_job_pod_runs_commands_and_moves_files_then_shuts_down() {
             .is_some_and(|n| n.contains("job pod is ready")),
         "{job:?}"
     );
+    // The job profile asks for one card and the pod record says one. nvidia-smi, the
+    // same reading as the CUDA version, counts two. The measurement drives the
+    // mismatch. Nothing is shut down for it.
+    assert_eq!(job["gpu_count"], 1, "{job:?}");
+    assert_eq!(job["planned_gpu_count"], 1, "{job:?}");
+    assert_eq!(job["gpu_mismatch"], true, "{job:?}");
+    assert_eq!(job["gpu_mismatch_source"], "measured", "{job:?}");
+    assert_eq!(job["measured_gpu_count"], 2, "{job:?}");
+    assert_eq!(job["rented"]["measured_gpu_count"], 2, "{job:?}");
+    let next = job["next_action"].as_str().expect("next");
+    assert!(
+        next.contains("source measured")
+            && next.contains("nvidia-smi on the pod counts 2")
+            && next.contains("Nothing was shut down"),
+        "{next}"
+    );
+    assert_eq!(job["plan_state"], "committed", "{job:?}");
 
     let ran = s
         .ok(
@@ -439,4 +500,150 @@ async fn a_job_pod_runs_commands_and_moves_files_then_shuts_down() {
     assert_eq!(count(&rig.runpod_hits, "DELETE /pods/pod1"), 1);
     rig.finish().await;
     let _ = free_port();
+}
+
+const SERVER: &str = "NVIDIA RTX PRO 6000 Blackwell Server Edition";
+
+fn two_gpu_plan(dir: &std::path::Path, pod_id: &str) {
+    let s = Store::open(&dir.join(".offrig").join("offrig.db")).expect("store");
+    let plan = s
+        .create_plan(NewPlan {
+            profile: "job".into(),
+            gpu_count: 2,
+            gpu_types: vec![SERVER.into()],
+            max_hours: 0.1,
+            max_price_hr: 2.0,
+            note: None,
+        })
+        .expect("plan");
+    s.commit_plan(plan.id).expect("commit");
+    s.attach_pod(plan.id, pod_id).expect("attach");
+}
+
+fn pod_record(id: &str, n: u32) -> Value {
+    json!({
+        "id": id,
+        "name": format!("offrig-count-{id}"),
+        "desiredStatus": "RUNNING",
+        "costPerHr": 2.0,
+        "gpuCount": n,
+        "machine": {"gpuTypeId": SERVER},
+    })
+}
+
+#[tokio::test]
+async fn status_reports_one_and_two_cards_against_a_two_gpu_plan() {
+    let rig = Rig::start_in("gpu-count", SERVER.into(), &[], |dir| {
+        two_gpu_plan(dir, "one");
+        two_gpu_plan(dir, "two");
+        two_gpu_plan(dir, "bare");
+    })
+    .await;
+    {
+        let mut pods = rig.pods.lock().expect("pods");
+        pods.push(pod_record("one", 1));
+        pods.push(pod_record("two", 2));
+        pods.push(json!({
+            "id": "bare",
+            "name": "offrig-count-bare",
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.0,
+            "machine": {"gpuTypeId": SERVER},
+        }));
+    }
+    let status = rig.session.ok("offrig_status", json!({})).await;
+    let rows = status["runpod"]["offrig_pods"].as_array().expect("pods");
+    let row = |id: &str| {
+        rows.iter()
+            .find(|p| p["id"] == id)
+            .unwrap_or_else(|| panic!("missing {id} in {rows:?}"))
+    };
+    let one = row("one");
+    assert_eq!(one["gpu"], SERVER);
+    assert_eq!(one["gpu_count"], 1);
+    assert_eq!(one["gpus"], format!("1x {SERVER}"));
+    assert_eq!(one["planned_gpu_count"], 2);
+    assert_eq!(one["gpu_mismatch"], true);
+    assert_eq!(one["gpu_mismatch_source"], "record");
+    let two = row("two");
+    assert_eq!(two["gpu"], SERVER);
+    assert_eq!(two["gpu_count"], 2);
+    assert_eq!(two["gpus"], format!("2x {SERVER}"));
+    assert_eq!(two["planned_gpu_count"], 2);
+    assert_eq!(two["gpu_mismatch"], false);
+    assert!(two["gpu_mismatch_source"].is_null());
+    let bare = row("bare");
+    assert!(bare["gpu_count"].is_null());
+    assert_eq!(bare["planned_gpu_count"], 2);
+    assert!(bare["gpu_mismatch"].is_null(), "{bare}");
+    assert!(bare["gpu_mismatch_source"].is_null());
+    let plans = status["open_plans"].as_array().expect("plans");
+    assert!(plans.iter().all(|p| p["planned_gpu_count"] == 2));
+    let next = status["next_action"].as_str().expect("next");
+    assert!(
+        next.starts_with("WARNING, read before using this pod:"),
+        "{next}"
+    );
+    assert!(
+        next.contains("GPU COUNT MISMATCH: pod one reports 1x ")
+            && next.contains("source record")
+            && next.contains("asked for 2")
+            && next.contains("Nothing was shut down")
+            && next.contains("gives no GPU count")
+            && next.contains("until offrig_job measures it"),
+        "{next}"
+    );
+    assert!(!next.contains("pod two reports"), "{next}");
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/one"), 0);
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/two"), 0);
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/bare"), 0);
+    rig.finish().await;
+}
+
+#[tokio::test]
+async fn offrig_job_reports_a_gpu_count_mismatch_without_shutting_down() {
+    let rig = Rig::start_in("job-mismatch", SERVER.into(), &[], |dir| {
+        two_gpu_plan(dir, "pod1");
+    })
+    .await;
+    let job_id = {
+        let s = Store::open(&rig.dir.join(".offrig").join("offrig.db")).expect("store");
+        let plan = s.open_plans().expect("plans").remove(0);
+        let pod: Pod = serde_json::from_value(pod_record("pod1", 1)).expect("pod");
+        let mut rented =
+            planning::audit_rental(&pod, &[SERVER.into()], plan.max_price_hr, None).to_json();
+        planning::apply_gpu_count(&mut rented, &pod, Some(2), MeasuredGpus::Read(Some(1)));
+        let job = s.create_job(plan.id, "launch").expect("job");
+        s.update_job(
+            job,
+            "done",
+            &json!({"step": "ready", "job_dir": "/workspace/job", "rented": rented}),
+            None,
+        )
+        .expect("progress");
+        job
+    };
+    let j = rig
+        .session
+        .ok("offrig_job", json!({"job_id": job_id}))
+        .await;
+    assert_eq!(j["gpu_count"], 1, "{j:?}");
+    assert_eq!(j["gpus"], format!("1x {SERVER}"), "{j:?}");
+    assert_eq!(j["planned_gpu_count"], 2, "{j:?}");
+    assert_eq!(j["gpu_mismatch"], true, "{j:?}");
+    assert_eq!(j["gpu_mismatch_source"], "both", "{j:?}");
+    assert_eq!(j["measured_gpu_count"], 1, "{j:?}");
+    assert_eq!(j["rented"]["gpu_count"], 1, "{j:?}");
+    let next = j["next_action"].as_str().expect("next");
+    assert!(
+        next.starts_with("WARNING")
+            && next.contains("GPU COUNT MISMATCH: pod pod1 reports 1x ")
+            && next.contains("source both")
+            && next.contains("Nothing was shut down")
+            && next.contains("job pod is ready"),
+        "{next}"
+    );
+    assert_eq!(j["plan_state"], "committed", "{j:?}");
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/pod1"), 0);
+    rig.finish().await;
 }

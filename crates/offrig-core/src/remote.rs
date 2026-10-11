@@ -93,14 +93,57 @@ pub fn parse_cuda_version(smi: &str) -> Option<String> {
     None
 }
 
+/// One `nvidia-smi` on the pod: the header's CUDA version and how many cards the
+/// table lists. The launch asks once; both facts come from that same text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmiReading {
+    pub cuda_version: Option<String>,
+    pub gpu_count: Option<u32>,
+}
+
+/// How many GPU cards `nvidia-smi`'s table lists. A card row starts with the card
+/// index and then a name (`|   0  NVIDIA ...`). Process rows (`|    0   N/A`) and the
+/// header are not cards. `None` when the text has no card row. Against a plan above
+/// 0 the caller reports that as zero cards, the worst mismatch, not as "not measured".
+pub fn parse_gpu_count(smi: &str) -> Option<u32> {
+    let n = smi.lines().filter(|line| gpu_card_row(line)).count();
+    (n > 0).then_some(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// A table row whose first cell is a card index and whose next cell is a name.
+fn gpu_card_row(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('|') else {
+        return false;
+    };
+    let Some((idx, after)) = rest.trim_start().split_once(char::is_whitespace) else {
+        return false;
+    };
+    if idx.parse::<u32>().is_err() {
+        return false;
+    }
+    let token = after.split_whitespace().next().unwrap_or("");
+    !token.is_empty()
+        && token != "N/A"
+        && token
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+}
+
+/// Run `nvidia-smi` once on the pod and read the CUDA version and the card count.
+/// `Err` when it could not be run (no ssh, no driver).
+pub fn read_nvidia_smi(alias: &str) -> Result<SmiReading> {
+    let text = ssh_exec(alias, "nvidia-smi", Duration::from_secs(30))?;
+    Ok(SmiReading {
+        cuda_version: parse_cuda_version(&text),
+        gpu_count: parse_gpu_count(&text),
+    })
+}
+
 /// Run `nvidia-smi` once on the pod and read its CUDA version. `Ok(None)` when it ran
 /// but printed no version; `Err` when it could not be run (no ssh, no driver).
 pub fn host_cuda_version(alias: &str) -> Result<Option<String>> {
-    Ok(parse_cuda_version(&ssh_exec(
-        alias,
-        "nvidia-smi",
-        Duration::from_secs(30),
-    )?))
+    Ok(read_nvidia_smi(alias)?.cuda_version)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -374,6 +417,34 @@ mod tests {
         ] {
             assert_eq!(parse_cuda_version(none), None, "{none:?}");
         }
+    }
+
+    #[test]
+    fn nvidia_smi_counts_gpu_cards_and_ignores_process_rows() {
+        let one = "\
+| NVIDIA-SMI 570.124.06   Driver Version: 570.124.06   CUDA Version: 12.8     |
+| GPU  Name                 Persistence-M |
+|   0  NVIDIA RTX PRO 6000 Blackwell Server Edition  Off |
+| 30%   32C    P8             15W /  300W |
+|    0   N/A  N/A            1234      C   python |
+";
+        assert_eq!(parse_gpu_count(one), Some(1));
+        assert_eq!(parse_cuda_version(one).as_deref(), Some("12.8"));
+        let two = "\
+| NVIDIA-SMI 570.124.06   Driver Version: 570.124.06   CUDA Version: 12.8     |
+|   0  NVIDIA RTX PRO 6000 Blackwell Server Edition  Off |
+|   1  NVIDIA RTX PRO 6000 Blackwell Server Edition  Off |
+|    0   N/A  N/A            1234      C   python |
+|    1   N/A  N/A            1235      C   python |
+";
+        assert_eq!(parse_gpu_count(two), Some(2));
+        // A header, a fan line and a process row are not cards.
+        assert_eq!(
+            parse_gpu_count("| NVIDIA-SMI 570.1  Driver Version: 570.1  CUDA Version: 12.8 |\n"),
+            None
+        );
+        assert_eq!(parse_gpu_count("|    0   N/A  N/A   1  C   python |"), None);
+        assert_eq!(parse_gpu_count(""), None);
     }
 
     #[test]
