@@ -239,7 +239,8 @@ fn capacity_poll() -> Duration {
 
 /// Run `nvidia-smi` once on the pod through the lane's ssh alias. The CUDA version
 /// and the card count both come from that text. Never fails the launch: the pod is
-/// billing and usable, so a missing answer is recorded as such.
+/// billing and usable, so a missing answer is recorded as such. A failed ssh did not
+/// list cards: `Read(None)` is only a reading that ran and printed no card rows.
 fn host_reading(alias: &str) -> (HostCuda, planning::MeasuredGpus) {
     match offrig_core::remote::read_nvidia_smi(alias) {
         Ok(r) => {
@@ -251,7 +252,7 @@ fn host_reading(alias: &str) -> (HostCuda, planning::MeasuredGpus) {
         }
         Err(e) => (
             HostCuda::Unavailable(chain(&e)),
-            planning::MeasuredGpus::Read(None),
+            planning::MeasuredGpus::NotRead,
         ),
     }
 }
@@ -1516,11 +1517,15 @@ mod tests {
             Some("1x NVIDIA RTX PRO 6000 Blackwell Server Edition")
         );
         assert_eq!(one.planned_gpu_count, Some(2));
-        assert!(one.gpu_mismatch);
+        assert_eq!(one.gpu_mismatch, Some(true));
+        assert_eq!(
+            one.gpu_mismatch_source,
+            Some(planning::GpuMismatchSource::Record)
+        );
         assert_eq!(
             one.warnings,
             [
-                "GPU COUNT MISMATCH: pod pod1 reports 1x NVIDIA RTX PRO 6000 Blackwell Server Edition and the plan asked for 2. Nothing was shut down."
+                "GPU COUNT MISMATCH: pod pod1 reports 1x NVIDIA RTX PRO 6000 Blackwell Server Edition and the plan asked for 2 (source record). Nothing was shut down."
             ]
         );
         // The report is the whole action. Nothing here asks RunPod to delete the pod.
@@ -1533,6 +1538,7 @@ mod tests {
             planning::MeasuredGpus::NotRead,
         );
         assert_eq!(rented["gpu_mismatch"], true);
+        assert_eq!(rented["gpu_mismatch_source"], "record");
         assert!(rented.get("measured_gpu_count").is_none());
         assert!(
             rented["warnings"]
@@ -1547,7 +1553,8 @@ mod tests {
             Some(2),
             planning::MeasuredGpus::NotRead,
         );
-        assert!(!two.gpu_mismatch);
+        assert_eq!(two.gpu_mismatch, Some(false));
+        assert!(two.gpu_mismatch_source.is_none());
         assert!(two.warnings.is_empty());
         assert_eq!(two.gpu_count, Some(2));
         assert_eq!(
@@ -1555,21 +1562,6 @@ mod tests {
             Some("2x NVIDIA RTX PRO 6000 Blackwell Server Edition")
         );
         assert_eq!(two.planned_gpu_count, Some(2));
-
-        // A record that omits gpuCount deserializes as 0. That is not a count, and it
-        // is not a mismatch against the plan.
-        let omitted: Pod = serde_json::from_value(json!({
-            "id": "pod1",
-            "costPerHr": 2.09,
-            "machine": {"gpuTypeId": SERVER},
-        }))
-        .expect("pod");
-        let quiet =
-            planning::describe_gpu_count(&omitted, Some(2), planning::MeasuredGpus::NotRead);
-        assert!(quiet.gpu_count.is_none());
-        assert!(quiet.gpus.is_none());
-        assert!(!quiet.gpu_mismatch);
-        assert!(quiet.warnings.is_empty());
     }
 
     #[test]
@@ -1579,20 +1571,41 @@ mod tests {
             planning::describe_gpu_count(&pod, Some(2), planning::MeasuredGpus::Read(Some(2)));
         assert_eq!(same.measured_gpu_count, Some(2));
         assert!(same.measured);
-        assert!(!same.gpu_mismatch);
+        assert_eq!(same.gpu_mismatch, Some(false));
+        assert!(same.gpu_mismatch_source.is_none());
         assert!(same.warnings.is_empty());
+    }
 
-        // The API and the plan agree. nvidia-smi does not. The mismatch flag stays
-        // the API-versus-plan fact, and the measured disagreement is its own warning.
+    fn uncounted(id: &str) -> Pod {
+        serde_json::from_value(json!({
+            "id": id,
+            "name": "offrig-x-job",
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.09,
+            "machine": {"gpuTypeId": SERVER},
+        }))
+        .expect("pod")
+    }
+
+    /// Record matches the plan. nvidia-smi counts fewer cards, so the mismatch is
+    /// the measurement, and the record-against-measurement warning stays.
+    #[test]
+    fn record_matches_the_plan_and_the_measurement_is_below() {
+        let pod = counted("pod1", 2);
         let off =
             planning::describe_gpu_count(&pod, Some(2), planning::MeasuredGpus::Read(Some(1)));
         assert_eq!(off.gpu_count, Some(2));
         assert_eq!(off.measured_gpu_count, Some(1));
-        assert!(!off.gpu_mismatch);
+        assert_eq!(off.gpu_mismatch, Some(true));
+        assert_eq!(
+            off.gpu_mismatch_source,
+            Some(planning::GpuMismatchSource::Measured)
+        );
         assert_eq!(
             off.warnings,
             [
-                "nvidia-smi on the pod counts 1 GPU(s) and the pod record says 2. Nothing was shut down."
+                "GPU COUNT MISMATCH: nvidia-smi counts 1 on pod pod1 and the plan asked for 2 (source measured). Nothing was shut down.",
+                "nvidia-smi on the pod counts 1 GPU(s) and the pod record says 2. Nothing was shut down.",
             ]
         );
         let mut rented = planning::audit_rental(&pod, &[SERVER.into()], 2.09, None).to_json();
@@ -1602,15 +1615,99 @@ mod tests {
             Some(2),
             planning::MeasuredGpus::Read(Some(1)),
         );
-        assert_eq!(rented["gpu_count"], 2);
+        assert_eq!(rented["gpu_mismatch"], true);
+        assert_eq!(rented["gpu_mismatch_source"], "measured");
         assert_eq!(rented["measured_gpu_count"], 1);
-        assert_eq!(rented["gpu_mismatch"], false);
-        assert_eq!(rented["planned_gpu_count"], 2);
+    }
 
-        // Asked, and the table had no card rows: the field is present and null.
-        let mut bare = planning::audit_rental(&pod, &[SERVER.into()], 2.09, None).to_json();
-        planning::apply_gpu_count(&mut bare, &pod, Some(2), planning::MeasuredGpus::Read(None));
-        assert!(bare["measured_gpu_count"].is_null());
-        assert_eq!(bare["gpu_mismatch"], false);
+    /// A missing gpuCount must not hide a measured 1-card pod against a 2-GPU plan.
+    #[test]
+    fn record_missing_and_the_measurement_is_below_the_plan() {
+        let pod = uncounted("pod1");
+        let off =
+            planning::describe_gpu_count(&pod, Some(2), planning::MeasuredGpus::Read(Some(1)));
+        assert!(off.gpu_count.is_none());
+        assert_eq!(off.measured_gpu_count, Some(1));
+        assert_eq!(off.gpu_mismatch, Some(true));
+        assert_eq!(
+            off.gpu_mismatch_source,
+            Some(planning::GpuMismatchSource::Measured)
+        );
+        assert_eq!(
+            off.warnings,
+            [
+                "GPU COUNT MISMATCH: nvidia-smi counts 1 on pod pod1 and the plan asked for 2 (source measured). Nothing was shut down.",
+            ]
+        );
+        let mut rented = planning::audit_rental(&pod, &[SERVER.into()], 2.09, None).to_json();
+        planning::apply_gpu_count(
+            &mut rented,
+            &pod,
+            Some(2),
+            planning::MeasuredGpus::Read(Some(1)),
+        );
+        assert!(rented["gpu_count"].is_null());
+        assert_eq!(rented["gpu_mismatch"], true);
+        assert_eq!(rented["gpu_mismatch_source"], "measured");
+        assert_eq!(rented["measured_gpu_count"], 1);
+    }
+
+    /// Status has not measured. An omitted count is unknown, not a confirmed match.
+    #[test]
+    fn record_missing_and_not_measured_against_a_plan_of_two() {
+        let pod = uncounted("pod1");
+        let quiet = planning::describe_gpu_count(&pod, Some(2), planning::MeasuredGpus::NotRead);
+        assert!(quiet.gpu_count.is_none());
+        assert!(quiet.gpus.is_none());
+        assert!(!quiet.measured);
+        assert!(quiet.measured_gpu_count.is_none());
+        assert!(quiet.gpu_mismatch.is_none());
+        assert!(quiet.gpu_mismatch_source.is_none());
+        assert_eq!(
+            quiet.warnings,
+            [
+                "the pod record gives no GPU count; it can't be checked against the plan's 2 until offrig_job measures it. Nothing was shut down.",
+            ]
+        );
+        let mut rented = planning::audit_rental(&pod, &[SERVER.into()], 2.09, None).to_json();
+        planning::apply_gpu_count(&mut rented, &pod, Some(2), planning::MeasuredGpus::NotRead);
+        assert!(rented["gpu_mismatch"].is_null());
+        assert!(rented["gpu_mismatch_source"].is_null());
+        assert!(rented.get("measured_gpu_count").is_none());
+    }
+
+    /// nvidia-smi ran and listed no cards. Against a plan above 0 that is zero, not
+    /// "not measured".
+    #[test]
+    fn nvidia_smi_ran_with_no_card_rows_against_a_plan_of_two() {
+        let header = "| NVIDIA-SMI 570.1  Driver Version: 570.1  CUDA Version: 12.8 |\n";
+        assert_eq!(offrig_core::remote::parse_gpu_count(header), None);
+        let pod = counted("pod1", 2);
+        let none = planning::describe_gpu_count(&pod, Some(2), planning::MeasuredGpus::Read(None));
+        assert_eq!(none.gpu_count, Some(2));
+        assert_eq!(none.measured_gpu_count, Some(0));
+        assert!(none.measured);
+        assert_eq!(none.gpu_mismatch, Some(true));
+        assert_eq!(
+            none.gpu_mismatch_source,
+            Some(planning::GpuMismatchSource::Measured)
+        );
+        assert_eq!(
+            none.warnings,
+            [
+                "GPU COUNT MISMATCH: nvidia-smi lists no GPUs on pod pod1 and the plan asked for 2 (source measured). Nothing was shut down.",
+                "nvidia-smi on the pod counts 0 GPU(s) and the pod record says 2. Nothing was shut down.",
+            ]
+        );
+        let mut rented = planning::audit_rental(&pod, &[SERVER.into()], 2.09, None).to_json();
+        planning::apply_gpu_count(
+            &mut rented,
+            &pod,
+            Some(2),
+            planning::MeasuredGpus::Read(None),
+        );
+        assert_eq!(rented["measured_gpu_count"], 0);
+        assert_eq!(rented["gpu_mismatch"], true);
+        assert_eq!(rented["gpu_mismatch_source"], "measured");
     }
 }

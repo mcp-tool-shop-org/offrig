@@ -314,10 +314,33 @@ pub fn audit_rental_with_host(
 /// once ssh is up, in the same reading that produces the CUDA version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeasuredGpus {
-    /// ssh is not up, or this view does not run commands.
+    /// ssh is not up, this view does not run commands, or `nvidia-smi` could not be run.
+    /// A failed ssh is not a count of zero.
     NotRead,
     /// `nvidia-smi` ran. `None` means it printed no card rows.
     Read(Option<u32>),
+}
+
+/// Which count disagreed with the plan. Present only when [`GpuReport::gpu_mismatch`]
+/// is `Some(true)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuMismatchSource {
+    /// The pod record differs from the plan. The measurement was not read, or it matches.
+    Record,
+    /// `nvidia-smi` differs from the plan. The record matches, or it omitted the count.
+    Measured,
+    /// The record and the measurement both differ from the plan.
+    Both,
+}
+
+impl GpuMismatchSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Record => "record",
+            Self::Measured => "measured",
+            Self::Both => "both",
+        }
+    }
 }
 
 /// The pod record's card count beside the plan's, and the count `nvidia-smi` measured
@@ -331,18 +354,24 @@ pub struct GpuReport {
     /// The plan's count. `None` when this pod is not one of the caller's open plans,
     /// or the stored count is 0.
     pub planned_gpu_count: Option<u32>,
-    /// Both counts are known and they differ. A report, never a shutdown.
-    pub gpu_mismatch: bool,
-    /// The card count from `nvidia-smi`, once it was asked.
+    /// `Some(true)` when the record or the measurement differs from the plan.
+    /// `Some(false)` when every known count matches, or there is no plan to check.
+    /// `None` when a plan exists, the record omitted the count, and nothing has been
+    /// measured: unknown, not a confirmed match.
+    pub gpu_mismatch: Option<bool>,
+    /// `record`, `measured`, or `both` when `gpu_mismatch` is `Some(true)`.
+    pub gpu_mismatch_source: Option<GpuMismatchSource>,
+    /// The card count from `nvidia-smi`, once it was asked. `Some(0)` when it ran and
+    /// listed no cards against a plan above 0.
     pub measured_gpu_count: Option<u32>,
-    /// True once `nvidia-smi` was asked, even when it printed no card rows.
+    /// True once `nvidia-smi` returned, including a table with no card rows.
     pub measured: bool,
     /// Loud lines for `next_action`. Empty when there is nothing to look at.
     pub warnings: Vec<String>,
 }
 
 /// `reported` of 0 is the JSON default when a pod record omits `gpuCount`. RunPod's
-/// count is at least 1, so 0 means "not reported" and is not compared with the plan.
+/// count is at least 1, so 0 means "not reported".
 pub fn describe_gpu_count(
     pod: &crate::runpod::Pod,
     planned: Option<u32>,
@@ -356,23 +385,53 @@ pub fn describe_gpu_count(
         },
     );
     let planned_gpu_count = planned.filter(|n| *n > 0);
-    let gpu_mismatch = matches!(
+    // A reading that ran and listed no cards is zero cards once a plan asked for some.
+    // That is the worst mismatch, not "not measured".
+    let no_cards = matches!(measured, MeasuredGpus::Read(None)) && planned_gpu_count.is_some();
+    let (measured_flag, measured_gpu_count) = match measured {
+        MeasuredGpus::NotRead => (false, None),
+        MeasuredGpus::Read(Some(n)) => (true, Some(n)),
+        MeasuredGpus::Read(None) if no_cards => (true, Some(0)),
+        MeasuredGpus::Read(None) => (true, None),
+    };
+    let record_differs = matches!(
         (gpu_count, planned_gpu_count),
         (Some(have), Some(want)) if have != want
     );
-    let (measured_flag, measured_gpu_count) = match measured {
-        MeasuredGpus::NotRead => (false, None),
-        MeasuredGpus::Read(n) => (true, n),
+    let measured_differs = matches!(
+        (measured_gpu_count, planned_gpu_count),
+        (Some(seen), Some(want)) if seen != want
+    );
+    // A missing record must not look like a confirmed match before anything is measured.
+    let unknown = planned_gpu_count.is_some() && gpu_count.is_none() && !measured_flag;
+    let (gpu_mismatch, gpu_mismatch_source) = if record_differs && measured_differs {
+        (Some(true), Some(GpuMismatchSource::Both))
+    } else if record_differs {
+        (Some(true), Some(GpuMismatchSource::Record))
+    } else if measured_differs {
+        (Some(true), Some(GpuMismatchSource::Measured))
+    } else if unknown {
+        (None, None)
+    } else {
+        (Some(false), None)
     };
     let mut warnings = Vec::new();
-    if gpu_mismatch {
-        warnings.push(format!(
-            "GPU COUNT MISMATCH: pod {} reports {} and the plan asked for {}. Nothing was shut down.",
-            pod.id,
+    if let Some(source) = gpu_mismatch_source {
+        warnings.push(gpu_mismatch_warning(
+            &pod.id,
             gpus.as_deref().unwrap_or("an unknown count"),
-            planned_gpu_count.unwrap_or(0)
+            planned_gpu_count.unwrap_or(0),
+            measured_gpu_count,
+            no_cards,
+            source,
         ));
     }
+    if unknown && let Some(want) = planned_gpu_count {
+        warnings.push(format!(
+            "the pod record gives no GPU count; it can't be checked against the plan's {want} until offrig_job measures it. Nothing was shut down."
+        ));
+    }
+    // The record and the measurement can disagree even when one of them matches the plan.
     if let (Some(seen), Some(api)) = (measured_gpu_count, gpu_count)
         && seen != api
     {
@@ -385,9 +444,37 @@ pub fn describe_gpu_count(
         gpus,
         planned_gpu_count,
         gpu_mismatch,
+        gpu_mismatch_source,
         measured_gpu_count,
         measured: measured_flag,
         warnings,
+    }
+}
+
+fn gpu_mismatch_warning(
+    pod_id: &str,
+    reports: &str,
+    planned: u32,
+    seen: Option<u32>,
+    no_cards: bool,
+    source: GpuMismatchSource,
+) -> String {
+    let shut = "Nothing was shut down.";
+    let measurement = if no_cards {
+        "nvidia-smi lists no GPUs".to_string()
+    } else {
+        format!("nvidia-smi counts {}", seen.unwrap_or(0))
+    };
+    match source {
+        GpuMismatchSource::Record => format!(
+            "GPU COUNT MISMATCH: pod {pod_id} reports {reports} and the plan asked for {planned} (source record). {shut}"
+        ),
+        GpuMismatchSource::Measured => format!(
+            "GPU COUNT MISMATCH: {measurement} on pod {pod_id} and the plan asked for {planned} (source measured). {shut}"
+        ),
+        GpuMismatchSource::Both => format!(
+            "GPU COUNT MISMATCH: pod {pod_id} reports {reports} and {measurement}; the plan asked for {planned} (source both). {shut}"
+        ),
     }
 }
 
@@ -413,6 +500,10 @@ pub fn apply_gpu_count(
     obj.insert(
         "gpu_mismatch".into(),
         serde_json::json!(report.gpu_mismatch),
+    );
+    obj.insert(
+        "gpu_mismatch_source".into(),
+        serde_json::json!(report.gpu_mismatch_source.map(GpuMismatchSource::as_str)),
     );
     if report.measured {
         obj.insert(

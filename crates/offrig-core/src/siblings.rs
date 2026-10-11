@@ -138,6 +138,7 @@ impl Sibling {
             "gpus": count.gpus,
             "planned_gpu_count": count.planned_gpu_count,
             "gpu_mismatch": count.gpu_mismatch,
+            "gpu_mismatch_source": count.gpu_mismatch_source.map(|s| s.as_str()),
             "cost_per_hr": self.pod.cost_per_hr,
             "status": self.pod.desired_status,
             "plan": plan,
@@ -416,10 +417,12 @@ mod tests {
         );
         let row = s.to_json();
         assert!(row["plan"]["deadline"].is_null());
-        // The pod record omitted the count, so it is not compared with the plan.
+        // The record omitted the count and nothing was measured, so the flag is
+        // unknown. false would read as a confirmed match.
         assert!(row["gpu_count"].is_null());
         assert_eq!(row["planned_gpu_count"], 1);
-        assert_eq!(row["gpu_mismatch"], false);
+        assert!(row["gpu_mismatch"].is_null());
+        assert!(row["gpu_mismatch_source"].is_null());
         let none = Sibling {
             plan: PlanView::NoOpenPlan,
             ..s

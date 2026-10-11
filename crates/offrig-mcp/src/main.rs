@@ -658,7 +658,7 @@ impl Sidecar {
 impl Sidecar {
     #[tool(
         name = "offrig_status",
-        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods (each names gpu_count and gpus, as 2x the type, beside the plan's planned_gpu_count; gpu_mismatch warns in next_action and nothing is shut down for it), other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
+        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods (each names gpu_count and gpus, as 2x the type, beside the plan's planned_gpu_count; gpu_mismatch is true when the record differs from the plan, with gpu_mismatch_source record, and null when the record omits the count until offrig_job measures it; the warning is in next_action and nothing is shut down), other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
         annotations(title = "offrig status", read_only_hint = true, open_world_hint = true)
     )]
     async fn offrig_status(&self) -> CallToolResult {
@@ -824,6 +824,7 @@ impl Sidecar {
                     "gpus": count.gpus,
                     "planned_gpu_count": count.planned_gpu_count,
                     "gpu_mismatch": count.gpu_mismatch,
+                    "gpu_mismatch_source": count.gpu_mismatch_source.map(|s| s.as_str()),
                 })
             })
             .collect();
@@ -1753,7 +1754,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor or the card count is not the plan's; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up, 0 when that reading lists no cards; gpu_mismatch is true when the record or the measurement differs from the plan, and gpu_mismatch_source is record, measured or both; a loud warning names that source and nothing is shut down) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1859,6 +1860,7 @@ impl Sidecar {
             "gpus": rented["gpus"],
             "planned_gpu_count": rented["planned_gpu_count"],
             "gpu_mismatch": rented["gpu_mismatch"],
+            "gpu_mismatch_source": rented["gpu_mismatch_source"],
             "measured_gpu_count": rented["measured_gpu_count"],
             "warnings": warnings,
             "error": job.error,

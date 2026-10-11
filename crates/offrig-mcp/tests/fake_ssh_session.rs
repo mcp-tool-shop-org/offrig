@@ -279,12 +279,21 @@ async fn a_model_session_launches_asks_runs_the_queue_and_shuts_down() {
     // measurement was added to it (it did not replace the GPU and price).
     assert_eq!(job["rented"]["cuda_version"], "12.8", "{job:?}");
     assert_eq!(job["rented"]["cuda_source"], "nvidia-smi", "{job:?}");
-    // The small profile asks for one card. The header-only nvidia-smi names no cards,
-    // so the measured count is present and null, and that is not a mismatch.
+    // The small profile asks for one card. The header-only nvidia-smi ran and listed
+    // none, so the measured count is 0 and that is a mismatch. Nothing is shut down.
     assert_eq!(job["gpu_count"], 1, "{job:?}");
     assert_eq!(job["planned_gpu_count"], 1, "{job:?}");
-    assert_eq!(job["gpu_mismatch"], false, "{job:?}");
-    assert!(job["measured_gpu_count"].is_null(), "{job:?}");
+    assert_eq!(job["gpu_mismatch"], true, "{job:?}");
+    assert_eq!(job["gpu_mismatch_source"], "measured", "{job:?}");
+    assert_eq!(job["measured_gpu_count"], 0, "{job:?}");
+    let next = job["next_action"].as_str().expect("next");
+    assert!(
+        next.contains("nvidia-smi lists no GPUs")
+            && next.contains("source measured")
+            && next.contains("Nothing was shut down"),
+        "{next}"
+    );
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/pod1"), 0);
     assert!(
         job["gpus"].as_str().is_some_and(|g| g.starts_with("1x ")),
         "{job:?}"
@@ -396,16 +405,19 @@ async fn a_job_pod_runs_commands_and_moves_files_then_shuts_down() {
         "{job:?}"
     );
     // The job profile asks for one card and the pod record says one. nvidia-smi, the
-    // same reading as the CUDA version, counts two. That is reported beside the API
-    // count and does not shut the pod down.
+    // same reading as the CUDA version, counts two. The measurement drives the
+    // mismatch. Nothing is shut down for it.
     assert_eq!(job["gpu_count"], 1, "{job:?}");
     assert_eq!(job["planned_gpu_count"], 1, "{job:?}");
-    assert_eq!(job["gpu_mismatch"], false, "{job:?}");
+    assert_eq!(job["gpu_mismatch"], true, "{job:?}");
+    assert_eq!(job["gpu_mismatch_source"], "measured", "{job:?}");
     assert_eq!(job["measured_gpu_count"], 2, "{job:?}");
     assert_eq!(job["rented"]["measured_gpu_count"], 2, "{job:?}");
     let next = job["next_action"].as_str().expect("next");
     assert!(
-        next.contains("nvidia-smi on the pod counts 2") && next.contains("Nothing was shut down"),
+        next.contains("source measured")
+            && next.contains("nvidia-smi on the pod counts 2")
+            && next.contains("Nothing was shut down"),
         "{next}"
     );
     assert_eq!(job["plan_state"], "committed", "{job:?}");
@@ -524,12 +536,20 @@ async fn status_reports_one_and_two_cards_against_a_two_gpu_plan() {
     let rig = Rig::start_in("gpu-count", SERVER.into(), &[], |dir| {
         two_gpu_plan(dir, "one");
         two_gpu_plan(dir, "two");
+        two_gpu_plan(dir, "bare");
     })
     .await;
     {
         let mut pods = rig.pods.lock().expect("pods");
         pods.push(pod_record("one", 1));
         pods.push(pod_record("two", 2));
+        pods.push(json!({
+            "id": "bare",
+            "name": "offrig-count-bare",
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.0,
+            "machine": {"gpuTypeId": SERVER},
+        }));
     }
     let status = rig.session.ok("offrig_status", json!({})).await;
     let rows = status["runpod"]["offrig_pods"].as_array().expect("pods");
@@ -544,12 +564,19 @@ async fn status_reports_one_and_two_cards_against_a_two_gpu_plan() {
     assert_eq!(one["gpus"], format!("1x {SERVER}"));
     assert_eq!(one["planned_gpu_count"], 2);
     assert_eq!(one["gpu_mismatch"], true);
+    assert_eq!(one["gpu_mismatch_source"], "record");
     let two = row("two");
     assert_eq!(two["gpu"], SERVER);
     assert_eq!(two["gpu_count"], 2);
     assert_eq!(two["gpus"], format!("2x {SERVER}"));
     assert_eq!(two["planned_gpu_count"], 2);
     assert_eq!(two["gpu_mismatch"], false);
+    assert!(two["gpu_mismatch_source"].is_null());
+    let bare = row("bare");
+    assert!(bare["gpu_count"].is_null());
+    assert_eq!(bare["planned_gpu_count"], 2);
+    assert!(bare["gpu_mismatch"].is_null(), "{bare}");
+    assert!(bare["gpu_mismatch_source"].is_null());
     let plans = status["open_plans"].as_array().expect("plans");
     assert!(plans.iter().all(|p| p["planned_gpu_count"] == 2));
     let next = status["next_action"].as_str().expect("next");
@@ -559,13 +586,17 @@ async fn status_reports_one_and_two_cards_against_a_two_gpu_plan() {
     );
     assert!(
         next.contains("GPU COUNT MISMATCH: pod one reports 1x ")
+            && next.contains("source record")
             && next.contains("asked for 2")
-            && next.contains("Nothing was shut down"),
+            && next.contains("Nothing was shut down")
+            && next.contains("gives no GPU count")
+            && next.contains("until offrig_job measures it"),
         "{next}"
     );
     assert!(!next.contains("pod two reports"), "{next}");
     assert_eq!(count(&rig.runpod_hits, "DELETE /pods/one"), 0);
     assert_eq!(count(&rig.runpod_hits, "DELETE /pods/two"), 0);
+    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/bare"), 0);
     rig.finish().await;
 }
 
@@ -600,12 +631,14 @@ async fn offrig_job_reports_a_gpu_count_mismatch_without_shutting_down() {
     assert_eq!(j["gpus"], format!("1x {SERVER}"), "{j:?}");
     assert_eq!(j["planned_gpu_count"], 2, "{j:?}");
     assert_eq!(j["gpu_mismatch"], true, "{j:?}");
+    assert_eq!(j["gpu_mismatch_source"], "both", "{j:?}");
     assert_eq!(j["measured_gpu_count"], 1, "{j:?}");
     assert_eq!(j["rented"]["gpu_count"], 1, "{j:?}");
     let next = j["next_action"].as_str().expect("next");
     assert!(
         next.starts_with("WARNING")
             && next.contains("GPU COUNT MISMATCH: pod pod1 reports 1x ")
+            && next.contains("source both")
             && next.contains("Nothing was shut down")
             && next.contains("job pod is ready"),
         "{next}"

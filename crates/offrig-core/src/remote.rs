@@ -103,8 +103,8 @@ pub struct SmiReading {
 
 /// How many GPU cards `nvidia-smi`'s table lists. A card row starts with the card
 /// index and then a name (`|   0  NVIDIA ...`). Process rows (`|    0   N/A`) and the
-/// header are not cards. `None` when the text has no card row, so a header-only
-/// reading is "not measured" rather than zero cards.
+/// header are not cards. `None` when the text has no card row. Against a plan above
+/// 0 the caller reports that as zero cards, the worst mismatch, not as "not measured".
 pub fn parse_gpu_count(smi: &str) -> Option<u32> {
     let n = smi.lines().filter(|line| gpu_card_row(line)).count();
     (n > 0).then_some(u32::try_from(n).unwrap_or(u32::MAX))
