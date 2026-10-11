@@ -1,7 +1,7 @@
 # Scorecard
 
 **Repo:** offrig
-**Date:** 2026-10-07
+**Date:** 2026-10-11
 **Type tags:** `[all]` `[cli]` `[mcp]` `[desktop]` `[complex]`
 
 ## Pre-remediation assessment
@@ -40,3 +40,5 @@
 | D. Shipping hygiene | 10/10 |
 | E. Identity (soft) | 10/10 |
 | **Overall** | **50/50** |
+
+Re-checked 2026-10-11 for 1.1.0. `shipcheck audit` counted 29 checked, 0 unchecked, 10 skipped. The version in the workspace is 1.1.0. The newest released tag is still v1.0.0, so the manifest is ahead of the tag and not behind it. Section E stays checked from the 1.0.0 treatment: logo, translations, landing page, and metadata were already in place. Translations of the 1.1.0 README are the Publisher's, after review.

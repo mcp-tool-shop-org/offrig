@@ -36,6 +36,7 @@ running.
 | `offrig up <profile>` | Launch, pull the models, wire Zed, run the checks, hold the tunnel | **yes** |
 | `offrig up <profile> --wait 180` | Wait up to 180 minutes for GPUs, renting nothing meanwhile | **yes**, once they free up |
 | `offrig up <profile> --detach` | Set up, then exit instead of holding the tunnel | **yes** |
+| `offrig up <profile> --no-zed` | Set up and do not write Zed's settings | **yes** |
 | `offrig tunnel <profile>` | Hold the tunnel to a running pod, with idle auto-stop | the pod's rate |
 | `offrig pull <model> [<profile>]` | Pull another model onto the pod; the pull runs on the pod | the pod's rate |
 | `offrig models [<profile>]` | Models on the pod, read over SSH | no |
@@ -45,6 +46,8 @@ running.
 | `offrig connect [/workspace]` | Open the pod in Zed for remote editing | the pod's rate |
 | `offrig down <profile> --yes` | Terminate the pod; its disk goes with it | stops billing |
 | `offrig budget [--provider runpod\|openrouter] [<usd>]` | Set this project's caps (human only): one per provider, plus an optional overall ceiling. With no amount in a terminal, a menu; `--show` prints every cap beside each provider's own balance. Never below spent + committed | no |
+| `offrig index <paths...> [--status] [--rebuild]` | Index this project's files for hybrid search. Embeddings come from a CPU-only Ollama (`embed_url`, default `http://127.0.0.1:11490`). `--status` reports and changes nothing. `--rebuild` embeds every chunk again | no |
+| `offrig verify calibrate <gold.jsonl>...` | Score a local loopback model as a verifier. Cloud model names are refused. Flags are in [Reference](../reference/#calibrate-a-verifier-model) | local compute only |
 | `offrig stage <profile> --dc <DC> [--yes]` | Stage a recipe profile's weights on a network volume | **yes, monthly** |
 
 `offrig up` refuses when your runway with the pod running would be under one hour,

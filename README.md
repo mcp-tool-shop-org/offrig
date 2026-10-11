@@ -37,6 +37,20 @@ Proven live on 2026-10-02 and 2026-10-03, about $5 in all:
 In daily use since 2026-10-07 by two projects at once, each in its own lane: training
 runs for aspire-si on `job` pods, and singing renders for ai-jam-sessions on `jam` pods.
 
+On 2026-10-12 a SGLang pod logged `Application startup complete`, then `/health` stayed
+503 for 7 minutes. The GPUs sat near 100% at about 100 W, and `/v1/models` returned 200.
+Working pods that week were on CUDA 13.0. That pod was placed on CUDA 13.2. This release
+reports that hang, and it does not call a recipe ready until one completion returns a
+choice. A profile can also pin the host CUDA version exactly.
+
+Not proven on a rented pod for this release: the one-token ready check, the
+`engine_unresponsive` and `engine_hung` reports, and a create that sends
+`gpu.allowedCudaVersions`. Those paths are covered by tests against a fake ssh session
+and a fake RunPod. No pod was started to re-check them. RunPod's documented v1
+`POST /pods` enum, read 2026-10-11, still stops at 13.0. 13.1 and 13.2 are in offrig's
+list because that writer pod landed on 13.2. A floor still sends only
+`gpu.minCudaVersion`.
+
 Built and tested, waiting on a decision: staging the frontier weights on a network volume,
 about $21/month (see [Staging](#staging-weights-on-a-network-volume)).
 
@@ -128,8 +142,14 @@ offrig connect                open the pod's /workspace in Zed for remote editin
 offrig down medium --yes      terminate the pod
 offrig zed-remove             take the provider out of Zed
 offrig budget 15              set this project's spending cap for agent sessions (human only)
+offrig index src docs           index this project for hybrid search (CPU embeddings)
+offrig verify calibrate gold.jsonl --model gemma4:31b   score a local verifier model
 offrig stage frontier --dc EUR-IS-1 --yes   stage weights on a network volume (bills monthly)
 ```
+
+`offrig --help` and `offrig <command> --help` list every command and flag. The block
+above is the daily set. `offrig init`, `offrig models`, `offrig zed`, and
+`offrig up --no-zed` are in the [handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/usage/).
 
 ### Output, exit codes and errors
 
@@ -151,14 +171,14 @@ so a session survives compaction or a restart without re-explaining anything.
 
 | Tool | What it does |
 |---|---|
-| `offrig_status` | The project, budget, RunPod balance and runway, offrig's pods, each open plan with its `plan_id`, lane and pod name, the handoff queue with stale work flagged |
+| `offrig_status` | The project, budget, RunPod balance and runway, offrig's pods, each open plan with its `plan_id`, lane and pod name, the handoff queue with stale work flagged. Each pod includes `gpu_count` and `gpus` (`2x <type>`) from the RunPod record, beside the plan's `planned_gpu_count` |
 | `offrig_offers` | Live GPU offers for a GPU count |
 | `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left. The reply names the lane's `ssh_alias` and the `pod_name` the launch will create, and the `container_disk_gb` it will ask for (optional `container_disk_gb` overrides the profile's; see "Container disk"). Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan"); optional `wait_minutes` sets how long the launch retries when they have no capacity (see "Waiting for capacity") |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
 | `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check; optional deterministic checks), lists them, previews role blocks, shows a handoff's best output (also written to `.offrig/out/`), records outcomes (complete, invalid, violation, fail, retry with feedback) |
 | `offrig_launch` | **Spends.** Takes only a `plan_id`: commits the worst case, waits for GPUs renting nothing, boots the pod, opens the tunnel, pulls the models, starts the watchdog. Idempotent per plan. Refused while the lane already has a live plan or pod: `lane <tag> has a live pod <name> (plan <id>); shut it down first` |
-| `offrig_job` | Launch progress (while the pod boots, the step is derived from the pod's state at the moment of the call; each capacity retry is counted in `progress.capacity_wait`), the GPU type and host CUDA version actually rented (measured with `nvidia-smi` on the pod, with a loud `warnings` entry when the host is older than the plan's CUDA floor), watchdog liveness, minutes left, spend so far |
+| `offrig_job` | Launch progress (while the pod boots, the step is derived from the pod's state at the moment of the call, and `progress.pod_status` is the raw v2 status; each capacity retry is counted in `progress.capacity_wait`), the GPU type, `gpu_count`, `gpus`, `planned_gpu_count`, and once ssh is up `measured_gpu_count` (a reading with no cards is `0`). `gpu_mismatch` is true when the record or the measurement differs from the plan. The host CUDA version is measured with `nvidia-smi`, with a loud `warnings` entry when the host is older than the plan's CUDA floor. For a recipe, `ready` means one completion returned a choice. `engine_hung` and `engine_unresponsive` leave the pod up. Watchdog liveness, minutes left, spend so far |
 | `offrig_ask` | One turn of a handoff on the pod model, context built from the project store; the reply is returned as untrusted output |
 | `offrig_run` | Starts a detached runner that keeps every model slot busy: drafts each ready handoff, revises at most twice against failed checks, feeds results to dependent handoffs, then shuts the pod down when the queue is dry (unless `keep_pod`). Work that code cannot check waits in review |
 | `offrig_put` | Copies a local file or directory to a job pod (scp); relative pod paths are under `/workspace/job`. Optional `plan_id` (see below) |
@@ -188,10 +208,39 @@ offrig budget --show                     every cap, beside each provider's own b
 Every launch starts a **watchdog**: a separate process that terminates the pod at the
 plan's deadline (committed time + max hours) even if the agent, the session or the
 side-car is gone. It never acts on a failed lookup, terminates exactly once, closes the
-books, and logs to `.offrig/watchdog-<plan>.log`. If getting a rented pod ready fails,
-the launch terminates it instead of leaving it billing.
+books, and logs to `.offrig/watchdog-<plan>.log`. If getting a rented pod ready fails
+before the engine is serving, the side-car terminates it instead of leaving it billing.
+`engine_hung` and `engine_unresponsive` are report-only on every surface: the side-car,
+the CLI, and the app leave the pod up and do not print ready. On the CLI and the app the
+command stops with the error. On the side-car the launch result stays success-shaped, so
+nothing deletes the pod, the plan stays committed, and the job stays `running`. An engine
+process that has already exited is not that report. On the side-car it is a failed
+launch, and the compensator deletes the pod.
 
 The design and its evidence are in [docs/sidecar-design.md](docs/sidecar-design.md).
+That note still says readiness needs `/health` and the served model listed. The ready
+check in this README is the one the program runs.
+
+### Project index and the verifier
+
+```text
+offrig index src docs                 chunk this project; only changed files are re-embedded
+offrig index --status                 counts, model, dimension; changes nothing
+offrig index --rebuild                drop every vector and embed again
+offrig verify calibrate gold/grounded.jsonl gold/reasoning.jsonl --model gemma4:31b --think on
+offrig verify calibrate --think-policy grounded=off,reasoning=escalate:off>on --model gemma4:31b gold/grounded.jsonl
+offrig verify calibrate --report-only .offrig/out/calibrate-<model>-<time>
+```
+
+`offrig index` embeds with a CPU-only Ollama (`embed_url`, default
+`http://127.0.0.1:11490`), never the shared server on 11434 and never a GPU. Once the
+project has an index, `offrig_memory_search` defaults to hybrid (keyword plus meaning).
+`offrig verify calibrate` scores a local loopback model as a verifier, one gold claim
+per call, with that claim's own evidence. A model name containing "cloud" is refused.
+`--num-ctx` defaults to `auto` and sizes one window for the run. `--keep-thinking`
+writes thinking text to `thinking.jsonl` in the run directory only. The
+[handbook reference](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)
+lists the flags.
 
 ### Lanes: one side-car per project, no collisions
 
@@ -288,12 +337,18 @@ the job. The next action is `the engine is not answering completions: shut the p
 or wait if it is still warming up`. offrig does not shut the pod down for this, on the
 side-car, the CLI, or the app. A slow first request (graph capture, JIT) is not a reason
 to throw away the download and the load; the plan's deadline still bounds the cost.
-The hang clock starts from a count of `Application startup complete` over the whole
-engine log, not only the last 40 lines. If that count is at least one and `/health`
-then stays down for 3 minutes, the step is `engine_hung`: those last 40 lines, the
-seconds since the count was first seen, and the next action `shut the pod down: the
-engine finished startup but never became healthy`. offrig reports that hang and leaves
-the pod up. Shutting it down stays with you, the same as a GPU-count mismatch.
+The hang clock starts from `grep -c` of `Application startup complete` on the same ssh
+read as the log tail, over the whole engine log, not only the last 40 lines. A chatty
+engine can push the startup line out of that tail. The count still starts the clock.
+If that count is at least one and `/health` then stays down for 3 minutes, the step is
+`engine_hung`: those last 40 lines, the seconds since the count was first seen, and the
+next action `shut the pod down: the engine finished startup but never became healthy`.
+offrig reports that hang and leaves the pod up. Shutting it down stays with you, the
+same as a GPU-count mismatch. A GPU-count warning is not prefixed onto that next
+action, or onto the unresponsive one, so the sentence stays exact. An engine process
+that has already exited is not either report. On the side-car the compensator deletes
+that pod. On the CLI and the app the command stops with the error and does not delete
+it.
 
 Each profile lists GPU types in priority order. v2 places one type and does not fall back,
 so offrig tries that list itself, in order, and never past the plan's price. When none is
@@ -610,7 +665,9 @@ output leaked into deliverables (the handoff now sets the format); heading feedb
 names the Markdown form; an unchanged revision stops instead of repeating.
 
 Not yet verified live: a chat
-sent from Zed's agent panel itself (the request shape Zed uses is tested directly).
+sent from Zed's agent panel itself (the request shape Zed uses is tested directly), and
+the 1.1.0 ready check, hang report, and exact CUDA pin on a rented pod (see
+[Status](#status)).
 
 ## Standards compliance
 

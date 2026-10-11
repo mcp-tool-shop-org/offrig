@@ -126,8 +126,11 @@ checking the pod's name. Every reply states the project, lane and plan it acted 
 ### Hosts
 
 The image is a CUDA 12.8 build, so a job profile never lands on an older driver. The `job`
-profile asks for CUDA 13.0 hosts, because the jobs it runs install a current vLLM, whose
-PyTorch is a CUDA 13 build.
+profile asks for CUDA 13.0 hosts (`min_cuda = "13.0"`), because the jobs it runs install
+a current vLLM, whose PyTorch is a CUDA 13 build. That is a floor: the create sends
+`gpu.minCudaVersion`, and a newer host still qualifies. An exact pin is a different
+field, `cuda_versions`, and it is not set on the built-in profiles. The two together
+are refused. See [Configuration](../configuration/#pinning-a-plans-hardware).
 
 Even then, a host can be slow. Check write and download speed in your setup before
 fetching large models, and use a bigger [container disk](../configuration/#container-disk)

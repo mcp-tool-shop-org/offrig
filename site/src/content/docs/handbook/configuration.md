@@ -41,8 +41,39 @@ It keeps the engine on the pod's loopback, and a recipe cannot override any of t
 For a gated model repo, `hf_token_secret` names a RunPod secret. offrig references it as
 `{{ RUNPOD_SECRET_<name> }}`, so the token never enters the pod spec.
 
-The launch waits for the engine's `/health` and model list, and reports weights on disk
-while it downloads. It stops at once, showing the engine's log, if the engine exits.
+The launch reports weights on disk while the engine downloads them. It stops at once,
+showing the engine's log, if the engine process exits.
+
+`/health` returning 200 is not readiness, and neither is `/v1/models`. After `/health`
+returns 200, offrig sends one chat completion (`max_tokens` 1, `temperature` 0) and
+waits up to 30 seconds. The step is `ready` only when that reply has a choice. If the
+completion fails or times out, offrig tries once more after 15 seconds. A second
+failure is the step `engine_unresponsive`. The job stays `running`, the plan stays
+committed, and the error and the engine log are on the job. The next action is exactly:
+
+```text
+the engine is not answering completions: shut the pod down, or wait if it is still warming up
+```
+
+That report does not shut the pod down, on the side-car, the CLI, or the app.
+
+The hang clock starts from `grep -c` of `Application startup complete` on the same ssh
+read as the log tail, over the whole engine log. The tail the job shows is the last 40
+lines. A chatty engine can push the startup line out of those 40. The count still
+starts the clock. If `/health` then stays down for 3 minutes, the step is `engine_hung`.
+The job includes those 40 lines, the seconds since the count was first seen, and the
+next action:
+
+```text
+shut the pod down: the engine finished startup but never became healthy
+```
+
+offrig reports that hang and leaves the pod up. A GPU-count warning is not prefixed
+onto either of those next actions, so the sentence stays exact.
+
+An engine process that has already exited is not either of those reports. On the
+side-car that is a failed launch, and the compensator deletes the pod. On the CLI and
+the app the command stops with the error and does not delete the pod.
 
 ## Waiting for capacity
 
@@ -68,10 +99,26 @@ different price. Four limits keep a plan to hardware its work can use:
 
 | Limit | Where | Effect |
 |---|---|---|
-| `min_cuda` | profile | The oldest host CUDA (driver) version, from RunPod's list (`13.0` down to `11.8`). The pod is created only on hosts at that version or newer. The `job` profile sets `13.0`. |
+| `min_cuda` | profile | The oldest host CUDA (driver) version, from offrig's list (`13.2`, `13.1`, `13.0`, `12.9`, … `11.8`). The create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. The `job` profile sets `13.0`. |
 | `min_vram_gb` | profile | The least total VRAM a plan accepts. Smaller offers are dropped. |
 | `max_price_hr` | `offrig_plan` | The most the pod may cost, in total $/hr. Dearer offers are dropped, and so is a type with no price listed now. |
 | `no_fallback` | `offrig_plan` | Only the profile's first GPU family. The two RTX PRO 6000 Blackwell editions count as one family. |
+
+`cuda_versions` is an optional exact list beside `min_cuda`:
+
+```toml
+cuda_versions = ["13.0"]
+```
+
+When it is set, the create sends that list as `gpu.allowedCudaVersions`, in the order
+written, and does not also send a floor. `offrig_plan` reports the list. Setting it
+together with `min_cuda`, including a job image's own floor, is refused. An empty list
+is refused. A version that is not in offrig's list is refused. A pin of `["13.0"]` does
+not accept a 13.1 host: matching is exact. The accepted versions, newest first, are
+13.2, 13.1, 13.0, then 12.9 down to 11.8. 13.2 and 13.1 are ahead of RunPod's documented
+v1 enum (read 2026-10-11, which stops at 13.0). They are listed because a writer pod on
+2026-10-12 was placed on a 13.2 host. A floor still sends only `gpu.minCudaVersion`.
+The built-in profiles do not set `cuda_versions`.
 
 The worst case becomes `max_hours × min(max_price_hr, the dearest listed price left)`. A
 plan with nothing left is refused, with the reason for every dropped GPU.
