@@ -28,6 +28,8 @@ pub const PLAIN: &str = "plain";
 pub struct OpenPlan {
     pub plan_id: i64,
     pub profile: String,
+    /// How many GPUs the plan asked for.
+    pub gpu_count: u32,
     pub note: Option<String>,
     /// When the plan's time is up (unix seconds), once its worst case is committed.
     pub deadline: Option<i64>,
@@ -40,6 +42,7 @@ impl OpenPlan {
         OpenPlan {
             plan_id: p.id,
             profile: p.profile.clone(),
+            gpu_count: p.gpu_count,
             note: p.note.clone(),
             deadline: p.deadline(),
             committed_worst_case: p.worst_case,
@@ -115,12 +118,26 @@ impl Sibling {
                 json!(format!("that project's store could not be read: {why}")),
             ),
         };
+        let planned = match &self.plan {
+            PlanView::Open(p) => Some(p.gpu_count),
+            _ => None,
+        };
+        // Status does not ssh into another project's pod. The count is the record's.
+        let count = crate::planning::describe_gpu_count(
+            &self.pod,
+            planned,
+            crate::planning::MeasuredGpus::NotRead,
+        );
         json!({
             "lane": self.lane,
             "project": self.project,
             "pod": self.pod.name,
             "pod_id": self.pod.id,
             "gpu": self.pod.gpu_type(),
+            "gpu_count": count.gpu_count,
+            "gpus": count.gpus,
+            "planned_gpu_count": count.planned_gpu_count,
+            "gpu_mismatch": count.gpu_mismatch,
             "cost_per_hr": self.pod.cost_per_hr,
             "status": self.pod.desired_status,
             "plan": plan,
@@ -387,6 +404,7 @@ mod tests {
             plan: PlanView::Open(OpenPlan {
                 plan_id: 4,
                 profile: "job".into(),
+                gpu_count: 1,
                 note: None,
                 deadline: None,
                 committed_worst_case: 1.0,
@@ -396,7 +414,12 @@ mod tests {
             s.summary(),
             "lane a, project /p: plan 4, ends at no set time, worst case $1.00"
         );
-        assert!(s.to_json()["plan"]["deadline"].is_null());
+        let row = s.to_json();
+        assert!(row["plan"]["deadline"].is_null());
+        // The pod record omitted the count, so it is not compared with the plan.
+        assert!(row["gpu_count"].is_null());
+        assert_eq!(row["planned_gpu_count"], 1);
+        assert_eq!(row["gpu_mismatch"], false);
         let none = Sibling {
             plan: PlanView::NoOpenPlan,
             ..s

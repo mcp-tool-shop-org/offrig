@@ -310,6 +310,129 @@ pub fn audit_rental_with_host(
     r
 }
 
+/// Whether `nvidia-smi` was asked for a card count. Status does not ask; a job asks
+/// once ssh is up, in the same reading that produces the CUDA version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasuredGpus {
+    /// ssh is not up, or this view does not run commands.
+    NotRead,
+    /// `nvidia-smi` ran. `None` means it printed no card rows.
+    Read(Option<u32>),
+}
+
+/// The pod record's card count beside the plan's, and the count `nvidia-smi` measured
+/// when that reading exists. Nothing here terminates a pod.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuReport {
+    /// The pod record's count. `None` when the record omitted it (JSON default 0).
+    pub gpu_count: Option<u32>,
+    /// `2x <type>` from the pod record. `None` when the count was omitted.
+    pub gpus: Option<String>,
+    /// The plan's count. `None` when this pod is not one of the caller's open plans,
+    /// or the stored count is 0.
+    pub planned_gpu_count: Option<u32>,
+    /// Both counts are known and they differ. A report, never a shutdown.
+    pub gpu_mismatch: bool,
+    /// The card count from `nvidia-smi`, once it was asked.
+    pub measured_gpu_count: Option<u32>,
+    /// True once `nvidia-smi` was asked, even when it printed no card rows.
+    pub measured: bool,
+    /// Loud lines for `next_action`. Empty when there is nothing to look at.
+    pub warnings: Vec<String>,
+}
+
+/// `reported` of 0 is the JSON default when a pod record omits `gpuCount`. RunPod's
+/// count is at least 1, so 0 means "not reported" and is not compared with the plan.
+pub fn describe_gpu_count(
+    pod: &crate::runpod::Pod,
+    planned: Option<u32>,
+    measured: MeasuredGpus,
+) -> GpuReport {
+    let gpu_count = (pod.gpu_count > 0).then_some(pod.gpu_count);
+    let gpus = gpu_count.map(
+        |n| match pod.gpu_type().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => format!("{n}x {t}"),
+            None => format!("{n}x"),
+        },
+    );
+    let planned_gpu_count = planned.filter(|n| *n > 0);
+    let gpu_mismatch = matches!(
+        (gpu_count, planned_gpu_count),
+        (Some(have), Some(want)) if have != want
+    );
+    let (measured_flag, measured_gpu_count) = match measured {
+        MeasuredGpus::NotRead => (false, None),
+        MeasuredGpus::Read(n) => (true, n),
+    };
+    let mut warnings = Vec::new();
+    if gpu_mismatch {
+        warnings.push(format!(
+            "GPU COUNT MISMATCH: pod {} reports {} and the plan asked for {}. Nothing was shut down.",
+            pod.id,
+            gpus.as_deref().unwrap_or("an unknown count"),
+            planned_gpu_count.unwrap_or(0)
+        ));
+    }
+    if let (Some(seen), Some(api)) = (measured_gpu_count, gpu_count)
+        && seen != api
+    {
+        warnings.push(format!(
+            "nvidia-smi on the pod counts {seen} GPU(s) and the pod record says {api}. Nothing was shut down."
+        ));
+    }
+    GpuReport {
+        gpu_count,
+        gpus,
+        planned_gpu_count,
+        gpu_mismatch,
+        measured_gpu_count,
+        measured: measured_flag,
+        warnings,
+    }
+}
+
+/// Write [`describe_gpu_count`] onto a rental object. Warnings are appended to the
+/// rental's own `warnings`, which `offrig_job` already repeats in `next_action`.
+/// Measured fields are omitted until `nvidia-smi` has been asked.
+pub fn apply_gpu_count(
+    rented: &mut serde_json::Value,
+    pod: &crate::runpod::Pod,
+    planned: Option<u32>,
+    measured: MeasuredGpus,
+) {
+    let report = describe_gpu_count(pod, planned, measured);
+    let Some(obj) = rented.as_object_mut() else {
+        return;
+    };
+    obj.insert("gpu_count".into(), serde_json::json!(report.gpu_count));
+    obj.insert("gpus".into(), serde_json::json!(report.gpus));
+    obj.insert(
+        "planned_gpu_count".into(),
+        serde_json::json!(report.planned_gpu_count),
+    );
+    obj.insert(
+        "gpu_mismatch".into(),
+        serde_json::json!(report.gpu_mismatch),
+    );
+    if report.measured {
+        obj.insert(
+            "measured_gpu_count".into(),
+            serde_json::json!(report.measured_gpu_count),
+        );
+    }
+    if report.warnings.is_empty() {
+        return;
+    }
+    if !obj.contains_key("warnings") {
+        obj.insert("warnings".into(), serde_json::json!([]));
+    }
+    if let Some(arr) = obj.get_mut("warnings").and_then(|w| w.as_array_mut()) {
+        for line in report.warnings {
+            arr.push(serde_json::json!(line));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

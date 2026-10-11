@@ -6,6 +6,11 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **A pod says how many GPUs it has.** `offrig_status` (each pod) and `offrig_job` report
+  `gpu_count` and `gpus` (`2x <type>`) from the RunPod pod record, and the plan's
+  `planned_gpu_count` beside them. When the pod's count is not the plan's, `gpu_mismatch`
+  is true and `next_action` starts with a warning. Nothing is shut down for it. Once ssh
+  is up, `offrig_job` adds `measured_gpu_count` from the `nvidia-smi` it already runs.
 - **The verifier can think before it accepts.** `verify calibrate --think-policy` sets the
   thinking level per check type, and a type can escalate: `escalate:off>on` asks with
   thinking off first.
