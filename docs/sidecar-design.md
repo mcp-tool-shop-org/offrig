@@ -168,9 +168,9 @@ the side-car's tools.
 |---|---|---|
 | `offrig_status` | read | Balance, runway, pods, budget left, active plan and job, guard summary. Liveness is computed, never stored. |
 | `offrig_offers` | read | Live GPU offers for a count, filtered to usable cards. |
-| `offrig_plan` | write, no spend | Makes a plan from a profile, maximum hours and budget cap. Optional `max_price_hr` (total $/hr) and `no_fallback` narrow the GPU list, the profile's `min_vram_gb` drops small cards, and the worst case is `max_hours x min(max_price_hr, dearest listed price left)`. The plan stores the list and the profile's CUDA floor, and the launch rents only from them. Optional `wait_minutes` (stored with the plan, default the profile's `wait_for_gpu_minutes`; 20 for `job`) is how long the launch retries quietly when the list has no capacity, cut to the plan's remaining time. Optional `container_disk_gb` overrides the profile's container disk size (not priced). The reply names the lane's `ssh_alias` and the `pod_name` the launch will create. Returns `plan_id`, worst-case cost and runway after. |
+| `offrig_plan` | write, no spend | Makes a plan from a profile, maximum hours and budget cap. Optional `max_price_hr` (total $/hr) and `no_fallback` narrow the GPU list, the profile's `min_vram_gb` drops small cards, and the worst case is `max_hours x min(max_price_hr, dearest listed price left)`. The plan stores the GPU list and either the profile's CUDA floor or its exact CUDA list, and the launch rents only from what it stored. `min_cuda` sends `gpu.minCudaVersion`. `cuda_versions` sends `gpu.allowedCudaVersions`. Setting both is refused. Optional `wait_minutes` (stored with the plan, default the profile's `wait_for_gpu_minutes`; 20 for `job`) is how long the launch retries quietly when the list has no capacity, cut to the plan's remaining time. Optional `container_disk_gb` overrides the profile's container disk size (not priced). The reply names the lane's `ssh_alias` and the `pod_name` the launch will create. Returns `plan_id`, worst-case cost and runway after. |
 | `offrig_launch` | **spends** | Takes `plan_id` only. Starts a background job (wait for GPUs, boot, pull, tunnel, guard). Returns `job_id`. Idempotent per plan. |
-| `offrig_job` | read | Job state, progress, pull percent and `next_action`. While the pod boots the step is derived from the pod's state at the call (RunPod's answer and whether sshd answers), and capacity retries are counted in `progress.capacity_wait`. The rented host CUDA is measured with `nvidia-smi` once ssh is up. |
+| `offrig_job` | read | Job state, progress, pull percent and `next_action`. While the pod boots the step is derived from the pod's state at the call (RunPod's answer and whether sshd answers), and capacity retries are counted in `progress.capacity_wait`. The rented host CUDA is measured with `nvidia-smi` once ssh is up. A recipe is ready when `/health` is 200 and one completion returns a choice. `engine_unresponsive` and `engine_hung` are report-only on every surface. The hang clock starts from `grep -c` of `Application startup complete` over the whole log. |
 | `offrig_memory_search` | read | FTS over active records, filterable by kind, task and tag. Each result carries its source and date. |
 | `offrig_memory_record` | write | Adds a fact, decision, constraint or checkpoint, with provenance. `supersedes` is required when it contradicts a record. |
 | `offrig_handoffs` | write | Adds handoffs (role, mission, acceptance check, deterministic checks, file scope, dependencies) to the queue, lists them, shows a handoff's best output, and records review outcomes. |
@@ -181,6 +181,32 @@ the side-car's tools.
 
 The runner (phase 3a, below) works text handoffs. Code handoffs with a branch each, run
 on the pod, come later, behind the same queue.
+
+## Readiness and the host CUDA pin
+
+A recipe is ready only when `/health` returns 200 and one chat completion returns a
+choice. After `/health` is up, offrig sends one completion (`max_tokens` 1,
+`temperature` 0) and waits up to 30 seconds. The step is `ready` only when that reply
+has a choice. If the completion fails or times out, offrig tries once more after 15
+seconds. `/v1/models` answering is not readiness. On 2026-10-12 a pod logged
+`Application startup complete`, `/health` stayed down, and `/v1/models` still returned
+200.
+
+`engine_unresponsive` and `engine_hung` are report-only on every surface: the side-car,
+the CLI, and the app. The pod stays up. On the side-car the job stays `running` and
+the plan stays committed. Shutting the pod down stays with the person, the same as a
+GPU-count mismatch. A second failed completion is `engine_unresponsive`. The hang
+clock starts from `grep -c` of `Application startup complete` over the whole engine
+log, on the same ssh read as the 40-line tail. A chatty engine can push that line out
+of the tail. The count still starts the clock. If the count is at least one and
+`/health` then stays down for 3 minutes, the step is `engine_hung`. An engine process
+that has already exited is not either report. On the side-car that pod is deleted. On
+the CLI and the app the command stops with the error and does not delete it.
+
+`min_cuda` sends `gpu.minCudaVersion`. `cuda_versions` sends `gpu.allowedCudaVersions`.
+Setting both is refused. A floor does not send `allowedCudaVersions`. An exact list
+does not send `minCudaVersion`. The built-in profiles are not given a `cuda_versions`
+pin.
 
 ## Memory store schema (SQLite + FTS5)
 
@@ -346,7 +372,11 @@ unconfirmed.
   the rtx6kpro notes†. → **Full-precision KV by default. AWQ 252 GB on 384 GB still
   leaves about 130 GB for context.**
 - `/v1/models` answers 200 while SGLang is still warming up; `/health` waits for it
-  (gpustack PR #6302†). → **Readiness needs both `/health` and the served model listed.**
+  (gpustack PR #6302†). That pair is not readiness. → **Readiness is `/health` 200 plus
+  a one-token completion that returns a choice.** `engine_unresponsive` and
+  `engine_hung` are report-only on every surface. The hang clock starts from `grep -c`
+  of `Application startup complete` over the whole log. See "Readiness and the host
+  CUDA pin".
 - Qwen3-Coder-480B AWQ: `QuantTrio/Qwen3-Coder-480B-A35B-Instruct-AWQ`, 252 GB
   (measured from the HF API). No report found of it running under SGLang on sm_120. →
   **Two cheap rehearsals first on one RTX PRO 6000: `frontier-mini` (FP8 30B) for the
