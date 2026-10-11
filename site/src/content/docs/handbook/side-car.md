@@ -174,7 +174,7 @@ the same ssh read, so the startup line can already have scrolled out of the tail
 
 ## The watchdog
 
-Every launch starts a **watchdog**: a separate process that terminates the pod at the
+Every side-car launch starts a **watchdog**: a separate process that terminates the pod at the
 plan's deadline (the time the plan was committed, plus its max hours), even if the agent,
 the session and the side-car are all gone.
 
@@ -182,13 +182,17 @@ the session and the side-car are all gone.
 - It terminates exactly once, then closes the books.
 - It logs to `.offrig/watchdog-<plan>.log`.
 
-If getting a rented pod ready fails before the engine is serving, the launch terminates
+If getting a rented pod ready fails before the engine is serving, the side-car launch terminates
 the pod itself instead of leaving it billing. `engine_hung` and `engine_unresponsive`
 are not those failures. The side-car returns them as a normal result, so nothing
 deletes the pod, the plan stays committed, and the job stays `running`. You shut it
 down, or the plan's deadline does. An engine process that has already exited is a real
-failure, and that pod is deleted. The two ways a launch can fail before that cost
-different amounts, and `offrig_job` says which happened:
+failure, and that pod is deleted. A pod started with `offrig up` or the app has no
+watchdog. When the command stops with an error (a hang, an unresponsive engine, an
+engine that exited, or a timeout), the pod keeps billing until `offrig down <profile>
+--yes` or the app's Shut down. A pod RunPod reports as `ERROR` or `EXITED` is the
+exception: that one is terminated on every surface. The two ways a side-car launch can
+fail before that cost different amounts, and `offrig_job` says which happened:
 
 | Code | What happened | Cost |
 |---|---|---|

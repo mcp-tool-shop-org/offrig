@@ -44,7 +44,7 @@ create field, this section states the behavior this version actually has.
   refused. `"13.1"` does not satisfy a pin of `["13.0"]`. `offrig_plan` reports the
   list. The accepted versions, newest first, are 13.2, 13.1, 13.0, then 12.9 down to
   11.8. 13.2 and 13.1 are ahead of RunPod's documented v1 enum (read 2026-10-11, which
-  stops at 13.0). They are listed because a writer pod on 2026-10-12 was placed on a
+  stops at 13.0). They are listed because a writer pod on 2026-10-11 was placed on a
   CUDA 13.2 host. A floor still sends only `gpu.minCudaVersion`. The built-in profiles
   are not given a `cuda_versions` pin.
 - **A pod says how many GPUs it has.** `offrig_status` (each pod) and `offrig_job` report

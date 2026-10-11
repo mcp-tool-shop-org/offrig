@@ -117,7 +117,7 @@ is refused. A version that is not in offrig's list is refused. A pin of `["13.0"
 not accept a 13.1 host: matching is exact. The accepted versions, newest first, are
 13.2, 13.1, 13.0, then 12.9 down to 11.8. 13.2 and 13.1 are ahead of RunPod's documented
 v1 enum (read 2026-10-11, which stops at 13.0). They are listed because a writer pod on
-2026-10-12 was placed on a 13.2 host. A floor still sends only `gpu.minCudaVersion`.
+2026-10-11 was placed on a 13.2 host. A floor still sends only `gpu.minCudaVersion`.
 The built-in profiles do not set `cuda_versions`.
 
 The worst case becomes `max_hours × min(max_price_hr, the dearest listed price left)`. A

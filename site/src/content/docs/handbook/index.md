@@ -58,8 +58,9 @@ offrig has run real work since 2026-10-02. Highlights:
 
 The local GPU stayed idle throughout.
 
-On 2026-10-12 a SGLang pod logged that startup had finished, then `/health` stayed down
+On 2026-10-11 a SGLang pod logged that startup had finished, then `/health` stayed down
 for 7 minutes while `/v1/models` still answered, on a CUDA 13.2 host. Working pods that
-week were on 13.0. The ready check and the exact CUDA pin in this handbook describe
+week were on 13.0. 13.2 is not shown to be the cause; the pin lets a profile stay on the
+version that worked. The ready check and the exact CUDA pin in this handbook describe
 what 1.1.0 does about that. They have not been re-run on a rented pod. Tests cover them
 with a fake ssh session and a fake RunPod.

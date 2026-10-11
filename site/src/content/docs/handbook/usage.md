@@ -67,6 +67,10 @@ and send it to the model server.
 
 - Before a launch, offrig shows the cheapest free match and your runway with the pod
   running.
+- `offrig up` and the app do not start a watchdog. If the command stops with an error
+  (a hang, an unresponsive engine, an engine that exited, or a timeout), the pod keeps
+  billing until `offrig down <profile> --yes` or the app's Shut down. A pod RunPod
+  reports as `ERROR` or `EXITED` is terminated during the launch.
 - Auto-stop terminates the pod after 30 minutes with every GPU under 5% busy. The minutes
   are set by `auto_stop_idle_minutes` in the config; `auto_stop_idle_minutes = "off"`
   turns it off.

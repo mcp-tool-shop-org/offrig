@@ -188,7 +188,7 @@ A recipe is ready only when `/health` returns 200 and one chat completion return
 choice. After `/health` is up, offrig sends one completion (`max_tokens` 1,
 `temperature` 0) and waits up to 30 seconds. The step is `ready` only when that reply
 has a choice. If the completion fails or times out, offrig tries once more after 15
-seconds. `/v1/models` answering is not readiness. On 2026-10-12 a pod logged
+seconds. `/v1/models` answering is not readiness. On 2026-10-11 a pod logged
 `Application startup complete`, `/health` stayed down, and `/v1/models` still returned
 200.
 

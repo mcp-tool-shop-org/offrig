@@ -37,9 +37,10 @@ Proven live on 2026-10-02 and 2026-10-03, about $5 in all:
 In daily use since 2026-10-07 by two projects at once, each in its own lane: training
 runs for aspire-si on `job` pods, and singing renders for ai-jam-sessions on `jam` pods.
 
-On 2026-10-12 a SGLang pod logged `Application startup complete`, then `/health` stayed
+On 2026-10-11 a SGLang pod logged `Application startup complete`, then `/health` stayed
 503 for 7 minutes. The GPUs sat near 100% at about 100 W, and `/v1/models` returned 200.
-Working pods that week were on CUDA 13.0. That pod was placed on CUDA 13.2. This release
+Working pods that week were on CUDA 13.0. That pod was placed on CUDA 13.2. 13.2 is not
+shown to be the cause; the pin lets a profile stay on the version that worked. This release
 reports that hang, and it does not call a recipe ready until one completion returns a
 choice. A profile can also pin the host CUDA version exactly.
 
@@ -205,7 +206,7 @@ offrig budget --provider openrouter 8    OpenRouter's cap
 offrig budget --show                     every cap, beside each provider's own balance
 ```
 
-Every launch starts a **watchdog**: a separate process that terminates the pod at the
+Every side-car launch starts a **watchdog**: a separate process that terminates the pod at the
 plan's deadline (committed time + max hours) even if the agent, the session or the
 side-car is gone. It never acts on a failed lookup, terminates exactly once, closes the
 books, and logs to `.offrig/watchdog-<plan>.log`. If getting a rented pod ready fails
@@ -215,11 +216,13 @@ the CLI, and the app leave the pod up and do not print ready. On the CLI and the
 command stops with the error. On the side-car the launch result stays success-shaped, so
 nothing deletes the pod, the plan stays committed, and the job stays `running`. An engine
 process that has already exited is not that report. On the side-car it is a failed
-launch, and the compensator deletes the pod.
+launch, and the compensator deletes the pod. A pod started with `offrig up` or the app
+has no watchdog. When the command stops with an error (a hang, an unresponsive engine,
+an engine that exited, or a timeout), the pod keeps billing until `offrig down <profile>
+--yes` or the app's Shut down. A pod RunPod reports as `ERROR` or `EXITED` is the
+exception: that one is terminated on every surface.
 
 The design and its evidence are in [docs/sidecar-design.md](docs/sidecar-design.md).
-That note still says readiness needs `/health` and the served model listed. The ready
-check in this README is the one the program runs.
 
 ### Project index and the verifier
 
@@ -397,7 +400,7 @@ earlier offrig loads unchanged. The `job` profile sets `min_cuda = "13.0"`.
 image's own floor, is refused: the two together are ambiguous. Each version has to be
 one offrig accepts. That list, newest first, is 13.2, 13.1, 13.0, then 12.9 down to
 11.8. 13.2 and 13.1 are ahead of RunPod's documented v1 enum (read 2026-10-11, which
-stops at 13.0). They are listed because a writer pod on 2026-10-12 was placed on a
+stops at 13.0). They are listed because a writer pod on 2026-10-11 was placed on a
 13.2 host. A floor still sends only `gpu.minCudaVersion`.
 
 `offrig_plan` prices the worst case from what is left:
