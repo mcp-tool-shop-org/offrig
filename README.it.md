@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.md">English</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -13,71 +13,84 @@
   <a href="https://mcp-tool-shop-org.github.io/offrig/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-Esegui modelli di grandi dimensioni su GPU RunPod noleggiate, con una garanzia: non verranno mai eseguiti sulla tua GPU. Un'app desktop, un'interfaccia a riga di comando (CLI) e un componente aggiuntivo (side-car) per agenti, tutto basato su una singola libreria Rust.
+Esegui modelli di grandi dimensioni su GPU RunPod noleggiate, con una garanzia: non verranno mai eseguiti sulla tua GPU. Un'app desktop, un'interfaccia a riga di comando (CLI) e un componente aggiuntivo (side-car) MCP per gli agenti, tutto basato su una singola libreria Rust.
 
-Il componente aggiuntivo consente a un agente di pianificare una sessione a pagamento all'interno di un budget definito dall'utente, noleggiare le GPU e inviare una coda di attività a un esecutore separato. L'esecutore mantiene occupato ogni slot del modello, esegue nuovamente solo i controlli che sono falliti e arresta il pod quando la coda è vuota. Un watchdog termina il pod alla scadenza del piano, anche se tutto il resto è terminato.
+Il componente aggiuntivo consente a un agente di pianificare una sessione a pagamento entro un budget definito dall'utente, noleggiare le GPU e inviare una coda di attività a un processo separato. Il processo mantiene ogni slot del modello attivo, esegue la revisione solo in caso di errori e arresta il pod quando la coda è vuota. Un watchdog termina il pod alla scadenza del piano, anche se tutti gli altri processi sono terminati.
 
 ## Stato
 
 Testato con successo il 2026-10-02 e 2026-10-03, per un costo totale di circa 5 dollari:
 
-- **Frontier:** 4 × RTX PRO 6000 (384 GB) che eseguono Qwen3-Coder-480B (4-bit AWQ) su SGLang, pronti in 22 minuti, quindi 31 passaggi completati in 20 secondi, per 3,59 dollari.
+- **Frontier:** 4 × RTX PRO 6000 (384 GB) che eseguono Qwen3-Coder-480B (AWQ a 4 bit) su SGLang, pronti in 22 minuti, quindi 31 trasferimenti completati in 20 secondi, per un costo di 3,59 dollari.
 - **Dati Swarm:** un modello caricato serve centinaia di agenti contemporaneamente. Il modello 480B ha raggiunto 4.059 token/s con 512 agenti; un modello 30B su una singola scheda ha raggiunto 10.147 token/s con 256 agenti.
-- **Esecutore:** una coda con dipendenze e invii di revisione, funziona senza che nessuno lo controlli; il pod si arresta al termine.
+- **Runner:** una coda con dipendenze e invii di revisione, ha funzionato senza alcun processo attivo; il pod si è arrestato al termine.
 - **Garanzia:** la GPU locale è rimasta inattiva durante tutte le esecuzioni.
 
 In uso quotidiano dal 2026-10-07 da due progetti contemporaneamente, ciascuno nel proprio ambiente: esecuzioni di addestramento per aspire-si su `job` pod e rendering di musica per ai-jam-sessions su `jam` pod.
 
-Creato e testato, in attesa di una decisione: preparazione dei pesi di Frontier su un volume di rete, circa 21 dollari al mese (vedere [Preparazione](#staging-weights-on-a-network-volume)).
+Il 2026-10-11, un pod SGLang ha registrato `Application startup complete`, quindi `/health` è rimasto inattivo per 7 minuti. Le GPU hanno operato vicino al 100% a circa 100 W e `/v1/models` ha restituito 200. I pod attivi in quella settimana utilizzavano CUDA 13.0. Quel pod è stato configurato per utilizzare CUDA 13.2. Non è stato dimostrato che 13.2 sia la causa; il flag consente a un profilo di rimanere sulla versione che ha funzionato. Questa versione segnala l'errore e non considera un modello pronto finché un completamento non restituisce una scelta. Un profilo può anche impostare la versione CUDA dell'host in modo preciso.
 
-Successivo: la prima vera coda di Frontier, pianificata completamente prima del lancio; i passaggi di codice compilati e testati sul pod.
+Non testato su un pod noleggiato per questa versione: il controllo di prontezza di un token, i report `engine_unresponsive` e `engine_hung` e un processo che invia `gpu.allowedCudaVersions`. Questi percorsi sono coperti da test contro una sessione SSH fittizia e un RunPod fittizio. Nessun pod è stato avviato per ri-verificarli. La versione v1 documentata di RunPod `POST /pods`, letta il 2026-10-11, si interrompe ancora a 13.0. Le versioni 13.1 e 13.2 sono presenti nell'elenco di offrig perché il pod di scrittura è stato eseguito sulla versione 13.2. Un limite invia ancora solo `gpu.minCudaVersion`.
 
-## A cosa serve
+Creato e testato, in attesa di una decisione: preparazione dei pesi di frontier su un volume di rete, circa 21 dollari al mese (vedere [Preparazione](#staging-weights-on-a-network-volume)).
+
+Successivo: la prima coda di frontier reale, pianificata completamente prima del lancio; i trasferimenti di codice compilati e testati sul pod.
+
+## Cosa fa
 
 Da una singola finestra (o un singolo comando), offrig:
 
-1. mostra il tuo saldo RunPod, i prezzi delle GPU in tempo reale e per quanto tempo durerà il saldo;
+1. mostra il tuo saldo RunPod, i prezzi delle GPU in tempo reale e per quanto tempo il saldo durerà;
 2. avvia un pod per un livello, da 1 piccola scheda su Ollama fino a 4 × RTX PRO 6000 su SGLang, e carica i suoi modelli sul pod;
 3. apre un tunnel SSH verso il pod;
 4. aggiunge i modelli del pod a Zed come provider separato;
 5. esegue sette controlli per garantire che i modelli non vengano eseguiti su questa macchina;
-6. arresta il pod o lo termina dopo un periodo in cui tutte le GPU sono inattive.
+6. arresta il pod o lo termina dopo un periodo di tempo con tutte le GPU inattive.
 
-Tramite il componente aggiuntivo, un agente pianifica anche sessioni in base a un budget, mantiene la memoria del progetto tra le operazioni di compattazione e i riavvii ed esegue le code di passaggi senza supervisione (vedere [Il componente aggiuntivo](#the-side-car-for-agents)).
+Tramite il componente aggiuntivo, un agente pianifica anche le sessioni in base a un budget, mantiene la memoria del progetto tra le operazioni di compattazione e i riavvii ed esegue le code di trasferimento senza supervisione (vedere [Il componente aggiuntivo](#the-side-car-for-agents)).
 
 ## La garanzia e come viene mantenuta
 
-- **Il server del modello è irraggiungibile tranne tramite il tunnel.** Il pod esegue un motore dedicato, Ollama (`ollama/ollama:0.35.0`) o SGLang (`lmsysorg/sglang:v0.5.20-cu130`), vincolato al proprio loopback e il pod espone solo `22/tcp`. Non esiste un endpoint HTTP pubblico da trovare o sfruttare. Un'istruzione non può spostare il motore fuori dal loopback.
-- **Zed comunica con il tunnel, sulla sua porta.** Il tunnel è in ascolto su `127.0.0.1:11435`. La tua Ollama locale è su `11434`. offrig rifiuta di posizionare il tunnel su `11434`, quindi un tunnel non funzionante non può raggiungere il server locale: la richiesta fallisce.
+- **Il server del modello è irraggiungibile tranne tramite il tunnel.** Il pod esegue un motore con versione fissa, Ollama (`ollama/ollama:0.35.0`) o SGLang (`lmsysorg/sglang:v0.5.20-cu130`), vincolato al loopback del pod, e il pod espone solo `22/tcp`. Non esiste un endpoint HTTP pubblico da trovare o sfruttare. Un modello non può spostare il motore fuori dal loopback.
+- **Zed comunica con il tunnel, sulla sua porta.** Il tunnel è in ascolto sulla porta `127.0.0.1:11435`. La tua istanza locale di Ollama è sulla porta `11434`. offrig si rifiuta di posizionare il tunnel sulla porta `11434`, quindi un tunnel non funzionante non può raggiungere il server locale: la richiesta fallisce.
 - **Zed non cambia mai provider.** I modelli del pod sono un provider `offrig` separato in Zed. Se il pod è inattivo, la selezione di uno di essi genera un errore; Zed non prova un altro provider.
 - **I pesi non esistono mai localmente.** I modelli vengono caricati sul pod, dal pod (o scaricati da Hugging Face o letti da un volume di rete preparato).
 
-I controlli di sicurezza verificano questo ogni volta, in base ai fatti che offrig può osservare:
+I controlli di guardia verificano questo ogni volta, in base ai fatti che offrig può osservare:
 
 | Controllo | Fallisce quando |
 |---|---|
-| Il tunnel evita la porta Ollama locale | la porta del tunnel è 11434 |
+| Il tunnel evita la porta locale di Ollama | la porta del tunnel è 11434 |
 | Zed invia i modelli del pod tramite il tunnel | l'URL del provider di Zed è diverso dal tunnel |
-| L'Ollama del pod non è esposto a Internet | il pod mappa pubblicamente la porta 11434 |
+| L'istanza di Ollama del pod non è esposta a Internet | il pod mappa pubblicamente la porta 11434 |
 | Il tunnel termina sul pod | l'elenco dei modelli tramite il tunnel è diverso dall'elenco letto sul pod tramite SSH |
-| I modelli del pod non sono su questa macchina | un modello del pod esiste anche nell'Ollama locale |
-| Nessun modello del pod condivide un nome con un modello Zed locale | un nome nel provider offrig è anche nell'elenco Ollama locale di Zed |
-| Ogni modello offerto da Zed è sul pod | Zed offre un modello che il pod non ha |
+| I modelli del pod non si trovano su questa macchina | un modello del pod esiste anche nell'istanza locale di Ollama |
+| Nessun modello del pod condivide un nome con un modello Zed locale | un nome nel provider offrig è anche nell'elenco di Ollama locale di Zed |
+| Ogni modello offerto da Zed si trova sul pod | Zed offre un modello che il pod non ha |
 
 ## Installazione
 
-Richiede Windows con OpenSSH (integrato), Zed se desideri i modelli in un editor e un account RunPod.
+Richiede Windows con OpenSSH (integrato), Zed se si desidera che i modelli siano disponibili in un editor e un account RunPod.
 
-1. Scarica `offrig-<version>-windows-x64.zip` da [Releases](https://github.com/mcp-tool-shop-org/offrig/releases), verifica il file rispetto all'hash del rilascio `SHA256SUMS` e decomprimilo nella tua `PATH`. Contiene `offrig.exe` (la CLI), `offrig-app.exe` (l'app) e `offrig-mcp.exe` (il componente aggiuntivo). Per compilare dal codice sorgente: `cargo build --release`, con Rust 1.98.1 (versione fissa in `rust-toolchain.toml`).
-2. Inserisci la tua chiave API RunPod nella variabile d'ambiente utente `RUNPOD_API_KEY`.
-3. Aggiungi la tua chiave pubblica SSH nelle impostazioni dell'account RunPod. offrig utilizza `~/.ssh/runpod_rustline` se presente, quindi `~/.ssh/id_ed25519`.
-4. Per gli agenti, registra il componente aggiuntivo con Claude Code nell'ambito utente: `claude mcp add --scope user offrig -- <path>\offrig-mcp.exe`. Apre lo spazio di archiviazione di un progetto solo al primo utilizzo, quindi è innocuo nei progetti che non lo utilizzano mai.
+1. Scarica `offrig-<version>-windows-x64.zip` da
+[Releases](https://github.com/mcp-tool-shop-org/offrig/releases), verifica che corrisponda al
+file `SHA256SUMS` della versione e decomprimilo nella tua `PATH`. Contiene `offrig.exe` (la CLI),
+`offrig-app.exe` (l'app) e `offrig-mcp.exe` (il componente aggiuntivo).
+Per compilare dal codice sorgente: `cargo build --release`, con Rust 1.98.1 (versione specificata in
+`rust-toolchain.toml`).
+2. Inserisci la tua chiave API di RunPod nella variabile d'ambiente dell'utente `RUNPOD_API_KEY`.
+3. Aggiungi la tua chiave pubblica SSH nelle impostazioni dell'account di RunPod. offrig utilizza
+`~/.ssh/runpod_rustline` se presente, altrimenti `~/.ssh/id_ed25519`.
+4. Per gli agenti, registra il componente aggiuntivo con Claude Code nell'ambito dell'utente:
+`claude mcp add --scope user offrig -- <path>\offrig-mcp.exe`. Apre lo spazio di archiviazione di un progetto solo al primo utilizzo, quindi è sicuro nei progetti che non lo utilizzano mai.
 
-Il [manuale](https://mcp-tool-shop-org.github.io/offrig/handbook/) illustra un primo pod, il componente aggiuntivo, la configurazione, gli ambienti e i pod di lavoro.
+Il [manuale](https://mcp-tool-shop-org.github.io/offrig/handbook/) illustra il primo pod, il componente aggiuntivo, la configurazione, i canali e i pod di lavoro.
 
 ## Utilizzo
 
-**App:** avvia `offrig-app`, seleziona un profilo, premi **Avvia pod**. Quando è pronto, i modelli compaiono nel pannello degli agenti di Zed come "RunPod · …". Riavvia Zed una volta dopo il primo avvio in modo che visualizzi `OFFRIG_API_KEY`.
+**App:** avvia `offrig-app`, seleziona un profilo, premi **Avvia pod**. Quando è pronto, i
+modelli compaiono nel pannello degli agenti di Zed come "RunPod · …". Riavvia Zed una volta dopo il primo
+avvio in modo che rilevi `OFFRIG_API_KEY`.
 
 **CLI:**
 
@@ -95,169 +108,235 @@ offrig connect                open the pod's /workspace in Zed for remote editin
 offrig down medium --yes      terminate the pod
 offrig zed-remove             take the provider out of Zed
 offrig budget 15              set this project's spending cap for agent sessions (human only)
+offrig index src docs           index this project for hybrid search (CPU embeddings)
+offrig verify calibrate gold.jsonl --model gemma4:31b   score a local verifier model
 offrig stage frontier --dc EUR-IS-1 --yes   stage weights on a network volume (bills monthly)
 ```
 
+`offrig --help` e `offrig <command> --help` elencano tutti i comandi e le opzioni. Il blocco
+sopra è l'insieme di comandi giornaliero. `offrig init`, `offrig models`, `offrig zed` e
+`offrig up --no-zed` sono presenti nel [manuale](https://mcp-tool-shop-org.github.io/offrig/handbook/usage/).
+
 ### Output, codici di uscita ed errori
 
-- **Livelli di log:** `-q` stampa solo errori e i risultati di un comando; `-v` aggiunge ogni chiamata RunPod e i relativi tempi; `--debug` aggiunge i corpi delle risposte non riuscite e le intere catene di errori. La chiave API viene oscurata a ogni livello.
-- **Codici di uscita:** `0` successo, `1` qualcosa da correggere dalla tua parte (argomenti, configurazione, rifiuto di un limite o di un budget, chiave mancante), `2` errore in fase di esecuzione (RunPod, rete, ssh, timeout, capacità insufficiente).
-- Gli **errori del side-car** sono risultati, mai errori di protocollo: `ok:false` con un `code` stabile, il testo `error`, un `next_action` e un `retryable`. I codici sono elencati nel [riferimento del manuale](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/).
+- **Livelli di log:** `-q` stampa solo gli errori e i risultati di un comando; `-v` aggiunge ogni
+chiamata a RunPod e i relativi tempi; `--debug` aggiunge i corpi delle risposte non riuscite e le catene di errori complete.
+La chiave API viene oscurata a tutti i livelli.
+- **Codici di uscita:** `0` successo, `1` qualcosa da correggere dalla tua parte (argomenti, configurazione, un
+guard o un rifiuto del budget, una chiave mancante), `2` un errore di runtime (RunPod, rete, ssh,
+timeout, nessuna capacità).
+- **Errori del componente aggiuntivo** sono risultati, mai errori di protocollo: `ok:false` con un `code` stabile,
+il testo `error`, un `next_action` e `retryable`. I codici sono elencati nel
+[riferimento del manuale](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/).
 
-## Il side-car (per gli agenti)
+## Il componente aggiuntivo (per gli agenti)
 
-`offrig-mcp` è un server MCP che un agente, come Claude Code, utilizza come strumento. Mantiene un database per progetto in `<project>/.offrig/offrig.db` che sopravvive a ogni pod, in modo che una sessione sopravviva alla compressione o a un riavvio senza dover spiegare di nuovo tutto.
+`offrig-mcp` è un server MCP che un agente come Claude Code chiama come strumento. Mantiene un database per progetto in `<project>/.offrig/offrig.db` che sopravvive a ogni pod,
+in modo che una sessione sopravviva alla compressione o a un riavvio senza dover spiegare di nuovo tutto.
 
-| Strumento | A cosa serve |
+| Strumento | Cosa fa |
 |---|---|
-| `offrig_status` | Il progetto, il budget, il saldo e la durata di RunPod, i pod di offrig, ogni piano aperto con il suo `plan_id`, la corsia e il nome del pod, la coda di trasferimento con le attività obsolete contrassegnate. |
-| `offrig_offers` | Offerte GPU in tempo reale per un numero di GPU |
-| `offrig_plan` | Prezzi di una sessione nel suo caso peggiore (prezzo in tempo reale x ore massime); rifiutato se supera il budget disponibile. La risposta indica il `ssh_alias` della corsia e il `pod_name` che verrà creato e il `container_disk_gb` che verrà richiesto (l'opzione `container_disk_gb` sovrascrive quella del profilo; vedere "Disco del container"). Le opzioni `max_price_hr` e `no_fallback` limitano le GPU che possono essere utilizzate (vedere "Assegnazione dell'hardware di un piano"); l'opzione `wait_minutes` imposta per quanto tempo il lancio riprova in caso di capacità insufficiente (vedere "In attesa di capacità"). |
-| `offrig_memory_search` | Ricerca nella memoria del progetto attivo, ogni risultato con origine e data |
-| `offrig_memory_record` | Aggiunge un breve riepilogo, un vincolo, una decisione, un fatto o un punto di controllo; le modifiche sono sovrascritture con una motivazione. |
-| `offrig_handoffs` | Mette in coda i trasferimenti guidati dal ruolo (ognuno richiede un controllo di accettazione; controlli deterministici opzionali), li elenca, visualizza in anteprima i blocchi di ruolo, mostra l'output migliore di un trasferimento (anche scritto in `.offrig/out/`), registra i risultati (completato, non valido, violazione, errore, riprova con feedback). |
-| `offrig_launch` | **Spende.** Accetta solo un `plan_id`: si impegna per il caso peggiore, attende le GPU senza affittare nulla, avvia il pod, apre il tunnel, carica i modelli, avvia il watchdog. È idempotente per piano. Rifiutato se la corsia ha già un piano o un pod attivo: `lane <tag> has a live pod <name> (plan <id>); shut it down first`. |
-| `offrig_job` | Progresso del lancio (mentre il pod si avvia, il passaggio deriva dallo stato del pod al momento della chiamata; ogni tentativo di capacità viene conteggiato in `progress.capacity_wait`), il tipo di GPU e la versione CUDA dell'host effettivamente affittati (misurati con `nvidia-smi` sul pod, con una voce `warnings` quando l'host è più vecchio del limite CUDA del piano), il watchdog, i minuti rimanenti, la spesa finora. |
-| `offrig_ask` | Un turno di un trasferimento sul modello del pod, il contesto è costruito dall'archivio del progetto; la risposta viene restituita come output non attendibile. |
-| `offrig_run` | Avvia un runner separato che mantiene occupato ogni slot del modello: elabora ogni trasferimento pronto, rivede al massimo due volte in caso di controlli falliti, fornisce i risultati ai trasferimenti dipendenti, quindi spegne il pod quando la coda è vuota (a meno che non sia `keep_pod`). Il lavoro che il codice non può controllare attende in revisione. |
-| `offrig_put` | Copia un file o una directory locale in un pod di lavoro (scp); i percorsi relativi del pod sono sotto `/workspace/job`. Opzione `plan_id` (vedere di seguito). |
-| `offrig_exec` | Esegue un comando bash su un pod di lavoro, in modo separato in modo che sopravviva al side-car (`start`), segnala se è in esecuzione o terminato con il suo codice di uscita e la coda del log (`status`; `save_log` copia anche l'intero log in un file locale), lo termina (`stop`) o esegue un comando breve ora e restituisce il suo stdout, stderr e il codice di uscita (`run`, `timeout_secs`, valore predefinito 30, massimo 120). Opzioni `plan_id` (vedere di seguito). |
-| `offrig_get` | Copia un file o una directory da un pod di lavoro, creando le cartelle principali locali mancanti; farlo prima dello spegnimento, che elimina il disco del pod. Opzione `plan_id` (vedere di seguito). |
-| `offrig_shutdown` | **Distrugge il pod.** Lo termina e chiude i registri del piano con la spesa misurata; rifiutato mentre i trasferimenti sono in corso, a meno che non venga fornita una motivazione. Rimuove il blocco `~/.ssh/config` della corsia quando nomina quel pod (`ssh_block_removed`). |
+| `offrig_status` | Il progetto, il budget, il saldo e la durata di RunPod, i pod di offrig, ogni piano aperto con il suo `plan_id`, il canale e il nome del pod, la coda di trasferimento con il lavoro obsoleto contrassegnato. Ogni pod include `gpu_count` e `gpus` (`2x <type>`) dal record di RunPod, oltre al `planned_gpu_count` del piano. |
+| `offrig_offers` | Offerte GPU live per un numero di GPU |
+| `offrig_plan` | Calcola il costo di una sessione nel suo caso peggiore (prezzo live x ore massime); rifiutato se supera il budget disponibile. La risposta indica il `ssh_alias` del canale e il `pod_name` che verrà creato al momento dell'avvio, e il `container_disk_gb` che verrà richiesto (l'opzione `container_disk_gb` sovrascrive il profilo; vedi "Disco del container"). Le opzioni `max_price_hr` e `no_fallback` limitano le GPU che può affittare (vedi "Fissare l'hardware di un piano"); l'opzione `wait_minutes` imposta per quanto tempo l'avvio riprova quando non c'è capacità (vedi "Attendere la capacità"). |
+| `offrig_memory_search` | Cerca la memoria del progetto attivo, ogni risultato con la fonte e la data |
+| `offrig_memory_record` | Aggiunge una breve descrizione, un vincolo, una decisione, un fatto o un punto di controllo; le modifiche sono sovrascritture con una motivazione |
+| `offrig_handoffs` | Mette in coda i trasferimenti con ruolo (ognuno richiede un controllo di accettazione; controlli deterministici opzionali), li elenca, visualizza in anteprima i blocchi di ruolo, mostra l'output migliore di un trasferimento (anche scritto in `.offrig/out/`), registra i risultati (completato, non valido, violazione, errore, riprova con feedback) |
+| `offrig_launch` | **Spende.** Accetta solo un `plan_id`: si impegna per il caso peggiore, attende le GPU senza affittare nulla, avvia il pod, apre il tunnel, carica i modelli, avvia il watchdog. Idempotente per piano. Rifiutato se il canale ha già un piano o un pod attivo: `lane <tag> has a live pod <name> (plan <id>); shut it down first` |
+| `offrig_job` | Progresso dell'avvio (mentre il pod si avvia, il passaggio deriva dallo stato del pod al momento della chiamata e `progress.pod_status` è lo stato v2 grezzo; ogni tentativo di capacità viene conteggiato in `progress.capacity_wait`), il tipo di GPU, `gpu_count`, `gpus`, `planned_gpu_count` e, una volta che ssh è attivo, `measured_gpu_count` (una lettura senza schede è `0`). `gpu_mismatch` è vero quando il record o la misurazione differiscono dal piano. La versione CUDA dell'host viene misurata con `nvidia-smi`, con una voce `warnings` quando l'host è più vecchio della soglia CUDA del piano. Per una ricetta, `ready` significa che un completamento ha restituito una scelta. `engine_hung` e `engine_unresponsive` lasciano il pod attivo. Durata del watchdog, minuti rimanenti, spesa finora |
+| `offrig_ask` | Un turno di un trasferimento sul modello del pod, il contesto costruito dallo spazio di archiviazione del progetto; la risposta viene restituita come output non attendibile |
+| `offrig_run` | Avvia un runner separato che mantiene ogni slot del modello occupato: elabora ogni trasferimento pronto, rivede al massimo due volte in caso di controlli non riusciti, fornisce i risultati ai trasferimenti dipendenti, quindi spegne il pod quando la coda è vuota (a meno che non sia `keep_pod`). Il lavoro che il codice non può controllare attende in revisione |
+| `offrig_put` | Copia un file o una directory locale in un pod di lavoro (scp); i percorsi relativi del pod sono sotto `/workspace/job`. Opzione `plan_id` (vedi di seguito) |
+| `offrig_exec` | Esegue un comando bash in un pod di lavoro, in modo separato in modo che sopravviva al componente aggiuntivo (`start`), segnala se è in esecuzione o terminato con il suo codice di uscita e la coda del log (`status`; `save_log` copia anche l'intero log in un file locale), lo termina (`stop`) o esegue un comando breve ora e restituisce il suo stdout, stderr e il codice di uscita (`run`, `timeout_secs` predefinito 30, massimo 120). Opzione `plan_id` (vedi di seguito) |
+| `offrig_get` | Copia un file o una directory da un pod di lavoro, creando le cartelle principali locali mancanti; fallo prima dello spegnimento, che elimina il disco del pod. Opzione `plan_id` (vedi di seguito) |
+| `offrig_shutdown` | **Distrugge il pod.** Lo termina e chiude i conti del piano con la spesa misurata; rifiutato mentre i trasferimenti sono in corso, a meno che non venga fornita una motivazione. Rimuove il blocco `~/.ssh/config` del canale quando nomina quel pod (`ssh_block_removed`) |
 
-**Su quale piano di lavoro agisce uno strumento di lavoro.** `offrig_put`, `offrig_exec` e `offrig_get` accettano un'opzione `plan_id`. Con esattamente un piano di lavoro aperto e nessun `plan_id`, lo utilizzano, come prima. Con più di un piano di lavoro aperto e nessun `plan_id`, rifiutano e elencano i piani aperti (id, profilo, nome del pod): non indovinano mai. Con un `plan_id`, agiscono solo sul pod di quel piano e solo dopo aver verificato che il nome del pod sia quello di cui il piano è proprietario (il pod di un'altra corsia viene rifiutato, non solo quello di un'altra corsia). Ogni risposta dello strumento di lavoro e `offrig_job` indica il `project` e il `plan_id` su cui ha agito (le risposte dello strumento di lavoro indicano anche il `lane`); `offrig_status` indica il `project` ed elenca ogni piano aperto con il suo `plan_id`, la corsia e il nome del pod.
+**A quale piano di lavoro si applica uno strumento di gestione dei lavori.** `offrig_put`, `offrig_exec` e `offrig_get` accettano un
+parametro `plan_id` opzionale. Con un solo piano di lavoro attivo e nessun `plan_id`, lo utilizzano come prima.
+Con più di un piano di lavoro attivo e nessun `plan_id`, lo rifiutano e elencano i piani attivi (ID,
+profilo, nome del pod): non fanno mai supposizioni. Con un `plan_id`, agiscono solo sul pod di quel piano e
+solo dopo aver verificato che il nome del pod corrisponda a quello del piano (il pod di un altro "lane" viene
+rifiutato, non solo di un altro piano). Ogni risposta dello strumento di gestione dei lavori, e `offrig_job`, indica il
+`project` e il `plan_id` su cui ha agito (lo strumento di gestione dei lavori indica anche il `lane`); `offrig_status`
+indica il `project` ed elenca ogni piano attivo con il suo `plan_id`, "lane" e nome del pod.
 
-I ruoli provengono da Role OS (dossier e schede starter-pack) più quattro ruoli di gioco forniti qui nei formati di Role OS: game-designer, systems-designer, narrative-designer, lore-keeper. Il limite di budget è impostato solo da un essere umano:
+I ruoli derivano da Role OS (cartelle e schede di avvio) più quattro ruoli di gioco forniti qui
+nei formati di Role OS: game designer, system designer, narrative designer, lore keeper. Il limite di budget è
+stabilito solo da un essere umano:
 
 ```text
-offrig budget 15          set this project's cap (run in the project directory)
-offrig budget             show cap, committed, spent, remaining
+offrig budget --provider runpod 30       RunPod's cap (run in the project directory)
+offrig budget --provider openrouter 8    OpenRouter's cap
+offrig budget --show                     every cap, beside each provider's own balance
 ```
 
-Ogni lancio avvia un **watchdog**: un processo separato che termina il pod alla scadenza del piano (tempo impegnato + ore massime), anche se l'agente, la sessione o il side-car sono scomparsi. Non agisce mai su una ricerca non riuscita, termina esattamente una volta, chiude i registri e registra in `.offrig/watchdog-<plan>.log`. Se la preparazione di un pod affittato fallisce, il lancio lo termina invece di lasciarlo in esecuzione a pagamento.
+Ogni avvio di un processo "side-car" avvia un **watchdog**: un processo separato che termina il pod alla
+scadenza del piano (tempo previsto + ore massime), anche se l'agente, la sessione o il
+"side-car" non sono più attivi. Non agisce mai su una ricerca fallita, termina esattamente una volta, chiude i
+conti e registra le informazioni in `.offrig/watchdog-<plan>.log`. Se la preparazione di un pod in affitto fallisce
+prima che il motore sia attivo, il "side-car" lo termina invece di lasciarlo in esecuzione con addebito.
+`engine_hung` e `engine_unresponsive` sono solo a scopo di report su ogni interfaccia: il "side-car",
+la CLI e l'app mantengono il pod attivo e non indicano che è pronto. Sulla CLI e sull'app, il
+comando si interrompe con un errore. Sul "side-car", il risultato dell'avvio rimane positivo, quindi
+nessuno elimina il pod, il piano rimane attivo e il lavoro rimane `running`. Un processo del motore che è già stato
+interrotto non è incluso in questo report. Sul "side-car", si tratta di un avvio fallito e il compensatore
+elimina il pod. Un pod avviato con `offrig up` o dall'app non ha un "watchdog". Quando il comando si interrompe
+con un errore (un blocco, un motore non reattivo, un motore che è stato interrotto o un timeout), il pod
+continua a essere addebitato fino a quando `offrig down <profile> --yes` or the app's Shut down. A pod RunPod reports as `ERROR` or `EXITED` non
+è l'eccezione: in questo caso, viene terminato su tutte le interfacce.
 
-Il design e le prove sono disponibili in [docs/sidecar-design.md](docs/sidecar-design.md).
+Il progetto e le relative prove sono disponibili in [docs/sidecar-design.md](docs/sidecar-design.md).
 
-### Corsie: un side-car per progetto, nessun conflitto
+### Indice del progetto e strumento di verifica
 
-Due progetti possono eseguire side-car contemporaneamente su un account RunPod. Ogni progetto ottiene la propria **corsia**: un alias SSH, una porta del tunnel e un tag del nome del pod che nessun altro progetto condivide.
+```text
+offrig index src docs                 chunk this project; only changed files are re-embedded
+offrig index --status                 counts, model, dimension; changes nothing
+offrig index --rebuild                drop every vector and embed again
+offrig verify calibrate gold/grounded.jsonl gold/reasoning.jsonl --model gemma4:31b --think on
+offrig verify calibrate --think-policy grounded=off,reasoning=escalate:off>on --model gemma4:31b gold/grounded.jsonl
+offrig verify calibrate --report-only .offrig/out/calibrate-<model>-<time>
+```
 
-| | Corsia semplice (la CLI, l'app, Zed) | La corsia di un progetto |
+`offrig index` viene integrato con un Ollama solo per CPU (`embed_url`, predefinito
+`http://127.0.0.1:11490`), mai con il server condiviso sulla porta 11434 e mai con una GPU. Una volta che il
+progetto ha un indice, `offrig_memory_search` per impostazione predefinita utilizza un approccio ibrido (parola chiave più significato).
+`offrig verify calibrate` valuta un modello di loopback locale come strumento di verifica, con un'unica affermazione positiva
+per chiamata, con le relative prove. Un nome di modello che contiene "cloud" viene rifiutato.
+`--num-ctx` per impostazione predefinita utilizza `auto` e definisce una finestra per l'esecuzione. `--keep-thinking`
+scrive il testo di ragionamento in `thinking.jsonl` solo nella directory di esecuzione. Il
+[manuale di riferimento](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)
+elenca i flag.
+
+### "Lane": un "side-car" per progetto, nessun conflitto
+
+Due progetti possono eseguire "side-car" contemporaneamente su un singolo account RunPod. Ogni progetto
+ottiene il proprio **"lane"**: un alias SSH, una porta tunnel e un tag del nome del pod che nessun altro
+progetto condivide.
+
+| | "Lane" standard (CLI, app, Zed) | "Lane" di un progetto |
 |---|---|---|
 | Alias SSH | `offrig` | `offrig-<tag>` |
-| Porta del tunnel | `11435` (runner `11436`) | prima libera di `11500`, `11502`, ... (runner: la porta sopra) |
-| Porta del side-car (driver della shell) | nessuno | `11700` + lo slot del canale: `11700`, `11701`, ... |
+| Porta tunnel | `11435` (esecutore `11436`) | prima disponibile tra `11500`, `11502`, ... (esecutore: la porta sopra) |
+| Porta "side-car" (driver shell) | nessuna | `11700` + lo slot del "lane": `11700`, `11701`, ... |
 | Nome del pod | `offrig-<profile>` | `offrig-<tag>-<profile>` |
 | Blocco SSH | `# >>> offrig:offrig >>>` | `# >>> offrig:offrig-<tag> >>>` |
 
-`<tag>` deriva dal nome della cartella del progetto (`aspire-si`, `ai-jam-sessions`), con un breve
-hash aggiunto quando due progetti condividono lo stesso nome di cartella. A un canale di un progetto viene assegnata la prima
-volta che pianifica una sessione, scritta in `lanes.toml` nella directory di configurazione di offrig e mantenuta:
-lo stesso progetto ottiene lo stesso canale dopo ogni riavvio. L'assegnazione utilizza un file di blocco e
-scrive il registro in modo atomico, in modo che due side-car avviati contemporaneamente non condividano mai un tag,
-alias o porta. Nessun canale può essere `11434` (la porta di Ollama locale): l'intervallo inizia da
-`11500` e un registro modificato per indicare diversamente viene rifiutato. Un piano registra il suo canale e
-il suo avvio, il runner, il watchdog e l'arresto utilizzano tutti quel canale, non la configurazione globale.
+`<tag>` deriva dal nome della cartella del progetto (`aspire-si`, `ai-jam-sessions`), con un hash breve aggiunto quando due progetti
+condividono lo stesso nome di cartella. Il "lane" di un progetto viene allocato la prima volta che pianifica
+una sessione, scritto in `lanes.toml` nella directory di configurazione di offrig e mantenuto:
+lo stesso progetto ottiene lo stesso "lane" dopo ogni riavvio. L'allocazione utilizza un file di blocco e
+scrive il registro in modo atomico, in modo che due "side-car" avviati contemporaneamente non condividano
+mai un tag, un alias o una porta. Nessun "lane" può essere `11434` (la porta dell'Ollama locale): l'intervallo
+inizia da `11500` e un registro modificato per indicare il contrario viene rifiutato. Un piano registra il suo
+"lane" e il suo avvio, l'esecutore, il "watchdog" e l'arresto utilizzano tutti quel "lane", non la configurazione
+globale.
 
-Un side-car corrisponde, elenca o arresta solo i pod denominati per il proprio canale. Il canale di un altro
-progetto, i pod del canale semplice `offrig-<profile>` e qualsiasi altro pod nell'account
-rimangono invariati: il controllo di avvio per un pod attivo richiede solo
-il proprio canale, l'arresto rifiuta un pod il cui nome non è quello del canale del piano e il controllo degli orfani del tunnel elimina un `ssh` obsoleto solo quando il suo forward e il suo alias sono quelli del canale.
-I piani creati prima dell'esistenza dei canali non hanno un canale registrato e continuano a essere eseguiti nel canale semplice,
-quindi un pod avviato con il vecchio schema viene arrestato dallo stesso piano che lo ha avviato.
+Un "side-car" corrisponde, elenca o arresta solo i pod con il nome del proprio "lane". Il "lane" di un altro
+progetto, i pod del "lane" standard `offrig-<profile>` e qualsiasi altro pod sull'account vengono lasciati inalterati: il
+controllo di avvio per un pod attivo richiede solo il proprio "lane", l'arresto rifiuta un pod il cui nome non
+è quello del "lane" del piano e il controllo dei pod orfani del tunnel elimina un pod obsoleto `ssh` solo quando
+il suo forward e il suo alias sono quelli del "lane". I piani creati prima dell'esistenza dei "lane" non hanno
+un "lane" registrato e continuano a essere eseguiti sul "lane" standard, quindi un pod avviato con il vecchio
+schema viene arrestato dallo stesso piano che lo ha avviato.
 
-**La porta del side-car.** `offrig-mcp` comunica tramite MCP su stdio. Un driver di shell che lo mantiene
-aperto per un'intera sessione (quando la connessione MCP della sessione stessa è interrotta) lo mette dietro
-una porta HTTP loopback e quella porta era un numero per l'intera macchina (`11439`):
-il driver di un secondo progetto o qualsiasi altro programma poteva prenderla e il primo side-car si spegneva
-senza dire una parola. L'impostazione predefinita è ora per progetto, dal canale del progetto, nello stesso modo
-in cui è la porta del tunnel: lo slot del canale `i` (porta del tunnel `11500 + 2i`) ottiene la porta del side-car `11700 + i`.
-L'intervallo `11700` a `11763` si trova sopra ogni porta del tunnel e del runner che un canale può avere
-(`11500` a `11627`), il `11435` e il `11436` del canale semplice e il `11434` di Ollama locale,
-in modo che una porta del side-car non possa mai essere una porta del tunnel. Non viene memorizzato nulla di nuovo: `lanes.toml` è
-invariato e la porta deriva dal canale. `OFFRIG_SIDECAR_PORT` lo sovrascrive comunque; un
-valore che non è una porta, è inferiore a 1024 o è `11434`, `11435`, `11436` o qualsiasi cosa nell'intervallo del tunnel del canale viene rifiutato.
+**La porta del "side-car".** `offrig-mcp` comunica tramite MCP su stdio. Un driver shell che mantiene
+una connessione aperta per l'intera sessione (quando la connessione MCP della sessione stessa è interrotta) la
+mette dietro una porta HTTP di loopback e quella porta era una volta un numero per l'intera macchina (`11439`):
+un secondo driver del progetto o qualsiasi altro programma poteva prenderla e il primo "side-car" si spegneva
+senza dire una parola. L'impostazione predefinita è ora per progetto, dal "lane" del progetto, nello stesso
+modo in cui la porta del tunnel: lo slot del "lane" `i` (porta del tunnel `11500 + 2i`) ottiene la porta del "side-car" `11700 + i`.
+L'intervallo `11700` a `11763` è superiore a ogni porta del tunnel e dell'esecutore che un "lane" può avere
+(`11500` a `11627`), il `11435` e il `11436` del "lane" standard e l'Ollama locale `11434`, quindi una porta del "side-car" non può
+mai essere una porta del tunnel. Non vengono memorizzate nuove informazioni: `lanes.toml` non cambia e la porta
+deriva dal "lane". `OFFRIG_SIDECAR_PORT` lo sovrascrive comunque; un valore che non è una porta, è inferiore a 1024 o è `11434`, `11435`, `11436` o qualsiasi valore nell'intervallo del tunnel del "lane" viene rifiutato.
 
 ```
 offrig-mcp --sidecar-port --project <dir>           # print the port; allocates the lane if the project has none
 offrig-mcp --sidecar-port --check --project <dir>   # also exit 1 if something already holds it
 ```
 
-Con `--check`, una porta occupata è un errore che indica il nome della porta e, quando un side-car offrig
-risponde, il progetto a cui serve: `la porta del side-car 11700 è occupata: un side-car offrig sta già servendo il progetto <path> lì. Arrestalo prima o imposta OFFRIG_SIDECAR_PORT su una
-porta libera`. Il controllo chiede nello stesso modo in cui il driver risponde già (una richiesta come progetto
-che nessuno serve, che il driver rifiuta prima di toccare qualsiasi strumento), quindi non cambia nulla
-in un side-car in esecuzione. `offrig_status` segnala il `sidecar_port` del canale.
+Con `--check`, una porta già in uso è un errore che indica la porta e, quando un side-car "offrig" risponde, indica il progetto a cui serve: `la porta del side-car 11700 è già in uso: un side-car "offrig" sta già servendo il progetto <path>. Interrompilo prima, oppure imposta OFFRIG_SIDECAR_PORT su una porta libera`. Il controllo verifica come il driver risponde già (una richiesta come se non ci fosse nessun progetto in esecuzione, richiesta che il driver rifiuta prima di toccare qualsiasi strumento), quindi non cambia nulla in un side-car in esecuzione. `offrig_status` segnala la `sidecar_port` della corsia.
 
-**Un canale, un pod attivo.** Un canale ha un alias SSH e una porta del tunnel, quindi serve un
-pod alla volta: un secondo pod nel canale (`offrig-<tag>-job` accanto a `offrig-<tag>-jam`)
-ri-indirizzerebbe l'alias su se stesso e invierebbe il `offrig_put`, `offrig_exec`
-e `offrig_get` del primo piano alla macchina sbagliata. `offrig_launch` quindi rifiuta mentre il canale ha
-un piano aperto o qualsiasi pod attivo di sua proprietà, con `il canale <tag> ha un pod attivo <name> (piano <id>);
-arrestalo prima`, before anything is committed or rented. The plain lane's `avvia offrig`
-e l'app rifiuta allo stesso modo per un pod di un altro profilo (il pod dello stesso profilo viene
-ancora riutilizzato). Arresta il primo piano, quindi avvia il successivo.
+**Una corsia, un pod attivo.** Una corsia ha un alias SSH e una porta tunnel, quindi serve un solo pod alla volta: un secondo pod nella corsia (`offrig-<tag>-job` accanto a `offrig-<tag>-jam`) ripunta l'alias su se stesso e invia la `offrig_put`, `offrig_exec` e `offrig_get` del primo piano alla macchina sbagliata. `offrig_launch` quindi rifiuta finché la corsia ha un piano aperto o qualsiasi pod attivo, con `la corsia <tag> ha un pod attivo <name> (piano <id>); interrompilo prima`, before anything is committed or rented. The plain lane's `e avvia "offrig"`. L'app rifiuta allo stesso modo per un pod di un profilo diverso (il pod dello stesso profilo viene comunque riutilizzato). Interrompi il primo piano, quindi avvia il successivo.
 
 ## Livelli
 
-I profili si trovano in `%APPDATA%\offrig\config.toml` (scritti alla prima modifica). Valori predefiniti:
+I profili sono memorizzati in `%APPDATA%\offrig\config.toml` (scritti alla prima modifica). Valori predefiniti:
 
 | Profilo | GPU | Modelli | Costo tipico |
 |---|---|---|---|
-| piccolo | 1 × RTX 2000 Ada / A4000 | `qwen3:4b` | circa $0,25/ora |
-| medio | 1 × RTX PRO 6000 (96 GB); A100 o H100 80 GB se non ne sono disponibili | `qwen3-coder:30b-a3b-q8_0`, `gpt-oss:120b` | $2,09/ora (A100 in caso di fallback $1,59) |
-| avanguardia | 4 × RTX PRO 6000 (384 GB), **SGLang** | Qwen3-Coder-480B AWQ 4-bit (252 GB), circa 130 GB rimanenti per il contesto | $8,36/ora |
-| avanguardia-mini | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B FP8 (31 GB): il percorso del motore di avanguardia, provato a basso costo | circa $1,7/ora |
-| avanguardia-mini-awq | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B AWQ (17 GB): i kernel MoE a 4 bit dell'avanguardia, provati a basso costo | circa $1,7/ora |
-| lavoro | 1 × RTX PRO 6000 (96 GB); A100 o H100 80 GB se non ne sono disponibili | nessuno: un **pod di lavoro** esegue il tuo lavoro, non un server di modelli | $2,09/ora (A100 in caso di fallback $1,59) |
-| jam | 1 × A40 (48 GB) prima; A6000, A5000, 3090, L4 o 4090 se non ne sono disponibili | nessuno: un **pod di lavoro** per i rendering di canto di ai-jam-sessions (SoulX-Singer) | $0,49/ora (A40) |
+| piccolo | 1 × RTX 2000 Ada / classe A4000 | `qwen3:4b` | circa 0,25 dollari/ora |
+| medio | 1 × RTX PRO 6000 (96 GB); A100 o H100 80 GB se non ce ne sono di libere | `qwen3-coder:30b-a3b-q8_0`, `gpt-oss:120b` | 2,09 dollari/ora (A100 come alternativa a 1,59 dollari) |
+| avanguardia | 4 × RTX PRO 6000 (384 GB), **SGLang** | Qwen3-Coder-480B AWQ 4-bit (252 GB), circa 130 GB rimanenti per il contesto | 8,36 dollari/ora |
+| avanguardia-mini | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B FP8 (31 GB): il percorso del motore di avanguardia, testato in modo economico | circa 1,7 dollari/ora |
+| avanguardia-mini-awq | 1 × RTX PRO 6000, **SGLang** | Qwen3-Coder-30B AWQ (17 GB): i kernel MoE a 4 bit dell'avanguardia, testati in modo economico | circa 1,7 dollari/ora |
+| lavoro | 1 × RTX PRO 6000 (96 GB); A100 o H100 80 GB se non ce ne sono di libere | nessuno: un **pod di lavoro** esegue il tuo lavoro, non un server di modelli | 2,09 dollari/ora (A100 come alternativa a 1,59 dollari) |
+| jam | 1 × A40 (48 GB) prima; A6000, A5000, 3090, L4 o 4090 se non ce ne sono di libere | nessuno: un **pod di lavoro** per i rendering vocali delle sessioni di "ai-jam" (SoulX-Singer) | 0,49 dollari/ora (A40) |
 
-Un profilo con una `recipe` esegue un motore diverso da Ollama: un'immagine bloccata
-(`lmsysorg/sglang:v0.5.20-cu130`), un modello di Hugging Face che scarica all'avvio e
-argomenti del server aggiuntivi. offrig imposta il parallelismo dei tensori dal numero di GPU, la lunghezza del contesto dal profilo e mantiene il motore sul loopback del pod; una ricetta non può
-sovrascriverli. Per un repository protetto, `hf_token_secret` indica un segreto RunPod, a cui si fa riferimento come
-`{{ RUNPOD_SECRET_<name> }}` in modo che il token non entri mai nelle specifiche del pod. L'avvio attende
-il `/health` del motore e l'elenco dei modelli, segnala i pesi su disco durante il download e
-si interrompe immediatamente (con il log del motore) se il motore si chiude.
+A profile with a `recipe` runs another engine than Ollama: a pinned image
+(`lmsysorg/sglang:v0.5.20-cu130`), a Hugging Face model it downloads at start, and
+extra server arguments. offrig sets tensor parallelism from the GPU count, the context
+length from the profile, and keeps the engine on the pod's loopback; a recipe cannot
+override those. For a gated repo, `hf_token_secret` names a RunPod secret, referenced as
+`{{ RUNPOD_SECRET_<name> }}` so the token never enters the pod spec. The launch reports
+weights on disk while the engine downloads them, and stops at once (with the engine's
+log) if the engine exits. It does not call the engine ready when `/health` answers, and
+`/v1/models` answering is not readiness either. After `/health` returns 200, offrig
+sends one chat completion (`max_tokens` 1, `temperature` 0) and waits up to 30 seconds.
+The step is `ready` only when that reply has a choice. If the completion fails or times
+out, offrig tries once more after 15 seconds. A second failure is the step
+`engine_unresponsive`: the job stays running, and the error and the engine log are on
+the job. The next action is `the engine is not answering completions: shut the pod down,
+or wait if it is still warming up`. offrig does not shut the pod down for this, on the
+side-car, the CLI, or the app. A slow first request (graph capture, JIT) is not a reason
+to throw away the download and the load; the plan's deadline still bounds the cost.
+The hang clock starts from `grep -c` of `Application startup complete` on the same ssh
+read as the log tail, over the whole engine log, not only the last 40 lines. A chatty
+engine can push the startup line out of that tail. The count still starts the clock.
+If that count is at least one and `/health` then stays down for 3 minutes, the step is
+`engine_hung`: those last 40 lines, the seconds since the count was first seen, and the
+next action `shut the pod down: the engine finished startup but never became healthy`.
+offrig reports that hang and leaves the pod up. Shutting it down stays with you, the
+same as a GPU-count mismatch. A GPU-count warning is not prefixed onto that next
+action, or onto the unresponsive one, so the sentence stays exact. An engine process
+that has already exited is not either report. On the side-car the compensator deletes
+that pod. On the CLI and the app the command stops with the error and does not delete
+it.
 
-Ogni profilo elenca i tipi di GPU in ordine di priorità; RunPod prende il primo con capacità.
-Quando nessuno è disponibile, un profilo può attendere (`wait_for_gpu_minutes`; avanguardia attende fino a 120 minuti):
-offrig controlla ogni minuto e crea il pod nel momento in cui le GPU diventano disponibili. Non viene affittato nulla
-mentre si attende, Ctrl+C o l'opzione Annulla dell'app lo interrompono e se l'API dei prezzi di RunPod non è disponibile, lo
-riprova semplicemente ogni minuto. Le grandi configurazioni multi-GPU arrivano e scompaiono in pochi minuti.
-I prezzi sono i prezzi di secure-cloud, letti in tempo reale; la pagina dei prezzi non è il prezzo disponibile.
+Ogni profilo elenca i tipi di GPU in ordine di priorità. La versione 2 specifica un tipo e non esegue il fallback, quindi "offrig" prova l'elenco stesso, in ordine, e mai oltre il prezzo del piano. Quando nessuno è disponibile, un profilo può attendere (`wait_for_gpu_minutes`; l'avanguardia attende fino a 120 minuti): "offrig" controlla ogni minuto e crea il pod nel momento in cui le GPU diventano disponibili. Nulla viene affittato durante l'attesa, Ctrl+C o l'annullamento dell'avvio dall'app lo interrompono e, se il catalogo attivo non è disponibile, semplicemente riprova a crearlo ogni minuto. Le configurazioni multi-GPU di grandi dimensioni vanno e vengono in pochi minuti. I prezzi sono i prezzi di listino "secure-cloud" del catalogo v2 (`GET /catalog/gpus`), per GPU, moltiplicati per il numero di GPU. Un elenco con NESSUNO non è gratuito. La pagina dei prezzi pubblici non è il prezzo disponibile. `CUDA_VERSIONS` è solo il fallback quando l'elenco `cudaVersions` di una GPU viene omesso.
 
 ### In attesa di capacità
 
-Un piano con capacità limitata tramite `no_fallback` o `max_price_hr` spesso non riesce a soddisfare la richiesta, quindi il lancio riprova in silenzio invece di fallire, senza affittare nulla nel frattempo. Il tempo di attesa è, in ordine: il `wait_minutes` del piano (un argomento `offrig_plan`, memorizzato con il piano; `0` fallisce immediatamente), altrimenti il `wait_for_gpu_minutes` del profilo. Il profilo `job` ha un valore predefinito di 20 minuti. L'attesa viene ridotta al tempo rimanente del piano meno una riserva di cinque minuti, in modo che non superi mai la scadenza del piano e, poiché non viene affittato nulla durante l'attesa, non aggiunge nulla al peggiore dei casi previsto. `offrig_launch` segnala `capacity_wait_minutes`; durante l'attesa, `offrig_job` mostra `progress.capacity_wait` (`checks`, `waited_secs`, `limit_secs`) e un passaggio che indica quale controllo è in corso. Quando l'attesa termina, il lancio fallisce con `no capacity` e non viene affittato nulla.
+Un piano con capacità limitata a `no_fallback` o `max_price_hr` spesso non riesce a soddisfare la richiesta, quindi il lancio riprova in silenzio invece di fallire, senza affittare nulla nel frattempo. Il tempo di attesa è, in ordine: il `wait_minutes` del piano (un argomento `offrig_plan`, memorizzato con il piano; `0` fallisce immediatamente), altrimenti il `wait_for_gpu_minutes` del profilo. Il profilo `job` ha un valore predefinito di 20 minuti. L'attesa viene ridotta al tempo rimanente del piano meno una riserva di cinque minuti, in modo che non superi mai la scadenza del piano e, poiché non viene affittato nulla durante l'attesa, non aggiunge nulla al peggiore dei casi previsto. `offrig_launch` segnala `capacity_wait_minutes`; durante l'attesa, `offrig_job` mostra `progress.capacity_wait` (`checks`, `waited_secs`, `limit_secs`) e un passaggio che indica quale controllo è in corso. Quando l'attesa termina, il lancio fallisce con `no capacity` e non viene affittato nulla.
 
 ### Definizione delle caratteristiche hardware di un piano
 
-Un profilo elenca i tipi di GPU in ordine di priorità e RunPod utilizza la prima GPU disponibile, quindi, senza limiti, un piano potrebbe utilizzare una scheda di fallback con meno memoria, un driver più vecchio e un prezzo diverso. Tre limiti consentono di definire l'hardware che un piano può utilizzare. La pianificazione è ancora gratuita; i limiti limitano solo ciò che il piano può affittare.
+Un profilo elenca i tipi di GPU in ordine di priorità e RunPod utilizza la prima GPU disponibile, quindi, senza limiti, un piano potrebbe utilizzare una GPU di riserva con meno memoria, un driver più vecchio e un prezzo diverso. Tre limiti consentono di definire l'hardware che un piano può utilizzare. La pianificazione è ancora gratuita; i limiti limitano solo ciò che il piano può affittare.
 
 | Limite | Dove | Effetto |
 |---|---|---|
-| `min_cuda` | profilo (`config.toml`) | La versione CUDA più vecchia dell'host, dall'elenco di RunPod (`13.0`, `12.9`, ... `11.8`). La richiesta di creazione del pod invia ogni versione uguale o successiva come `allowedCudaVersions`. Per un profilo di lavoro, viene applicata la versione più recente tra questa e la versione `[profiles.job] min_cuda` dell'immagine. |
+| `min_cuda` | profilo (`config.toml`) | La versione CUDA più vecchia dell'host, dall'elenco di RunPod (`13.2`, `13.1`, `13.0`, `12.9`, ... `11.8`). La richiesta di creazione del pod invia questo valore come `gpu.minCudaVersion`, quindi un host più recente della versione più recente copiata è comunque valido. Quando il catalogo restituisce `cudaVersions` per una GPU, un piano utilizza solo quel tipo se è disponibile una versione uguale o superiore a questo valore. Quando il catalogo omette l'elenco, l'elenco copiato viene utilizzato come valore predefinito. Per un profilo di lavoro, viene utilizzata la versione più recente tra questa e la versione `[profiles.job] min_cuda` dell'immagine. |
 | `min_vram_gb` | profilo | La quantità minima totale di VRAM (tutte le GPU del profilo insieme) che un piano accetta. Le offerte inferiori vengono scartate; anche un tipo per il quale RunPod non elenca alcuna memoria viene scartato. |
-| `max_price_hr` | argomento `offrig_plan` | Il costo massimo del pod, in totale $/ora per tutte le sue GPU (la cifra mostrata da `offrig_offers`). Le offerte superiori vengono scartate, così come un tipo per il quale non è elencato alcun prezzo (non può essere vincolato a un limite massimo). |
-| `no_fallback` | argomento `offrig_plan` | È consentita solo la prima famiglia di GPU del profilo. Le due edizioni RTX PRO 6000 Blackwell (Server e Workstation) sono una famiglia; ogni altra scheda, inclusa l'A100 SXM e PCIe, è una famiglia a sé stante. |
+| `max_price_hr` | argomento `offrig_plan` | Il costo massimo del pod, in totale $/ora per tutte le sue GPU (il valore mostrato da `offrig_offers`). Le offerte superiori vengono scartate, così come un tipo per il quale non è elencato alcun prezzo (non può essere vincolato a un limite massimo). |
+| `no_fallback` | argomento `offrig_plan` | È consentita solo la prima famiglia di GPU del profilo. Le due edizioni RTX PRO 6000 Blackwell (Server e Workstation) appartengono alla stessa famiglia; tutte le altre schede, inclusa l'A100 SXM e PCIe, appartengono a famiglie diverse. |
 
-Entrambi i campi del profilo sono facoltativi e per impostazione predefinita non sono impostati, quindi un `config.toml` scritto da un offrig precedente viene caricato senza modifiche. Il profilo `job` imposta `min_cuda = "13.0"`.
+I campi del profilo sono facoltativi e per impostazione predefinita non sono impostati, quindi un `config.toml` scritto da un piano precedente viene caricato senza modifiche. Il profilo `job` imposta `min_cuda = "13.0"`.
 
-`offrig_plan` calcola il peggiore dei casi in base a ciò che rimane:
-`max_hours x min(max_price_hr, the dearest listed price among the remaining GPUs)`. Senza
-`max_price_hr`, si tratta del prezzo più alto elencato nel profilo, come in precedenza. Un piano senza risorse rimanenti viene rifiutato con il motivo per cui ogni GPU è stata scartata e non viene scritto nulla.
+`cuda_versions` è un elenco esatto facoltativo oltre a `min_cuda`, ad esempio `cuda_versions = ["13.0"]`. Quando è impostato, la richiesta di creazione del pod invia questo elenco come `gpu.allowedCudaVersions`, nell'ordine in cui è stato scritto, e non invia anche un valore minimo. `offrig_plan` segnala l'elenco. L'impostazione insieme a `min_cuda`, inclusa la versione minima di un'immagine di lavoro, non è consentita: i due insieme sono ambigui. Ogni versione deve essere una versione che il piano accetta. Questo elenco, dalla versione più recente alla più vecchia, è 13.2, 13.1, 13.0, quindi 12.9 fino a 11.8. 13.2 e 13.1 sono versioni successive rispetto all'elenco v1 documentato di RunPod (consultato l'11-10-2026, che si interrompe a 13.0). Sono elencate perché un pod di scrittura del 2026-10-11 è stato posizionato su un host 13.2. Un valore minimo invia comunque solo `gpu.minCudaVersion`.
 
-Il piano memorizza l'elenco delle GPU rimanenti e il limite CUDA e `offrig_launch` affitta solo da queste, mai dall'elenco completo del profilo. `offrig_job` e il risultato del lancio del side-car segnalano il tipo di GPU e la versione CUDA dell'host effettivamente affittata, in un oggetto `rented`. L'API del pod non segnala la versione CUDA dell'host, quindi, una volta stabilita la connessione SSH, il lancio esegue `nvidia-smi` una sola volta e la legge dall'intestazione (`CUDA Version: 12.8` o `CUDA UMD Version: 13.4` sui driver più recenti); `rented.cuda_source` indica `nvidia-smi` o `pod API`. Se la versione CUDA dell'host è precedente al limite del piano, la GPU non è una di quelle elencate nel piano o il prezzo è superiore a quello del piano, `offrig_job` restituisce una voce `warnings` e avvia `next_action` con `WARNING`. Nulla viene terminato automaticamente: l'interruzione dell'affitto è a discrezione del chiamante (`offrig_shutdown`). Se né l'API del pod né `nvidia-smi` forniscono una versione CUDA, `rented.notes` lo indica e il limite non viene controllato.
+`offrig_plan` calcola il peggiore dei casi in base a ciò che è rimasto: `max_hours x min(max_price_hr, the dearest listed price among the remaining GPUs)`. Senza `max_price_hr`, questo è il prezzo più alto elencato nel profilo, come prima. Un piano senza più risorse disponibili viene rifiutato con il motivo per cui ogni GPU è stata scartata e non viene scritto nulla.
 
-### Disco del container
+Il piano memorizza l'elenco delle GPU rimanenti e, o il valore CUDA minimo o l'elenco CUDA esatto, e `offrig_launch` affitta solo da ciò che il piano ha memorizzato, mai da una modifica successiva del profilo. `offrig_job` e il risultato del lancio del file ausiliario segnalano il tipo di GPU e la versione CUDA dell'host effettivamente affittata, in un oggetto `rented`. L'API del pod non segnala la versione CUDA dell'host, quindi, una volta stabilita la connessione SSH, il lancio esegue `nvidia-smi` una volta e la legge dall'intestazione (`CUDA Version: 12.8` o `CUDA UMD Version: 13.4` sui driver più recenti); `rented.cuda_source` indica `nvidia-smi` o `pod API`. Se la versione CUDA dell'host è precedente al valore minimo del piano, la GPU non è una di quelle elencate nel piano o il prezzo è superiore al limite del piano, `offrig_job` restituisce una voce `warnings` e avvia `next_action` con `WARNING`. Nulla viene terminato automaticamente: l'interruzione dell'affitto è a discrezione del chiamante (`offrig_shutdown`). Se né l'API del pod né `nvidia-smi` forniscono una versione CUDA, `rented.notes` lo indica e il valore minimo non viene controllato.
 
-Un pod ha due dischi: il disco del container, locale all'host, e il volume montato in `/workspace`. Su alcuni host, `/workspace` è un file system di rete lento: in un pod di lavoro è stata misurata una velocità di 32 MB/s rispetto ai 354 MB/s del disco del container e non è stato possibile recuperare circa 130 GB di modelli in tempo, mentre il disco del container era solo di 60 GB. La dimensione del disco del container è il `container_disk_gb` del profilo (da 30 a 60 GB nei profili predefiniti; il profilo `job` ha 60 GB) e viene inviato alla richiesta di creazione del pod come `containerDiskInGb`. `offrig_plan` accetta `container_disk_gb` (da 1 a 2000) per sovrascriverlo per un piano; il piano lo memorizza, il lancio lo invia e la risposta del piano e `offrig_status` mostrano la dimensione effettiva.
+### Disco del contenitore
 
-- Il disco del container **non ha un costo**: offrig calcola solo il tempo di utilizzo della GPU, quindi il peggiore dei casi del piano è lo stesso indipendentemente dalla dimensione. RunPod addebita il costo del disco; non è stato verificato se la tariffa che segnala per il pod (`offrig_job` la mostra) include il disco del container.
-- offrig non sposta i download per te. I comandi di lavoro iniziano con `HF_HOME` sul volume `/workspace` (`/workspace/hf`); per utilizzare il disco del container, impostare il proprio (`HF_HOME=/root/hf python ...`) nel comando.
-- Il disco del container viene eliminato insieme al pod, come il volume senza un volume di rete: copiare i risultati con `offrig_get` prima di `offrig_shutdown`.
-- Il limite da 1 a 2000 è un controllo di sanità mentale di offrig per evitare errori di battitura; il limite effettivo di RunPod non viene controllato.
+Un pod ha due dischi: il disco del contenitore, locale all'host, e il volume montato in `/workspace`. Su alcuni host, `/workspace` è un file system di rete lento: un pod di lavoro ha misurato 32 MB/s rispetto a 354 MB/s sul suo disco del contenitore e non è stato in grado di recuperare circa 130 GB di modelli in tempo, mentre il disco del contenitore era solo di 60 GB. La dimensione del disco del contenitore è `container_disk_gb` del profilo (da 30 a 60 GB nei profili predefiniti; il profilo `job` ha 60 GB) e viene inviato alla richiesta di creazione del pod come `disk`. `offrig_plan` accetta `container_disk_gb` (da 1 a 2000) per sovrascriverlo per un piano; il piano lo memorizza, il lancio lo invia e la risposta del piano e `offrig_status` mostrano la dimensione effettiva.
+
+- Il disco del contenitore non ha un costo: offrig calcola solo il tempo di utilizzo della GPU, quindi il peggiore dei casi del piano è lo stesso indipendentemente dalla dimensione. RunPod addebita il costo del disco; non è stato verificato se la tariffa che segnala per il pod (`offrig_job` la mostra) include il disco del contenitore.
+- offrig non sposta i download per te. I comandi di lavoro iniziano con `HF_HOME` sul volume `/workspace` (`/workspace/hf`); per utilizzare il disco del contenitore, imposta il tuo (`HF_HOME=/root/hf python ...`) nel comando.
+- Il disco del contenitore viene eliminato insieme al pod, come il volume senza un volume di rete: copia i risultati con `offrig_get` prima di `offrig_shutdown`.
+- Il limite da 1 a 2000 è un controllo di sanità mentale di offrig contro un errore di battitura; il limite effettivo di RunPod non viene controllato.
 
 ### Pod di lavoro
 
@@ -267,7 +346,7 @@ Un profilo con un `job` affitta una GPU per un lavoro che viene eseguito su di e
 nessun tipo di inoltro (`AllowTcpForwarding=no`); l'unico modo per accedervi è tramite ssh al pod.
 - Un profilo di lavoro non elenca alcun modello e non può avere anche una ricetta; il controllo della configurazione rifiuta
 entrambi.
-- `offrig up` e l'app rifiutano un profilo di lavoro prima di affittare qualsiasi cosa. L'esecuzione avviene
+- `offrig up` e l'app rifiutano un profilo di lavoro prima di allocare qualsiasi risorsa. L'esecuzione avviene
 attraverso il side-car: `offrig_plan profile=job`, `offrig_launch`, quindi `offrig_put`,
 `offrig_exec` e `offrig_get`. L'avvio è pronto quando sshd risponde.
 - Un comando viene eseguito in modo indipendente sul pod (`setsid nohup`) in `/workspace/job`, quindi la sua durata
@@ -277,24 +356,24 @@ vengono salvati in `/workspace/hf` sul volume del pod.
 - `offrig_exec action=run` è per controlli rapidi (`ls`, `nvidia-smi`), non per il lavoro: esegue
 il comando fino al completamento sotto `timeout` (predefinito 30 s, massimo 120 s) e restituisce `stdout`,
 `stderr`, `exit_code` e `timed_out`. L'output viene troncato agli ultimi 64 KB di ogni flusso
-(`truncated`) e rappresenta un output del pod non affidabile. Un comando che richiede più tempo è un `start`.
-- La coda del log di un lavoro presenta barre di avanzamento compresse: i ridisegni in stile tqdm, uniti da ritorni a capo, mostrano solo l'ultimo frame. `offrig_exec action=status save_log=<local path>`
+(`truncated`) e rappresenta un output del pod non attendibile. Un comando che richiede più tempo è un `start`.
+- La coda del log di un lavoro presenta barre di avanzamento compresse: le ridisegnature in stile tqdm, unite tramite ritorni a capo, mostrano solo l'ultimo frame. `offrig_exec action=status save_log=<local path>`
 copia anche l'intero log del lavoro, così come è stato scritto, in un file locale (vengono create le cartelle principali),
 in modo che la coda possa rimanere breve.
 - L'immagine è una build CUDA 12.8, quindi un profilo di lavoro indica la versione CUDA più vecchia dell'host su cui
-viene eseguita (`min_cuda = "12.8"`) e il pod viene creato con `allowedCudaVersions` di RunPod
-a partire da essa. In caso contrario, un host con un driver più vecchio avvia il pod e torch non trova alcuna GPU,
-dopo che l'affitto è iniziato. Il lavoro stesso potrebbe richiedere più risorse rispetto all'immagine: il profilo `job`
-imposta anche `min_cuda = "13.0"` sul profilo (vedi sopra), perché i lavori che esegue installano un
-vLLM corrente, il cui PyTorch è una build CUDA 13.
-- Budget, piano, watchdog e arresto funzionano come per qualsiasi altro profilo. Copia i risultati prima di `offrig_shutdown`: il disco del pod viene eliminato insieme a esso.
-- `jam` è il profilo di lavoro che ai-jam-sessions utilizza per rendere le sue esecuzioni vocali: SoulX-Singer richiede molte meno risorse di una scheda di addestramento, quindi affitta una scheda economica da 24-48 GB. La configurazione e la sessione
-si trovano in tale repository (`docs/vocal-offrig.md`); offrig non sa nulla del canto.
+viene eseguita (`min_cuda = "12.8"`) e il pod viene creato con tale valore minimo come
+`gpu.minCudaVersion`. In caso contrario, un host con un driver più vecchio avvia il pod e torch non trova alcuna GPU,
+dopo che l'allocazione è iniziata. Il lavoro stesso potrebbe richiedere più risorse rispetto all'immagine: il profilo `job`
+imposta anche `min_cuda = "13.0"` sul profilo (vedi sopra), perché i lavori che esegue installano una
+versione corrente di vLLM, la cui PyTorch è una build CUDA 13.
+- Budget, piano, watchdog e arresto funzionano come per qualsiasi altro profilo. Copia i risultati prima di `offrig_shutdown`: il disco del pod viene eliminato insieme ad esso.
+- `jam` è il profilo di lavoro che ai-jam-sessions utilizza per rendere le sue esecuzioni vocali: SoulX-Singer richiede molte meno risorse di una scheda di addestramento, quindi alloca una scheda economica da 24-48 GB. La configurazione e la sessione
+si trovano in tale repository (`docs/vocal-offrig.md`); offrig non sa nulla di canto.
 
 ### Caricamento dei pesi su un volume di rete
 
 Un profilo di ricetta scarica i suoi pesi a ogni avvio: per il modello di riferimento, ciò richiedeva circa
-20 dei 22 minuti necessari per prepararlo (252 GB, $8,36/ora). Il caricamento li posiziona su un volume di rete RunPod una sola volta:
+20 dei 22 minuti necessari per la preparazione (252 GB, $8,36/ora). Il caricamento li posiziona su un volume di rete RunPod una sola volta:
 
 ```text
 offrig stage frontier --dc EUR-IS-1          shows the monthly cost, changes nothing
@@ -302,11 +381,11 @@ offrig stage frontier --dc EUR-IS-1 --yes    creates the volume and downloads th
 offrig stage frontier --remove --yes         deletes the volume (the undo)
 ```
 
-- Il volume addebita un costo mensile, indipendentemente dal fatto che un pod sia in esecuzione o meno (300 GB per il modello di riferimento costano circa
+- Il volume addebita un costo mensile indipendentemente dal fatto che un pod sia in esecuzione o meno (300 GB per il modello di riferimento costano circa
 $21/mese a $0,07/GB), quindi solo un utente può eseguire il caricamento; nessun strumento automatizzato può farlo.
 - Un volume si trova in un unico data center, quindi i pod del profilo vengono avviati solo lì e
-le offerte e i piani hanno prezzi basati su tale posizione. Scegliene uno con archiviazione di rete e le GPU del profilo; `offrig gpus` e la console di RunPod mostrano dove si trovano.
-- Il download viene eseguito sul pod GPU più economico disponibile in quel data center. Il pod viene
+le offerte e i piani hanno prezzi basati su tale posizione. Scegli uno con archiviazione di rete e le GPU del profilo; `offrig gpus` e la console di RunPod mostrano dove si trovano.
+- Il download viene eseguito sul pod GPU più economico disponibile in tale data center. Il pod viene
 terminato in caso di successo, di errore o di timeout.
 - Il volume viene registrato nel profilo prima dell'inizio del download, quindi un caricamento non riuscito
 non viene mai dimenticato; riesegui per riprendere, oppure `--remove`.
@@ -314,16 +393,14 @@ non viene mai dimenticato; riesegui per riprendere, oppure `--remove`.
 
 ## Sicurezza finanziaria
 
-- Prima di un avvio, offrig mostra la corrispondenza gratuita più economica e il tempo rimanente con il pod
-in esecuzione. Se il tempo rimanente è inferiore a un'ora, rifiuta l'operazione a meno che tu non la sovrascriva, perché quando il tempo rimanente è zero,
-RunPod interrompe tutti i pod sull'account, inclusi quelli che offrig non gestisce.
+- Prima di un avvio, offrig mostra la corrispondenza gratuita più economica e il tempo di esecuzione disponibile con il pod
+in esecuzione. Se il tempo di esecuzione è inferiore a un'ora, rifiuta l'operazione a meno che tu non la sovrascriva, perché quando il tempo di esecuzione è pari a zero, RunPod interrompe tutti i pod sull'account, inclusi quelli che offrig non gestisce.
 - L'arresto automatico termina il pod dopo 30 minuti se ogni GPU ha un utilizzo inferiore al 5% (configurabile,
-oppure disattivato).
+o disattivato).
 - La chiusura dell'app con un pod in esecuzione chiede se terminarlo o mantenerlo in esecuzione.
-- offrig interagisce solo con i pod che ha creato: `offrig-<profile>` per la CLI e l'app,
-`offrig-<tag>-<profile>` per la corsia side-car di un progetto (vedi Corsie). Un side-car non interagisce mai con i pod di un'altra corsia, con i pod della corsia principale o con qualsiasi altro pod; questi vengono elencati,
-ma non modificati.
-- Per le sessioni dell'agente, il limite viene applicato prima di qualsiasi spesa: il caso peggiore di un piano (prezzo attuale × ore massime) viene preso in considerazione rispetto al budget impostato dall'utente e rifiutato se supera tale limite, e
+- offrig interagisce solo con i pod che ha nominato: `offrig-<profile>` per la CLI e l'app,
+`offrig-<tag>-<profile>` per la traccia side-car di un progetto (vedi Tracce). Un side-car non interagisce mai con i pod di un'altra traccia, con la traccia principale o con qualsiasi altro pod; questi vengono elencati, ma non modificati.
+- Per le sessioni dell'agente, il limite viene applicato prima di qualsiasi spesa: il caso peggiore di un piano (prezzo attuale × ore massime) viene preso in considerazione rispetto al budget impostato dall'utente e rifiutato se supera tale budget, e
 un avvio richiede solo un ID piano, quindi un agente non può impostare il proprio prezzo.
 - Ogni avvio side-car ha un watchdog che termina il pod alla scadenza del piano e il runner arresta il pod non appena la sua coda è vuota.
 
@@ -333,10 +410,10 @@ un avvio richiede solo un ID piano, quindi un agente non può impostare il propr
 |---|---|---|
 | Provider Zed `offrig` | `%APPDATA%\Zed\settings.json` | `offrig zed-remove`; l'originale viene conservato come `settings.json.offrig.bak` |
 | Modello predefinito di Zed (solo se richiesto) | stesso file | `offrig zed-remove` ripristina il valore predefinito precedente |
-| `OFFRIG_API_KEY` (segnaposto; Zed richiede una chiave) | ambiente utente | `setx OFFRIG_API_KEY ""` oppure rimuovilo nelle Proprietà di sistema |
+| `OFFRIG_API_KEY` (segnaposto; Zed richiede una chiave) | ambiente utente | `setx OFFRIG_API_KEY ""` oppure rimuovilo nelle proprietà di sistema |
 | Alias SSH `offrig` | `~/.ssh/config`, tra i marcatori `# >>> offrig:offrig >>>` | elimina il blocco contrassegnato |
-| Alias SSH `offrig-<tag>`, uno per progetto che è stato avviato da un side-car | `~/.ssh/config`, tra i marcatori `# >>> offrig:offrig-<tag> >>>` | elimina il blocco contrassegnato |
-| Corsie del progetto | `%APPDATA%\offrig\lanes.toml` (percorso del progetto, tag, alias, porta del tunnel) | elimina la voce del progetto mentre nessun pod è in esecuzione nella sua corsia, oppure l'intero file |
+| Alias SSH `offrig-<tag>`, uno per ogni progetto avviato da un side-car | `~/.ssh/config`, tra i marcatori `# >>> offrig:offrig-<tag> >>>` | elimina il blocco contrassegnato |
+| Tracce del progetto | `%APPDATA%\offrig\lanes.toml` (percorso del progetto, tag, alias, porta del tunnel) | elimina la voce del progetto mentre nessun pod è in esecuzione nella sua traccia, oppure l'intero file |
 | Chiavi host del pod | `~/.ssh/known_hosts_offrig` | elimina il file |
 | Impostazioni | `%APPDATA%\offrig\config.toml` | elimina il file |
 | Pesi caricati (solo con `offrig stage --yes`) | un volume di rete RunPod `offrig-<profile>`; addebito mensile | `offrig stage <profile> --remove --yes` |
@@ -345,19 +422,27 @@ Commenti e layout nelle impostazioni di Zed vengono conservati: le modifiche ven
 
 ## Modello di minaccia
 
-- **Chiave API di RunPod.** Letta da `RUNPOD_API_KEY`; mai scritta su disco né nei log. Il provider di Zed, di proposito, non si chiama `runpod`: con quel nome Zed leggerebbe `RUNPOD_API_KEY` e la invierebbe al server del modello.
-- **Server del modello.** Raggiungibile solo tramite SSH con la tua chiave. Sul pod l'accesso con password è disattivato e sshd consente solo l'inoltro locale.
-- **Chiavi host.** Fissate per endpoint in un file known-hosts separato. offrig dimentica una chiave solo quando cambia l'endpoint del pod, perché RunPod riutilizza le coppie ip:porta tra pod diversi.
-- **Iniezione di comandi.** I nomi dei modelli vengono verificati secondo la sintassi dei nomi di Ollama prima di raggiungere una shell remota.
-- **Tunnel orfani.** Se offrig termina in modo anomalo, il suo `ssh` può continuare a occupare la porta. All'avvio successivo offrig lo chiude, ma solo se chi ascolta è `ssh.exe` con l'esatta specifica di inoltro di offrig. Qualsiasi altra cosa sulla porta viene rifiutata, mai chiusa.
-- **Nessuna telemetria.** offrig comunica solo con l'API di RunPod, con il tuo pod e con l'Ollama locale (per confrontare gli elenchi dei modelli).
+- **RunPod API key.** Read from `RUNPOD_API_KEY`; never written to disk or logs. The Zed
+  provider is deliberately not named `runpod`, because Zed would then read
+  `RUNPOD_API_KEY` and send it to the model server.
+- **Model server.** Reachable only through SSH with your key. Password login is off on
+  the pod, and sshd allows only local forwarding.
+- **Host keys.** Pinned per endpoint in a separate known-hosts file. offrig forgets a key
+  only when the pod endpoint changes, because RunPod reuses ip:port pairs across pods.
+- **Shell injection.** Model names are validated against Ollama's name syntax before
+  they reach a remote shell.
+- **Orphaned tunnels.** If offrig dies, its `ssh` may keep holding the port. On the next
+  start offrig kills it, but only if the listener is `ssh.exe` carrying offrig's exact
+  forward spec. Anything else on the port is refused, never killed.
+- **No telemetry.** offrig talks only to RunPod's API, your pod, and your local Ollama
+  (to compare model lists).
 
 ## Test
 
 `cargo test --workspace` esegue più di 250 test, coprendo almeno il 90% delle righe (il CI fallisce se questo valore è inferiore):
 
-- **La libreria principale:** analisi di RunPod, specifiche del pod per entrambi i motori, configurazione SSH, modifiche JSONC di Zed, regole di protezione, logica di costo e inattività, lo store e le sue migrazioni, ruoli, assemblaggio del contesto, controlli deterministici, le decisioni del runner, il watchdog e lo staging, incluso un RunPod simulato che dimostra che una fase fallita interrompe il suo pod.
-- **L'app:** gestione dello stato più test dell'interfaccia utente tramite clic nell'ambiente di test di egui.
+- **La libreria principale:** analisi di RunPod, specifiche del pod per entrambi i motori, configurazione SSH, modifiche JSONC di Zed, regole di protezione, logica di costo e inattività, lo store e le sue migrazioni, ruoli, assemblaggio del contesto, controlli deterministici, le decisioni del runner, il watchdog e lo staging, incluso un RunPod simulato che dimostra che una fase fallita termina il suo pod.
+- **L'applicazione:** gestione dello stato più test dell'interfaccia utente tramite clic nell'ambiente di test di egui.
 - **La CLI:** codici di uscita, livelli di log e il fatto che la chiave API non compaia mai nell'output.
 - **Il side-car:** test end-to-end tramite stdio rispetto a un RunPod simulato, il processo reale del watchdog e il processo reale del runner rispetto a un modello di pod simulato; ogni errore dello strumento restituisce un codice.
 
@@ -365,53 +450,53 @@ Commenti e layout nelle impostazioni di Zed vengono conservati: le modifiche ven
 
 ### Registrazione dei test in tempo reale (02-10-2026, livello medio, A100 80 GB, circa 0,45 dollari)
 
-- Il pod si avvia in circa 80 secondi; sshd, il tunnel e l'Ollama 0.35.0 del pod rispondono.
+- Il pod si avvia in circa 80 secondi; sshd, il tunnel e l'istanza Ollama 0.35.0 del pod rispondono.
 - 97 GB di modelli vengono scaricati sul pod a una velocità di circa 150-250 MB/s.
-- `qwen3-coder:30b-a3b-q8_0` e `gpt-oss:120b` hanno entrambi risposto a una chat in streaming con una corretta chiamata allo strumento tramite il tunnel. Hanno utilizzato 36 GB e 64 GB della VRAM del pod; l'Ollama locale non ha caricato nulla e non era affatto sulla GPU locale.
-- Tutti e sette i controlli di protezione sono stati superati, sia dalla CLI che dall'app.
-- Una CLI interrotta bruscamente ha lasciato il suo `ssh` in esecuzione sulla porta; l'esecuzione successiva l'ha recuperata.
-- Il tunnel, i controlli, il test del modello e lo spegnimento dell'app sono stati eseguiti tramite i suoi pulsanti.
+- `qwen3-coder:30b-a3b-q8_0` e `gpt-oss:120b` rispondono entrambi a una chat in streaming con una corretta chiamata allo strumento tramite il tunnel. Hanno utilizzato 36 GB e 64 GB della VRAM del pod; l'istanza locale di Ollama non ha caricato nulla e non era presente sulla GPU locale.
+- Tutti e sette i controlli di protezione sono stati superati, sia dalla CLI che dall'applicazione.
+- Una CLI interrotta bruscamente ha lasciato il suo `ssh` in esecuzione sulla porta; l'esecuzione successiva lo ha recuperato.
+- Il tunnel, i controlli, il test del modello e lo spegnimento dell'applicazione sono stati eseguiti tramite i suoi pulsanti.
 
-Bug riscontrati durante l'esecuzione in tempo reale, ora corretti e coperti: una lista `&&` in background manteneva aperta l'uscita standard di ssh e bloccava l'avvio del download; la lista dei pod non includeva i tipi di GPU senza `includeMachine=true`; il controllo di avvio contava due volte il prezzo di un pod in esecuzione.
+Bug riscontrati durante l'esecuzione in tempo reale, ora corretti e coperti: una lista `&&` in background manteneva stdout di ssh aperto e bloccava l'avvio del download; la lista dei pod non includeva i tipi di GPU senza `includeMachine=true`; il controllo di avvio contava due volte il prezzo di un pod in esecuzione.
 
-### Prova del side-car (03-10-2026, livello piccolo, RTX 2000 Ada, 0,08 dollari prenotati)
+### Esecuzione di prova del side-car (03-10-2026, livello piccolo, RTX 2000 Ada, 0,08 dollari prenotati)
 
-L'installato `offrig-mcp` viene eseguito tramite stdio, nel modo in cui un agente lo chiama:
+L'istanza `offrig-mcp` installata viene eseguita tramite stdio, nel modo in cui un agente la chiama:
 
-- `offrig_plan` ha calcolato 0,5 ore a 0,15 dollari nel caso peggiore; `offrig_launch` lo ha confermato, ha avviato il watchdog e una seconda chiamata ha restituito lo stesso lavoro. È stato affittato un pod, a 0,24 dollari/ora.
-- SSH attivo 100 secondi dopo l'affitto, `qwen3:4b` scaricato, pronto a 150 secondi.
-- `offrig_ask` ha eseguito un passaggio di consegne per un game designer in 46 secondi; la risposta ha soddisfatto il controllo di accettazione e ha mantenuto la restrizione di cinque elementi dalla memoria.
-- Il pod ha raggiunto Internet (Wikipedia, API di GitHub). Dati i dati forniti, il pod ha risposto correttamente alle domande attuali; se interrogato a freddo, ha detto di non avere accesso in tempo reale.
+- `offrig_plan` ha calcolato un prezzo di 0,5 ore a 0,15 dollari nel caso peggiore; `offrig_launch` lo ha confermato, ha avviato il watchdog e una seconda chiamata ha restituito lo stesso lavoro. È stato affittato un pod, al costo di 0,24 dollari/ora.
+- SSH è attivo 100 secondi dopo l'affitto, `qwen3:4b` è stato scaricato ed è pronto in 150 secondi.
+- `offrig_ask` ha eseguito un passaggio di un game designer in 46 secondi; la risposta ha soddisfatto il controllo di accettazione e ha mantenuto il vincolo di cinque elementi dalla memoria.
+- Il pod ha raggiunto Internet (Wikipedia, API di GitHub). In base ai dati forniti, il pod ha risposto correttamente alle domande attuali; se interrogato a freddo, ha affermato di non avere accesso in tempo reale.
 - `offrig_shutdown` da un processo side-car appena avviato ha terminato il pod e ha chiuso i conti; il watchdog ha visto la chiusura del piano ed è uscito. La GPU locale è rimasta inattiva durante tutto il processo.
 
-Risolti: il pod gestiva una richiesta alla volta (`OLLAMA_NUM_PARALLEL=1`); quattro slot hanno gestito 8 richieste parallele da 40 a 102 token/s sulla stessa GPU, quindi ora ogni profilo ha `parallel = 4`. `complete` è stato rifiutato senza una motivazione (ora per impostazione predefinita è "controllo di accettazione superato"; i fallimenti devono comunque indicarne uno). Lo stato suggeriva di registrare brevemente mentre una sessione era attiva. Si pensa che il testo che trapela in una risposta venga eliminato e che una risposta svuotata dal pensiero indichi di aumentare `max_tokens`.
+Risolti: il pod gestiva una richiesta alla volta (`OLLAMA_NUM_PARALLEL=1`); quattro slot hanno gestito 8 richieste parallele da 40 a 102 token/s sulla stessa GPU, quindi ora ogni profilo ha `parallel = 4`. `complete` è stato rifiutato senza una motivazione (ora ha come valore predefinito "controllo di accettazione superato"; i fallimenti devono comunque indicarne uno). Lo stato suggeriva di registrare brevemente mentre una sessione era attiva. Si è pensato che il testo che trapela in una risposta venga eliminato e che una risposta svuotata dal processo di pensiero indichi di aumentare `max_tokens`.
 
-### Prova del runner (03-10-2026, livello piccolo, RTX 2000 Ada, 0,04 dollari prenotati)
+### Esecuzione di prova del runner (03-10-2026, livello piccolo, RTX 2000 Ada, 0,04 dollari prenotati)
 
-Cinque passaggi di consegne, uno dipendente dall'altro, sono stati eseguiti da `offrig_run` senza che nessuno li guidasse:
+Cinque passaggi, uno dipendente dall'altro, sono stati eseguiti da `offrig_run` senza che nessuno li guidasse:
 
-- Quattro passaggi di consegne in esecuzione contemporaneamente su quattro slot (12,9 GB di 16 GB di VRAM); il passaggio di consegne dipendente è iniziato nel momento in cui è terminato il passaggio di consegne da cui dipendeva e si è basato sul suo risultato.
-- I tre passaggi di consegne i cui controlli coprivano l'accettazione sono stati completati autonomamente; le storie rivali (controlli parziali) e la trama (nessun controllo) sono state inviate per la revisione.
-- La revisione ha restituito la trama ("il fiume prende il nome dal progetto"); il runner attivo l'ha adottata e l'ha rivista in base al feedback ("fiume Veyl").
+- Quattro passaggi in esecuzione contemporaneamente su quattro slot (12,9 GB di 16 GB di VRAM); il passaggio dipendente è iniziato nel momento in cui è terminato il passaggio da cui dipendeva e si è basato sul suo risultato.
+- I tre passaggi i cui controlli coprivano l'accettazione sono stati completati autonomamente; le storie rivali (controlli parziali) e la storia (nessun controllo) sono state inviate per la revisione.
+- La revisione ha restituito la storia ("il fiume prende il nome dal progetto"); il runner attivo l'ha adottata e l'ha rivista in base al feedback ("fiume Veyl").
 - La coda è stata svuotata in 6,5 minuti (6 turni, 20.861 token); il runner ha spento il pod da solo.
 
-Appreso: i controlli deterministici verificano la struttura, non la qualità del design. Il modello da 4B ha superato "tre verbi" con verbi deboli, quindi `accept_on_checks` è per il lavoro strutturale e il lavoro di design viene inviato alla revisione. qwen3:4b ha impiegato circa 4.000 token per pensare per ogni turno, anche su tre righe di trama. Una coda mantiene ogni slot occupato solo quando contiene un numero sufficiente di passaggi di consegne indipendenti; una catena di dipendenze viene eseguita uno alla volta.
+Appreso: i controlli deterministici verificano la struttura, non la qualità del design. Il modello da 4B ha superato "tre verbi" con verbi deboli, quindi `accept_on_checks` è per il lavoro strutturale e il lavoro di design viene inviato per la revisione. qwen3:4b ha impiegato circa 4.000 token per pensare a ogni turno, anche con solo tre righe di storia. Una coda mantiene ogni slot occupato solo quando contiene un numero sufficiente di passaggi indipendenti; una catena di dipendenze viene eseguita uno alla volta.
 
 ### Esecuzioni di Frontier e SGLang (03-10-2026, 4,27 dollari prenotati)
 
 | Esegui | Pod | Pronto dopo | Coda | Prenotato |
 |---|---|---|---|---|
-| frontier-mini (Qwen3-Coder-30B FP8) | 1 × RTX PRO 6000 | 5,5 minuti | 4 passaggi di consegne in 15 secondi | $0.30 |
-| frontier-mini-awq (Qwen3-Coder-30B AWQ) | 1 × RTX PRO 6000 | 4 minuti | 4 passaggi di consegne | $0.25 |
+| frontier-mini (Qwen3-Coder-30B FP8) | 1 × RTX PRO 6000 | 5,5 minuti | 4 passaggi in 15 secondi | $0.30 |
+| frontier-mini-awq (Qwen3-Coder-30B AWQ) | 1 × RTX PRO 6000 | 4 minuti | 4 passaggi | $0.25 |
 | **frontier (Qwen3-Coder-480B AWQ)** | **4 × RTX PRO 6000** | **22 minuti** (252 GB a 278 MB/s, quindi caricamento) | **31 passaggi in 20 secondi** | **$3.59** |
-| 30B, scansione di un gruppo | 1 × RTX PRO 6000 | 10 minuti (posizionamento lento dei pod) | solo scansione | $0.43 |
+| 30B, esecuzione di test su un insieme di dati | 1 × RTX PRO 6000 | 10 minuti (posizionamento lento dei pod) | solo esecuzione di test | $0.43 |
 
 - SGLang v0.5.20 (cu130) in esecuzione su Blackwell: attenzione flashinfer, `awq_marlin` per i
 pesi MoE a 4 bit, parallelismo tensoriale su PCIe su quattro schede; `/dev/shm` era 352 GB.
-- Il lavoro all'avanguardia è chiaramente migliore rispetto ai modelli più piccoli: espressioni nel mondo di gioco e un
-modulo Rust che è stato compilato e ha superato i suoi tre test (verificato localmente). La versione a 30B FP8
+- Il lavoro all'avanguardia è chiaramente migliore rispetto ai modelli più piccoli: risposte nel contesto, e un
+modulo Rust che è stato compilato e ha superato i suoi tre test (verificati localmente). La versione a 30B FP8
 della stessa attività non è stata compilata.
-- Un modello caricato serve a un intero gruppo; non sono necessarie copie. Scansione di concorrenza con
+- Un modello caricato serve un intero insieme di dati; non sono necessarie copie. Esecuzione di test di concorrenza con
 risposte di 384 token, token totali al secondo:
 
 | Agenti | 480B su 4 GPU | 30B AWQ su 1 GPU |
@@ -426,20 +511,21 @@ risposte di 384 token, token totali al secondo:
 | 512 | 4,059 | — |
 
 La velocità per agente diminuisce all'aumentare del numero di agenti (480B: 88 → 24 token/s a 64), ma la
-capacità di elaborazione totale continua ad aumentare; i guadagni del 480B si stabilizzano dopo 256. La cache KV all'avanguardia
+capacità di elaborazione totale continua ad aumentare; i miglioramenti del 480B si stabilizzano dopo 256. La cache KV all'avanguardia
 contiene 398.526 token, quindi con contesti di passaggio reali da 2 a 8k di token, il livello all'avanguardia
 ora esegue 64 operazioni contemporaneamente e i livelli SGLang a singola scheda 32.
 
 Durante il processo, sono stati trovati e corretti i seguenti problemi: le revisioni hanno aggiunto un riempimento all'output per superare un controllo dell'intestazione (ora un
-controllo `no_repeats` integrato e le revisioni ristrutturano sul posto); l'output richiesto di un ruolo è stato divulgato nei risultati (il passaggio ora imposta il formato); il feedback dell'intestazione
+controllo `no_repeats` integrato e le revisioni ristrutturano in loco); l'output richiesto di un ruolo è stato divulgato nei risultati (il passaggio ora imposta il formato); il feedback dell'intestazione
 indica il formato Markdown; una revisione invariata si interrompe invece di ripetere.
 
 Non ancora verificato in tempo reale: una chat
-inviata direttamente dal pannello dell'agente di Zed (la forma della richiesta utilizzata da Zed viene testata direttamente).
+inviata direttamente dal pannello degli agenti di Zed (la forma della richiesta utilizzata da Zed viene testata direttamente) e il controllo di pronto 1.1.0, il rapporto sugli errori e il pin CUDA esatto su un pod in affitto (vedere
+[Stato](#stato)).
 
 ## Conformità agli standard
 
-Valutato in base agli standard di flusso di lavoro dello studio (0 mancanti, 1 parziali, 2 presenti,
+Valutato in base agli standard del flusso di lavoro dello studio (0 mancanti, 1 parziali, 2 presenti,
 3 esemplari).
 
 - **PIN_PER_STEP: 2.** Le immagini dei pod sono associate a tag di versione (`ollama/ollama:0.35.0`,
@@ -451,36 +537,36 @@ non tramite hash.
 superano lo spazio su disco viene rifiutato prima di qualsiasi spesa; un pull non riuscito interrompe l'avvio; una modifica di Zed
 che non viene riletta non viene scritta; un file di impostazioni danneggiato viene segnalato, ma non
 riscritto; CI blocca su fmt, clippy, test, licenze e avvisi.
-- **NAMED_COMPENSATORS: 2.** Ogni azione irreversibile ha un'operazione di annullamento, elencata di seguito.
+- **NAMED_COMPENSATORS: 2.** Ogni azione irreversibile ha un'azione di annullamento, elencata di seguito.
 - **DECOMPOSE_BY_SECRETS: 2.** Un modulo per ogni elemento che cambia per le proprie ragioni:
 l'API di RunPod (`runpod`), il contenuto del pod (`spec`), il trasporto (`tunnel`,
 `remote`), ogni file locale modificato da offrig (`sshconfig`, `zed`) e le regole (`guard`,
 `cost`). Le interfacce utente non contengono alcuna logica oltre alla presentazione.
-- **UNCERTAINTY_GATED_HUMANS: 2.** offrig chiede solo quando il risultato è costoso o
-comporta una perdita: avvio entro un'ora di tempo disponibile, terminazione di un pod (con indicazione di cosa viene perso) e
+- **UNCERTAINTY_GATED_HUMANS: 2.** offrig chiede solo quando l'esito è costoso o
+causa perdite: avvio entro un'ora di tempo disponibile, terminazione di un pod (con indicazione di cosa viene perso) e
 uscita con un pod ancora attivo. Due decisioni spettano esclusivamente a un essere umano e nessun
 strumento agente può prenderle: il limite di budget e la preparazione di un volume, che addebita mensilmente.
-L'output del passaggio che il codice non può controllare viene messo in revisione invece di essere completato.
+L'output del passaggio che il codice non può controllare attende la revisione invece di essere completato.
 - **EXTERNAL_VERIFIER: n/a.** Nessuna richiesta specializzata.
 
 **Compensatori**
 
 | Azione | Annulla | Stato dopo l'annullamento | Proprietario |
 |---|---|---|---|
-| Crea un pod (avvia la fatturazione) | `offrig down <profile> --yes`, l'app si spegne o si arresta automaticamente | pod terminato, fatturazione interrotta | l'operatore che esegue offrig |
+| Crea un pod (avvia la fatturazione) | `offrig down <profile> --yes`, l'app si arresta o si interrompe automaticamente | pod terminato, fatturazione interrotta | l'operatore che esegue offrig |
 | Termina un pod | nessuno per il suo disco; riavvia il profilo e i modelli vengono riscaricati (un volume di rete li conserva) | nuovo pod, stesso profilo | l'operatore |
 | Scrive il provider Zed o il modello predefinito | `offrig zed-remove`, o ripristina `settings.json.offrig.bak` | Zed come prima di offrig | l'operatore |
 | Imposta `OFFRIG_API_KEY` | `setx OFFRIG_API_KEY ""` o lo elimina nelle proprietà di sistema | variabile eliminata | l'operatore |
 | Scrive l'alias SSH | elimina il blocco contrassegnato in `~/.ssh/config` | configurazione come prima | l'operatore |
 | Alloca una corsia di progetto (la prima `offrig_plan` del progetto) | elimina la voce del progetto da `lanes.toml` una volta che nessun pod è in esecuzione nella sua corsia; un nuovo piano alloca di nuovo | corsia libera per il riutilizzo; il blocco dell'alias è separato (riga sopra) | l'operatore |
-| Scrive un blocco di alias SSH per una corsia (avvio side-car) | `offrig_shutdown` lo rimuove quando nomina il pod del piano (anche dopo un avvio non riuscito); altrimenti, elimina il blocco `# >>> offrig:offrig-<tag> >>>` in `~/.ssh/config` | configurazione come prima; i blocchi delle altre corsie rimangono invariati | l'operatore |
+| Scrive un blocco di alias SSH per una corsia (avvio side-car) | `offrig_shutdown` lo rimuove quando nomina il pod del piano (anche dopo un avvio non riuscito); altrimenti, elimina il blocco `# >>> offrig:offrig-<tag> >>>` in `~/.ssh/config` | configurazione come prima; i blocchi di altre corsie non vengono toccati | l'operatore |
 | Scarica un modello sul pod | `ollama rm <model>` sul pod, o termina il pod | modello eliminato | l'operatore |
-| Elimina un tunnel offrig orfano | nessuno necessario; solo un `ssh` con l'alias e il forward esatti di questa corsia viene eliminato, mai di un'altra corsia | porta libera | offrig |
-| Avvio side-car (`offrig_launch`) | `offrig_shutdown`; automatico in caso di errore di configurazione; il watchdog alla scadenza; l'esecutore quando la sua coda si svuota | pod terminato, piano chiuso con spesa misurata | l'agente chiamante, con il watchdog come backup |
+| Interrompe un tunnel offrig orfano | nessuno necessario; solo un `ssh` con l'alias e il forward esatti di questa corsia viene interrotto, mai un'altra corsia | porta libera | offrig |
+| Avvio side-car (`offrig_launch`) | `offrig_shutdown`; automatico se la configurazione fallisce; il watchdog alla scadenza; l'esecutore quando la sua coda si svuota | pod terminato, piano chiuso con spesa misurata | l'agente chiamante, con il watchdog come backup |
 | Prepara un volume (`offrig stage --yes`, addebito mensile) | `offrig stage <profile> --remove --yes` | volume eliminato, profilo torna al download | l'utente che lo ha preparato |
 | Avvia un lavoro su un pod di lavoro (`offrig_exec action=start`) | `offrig_exec action=stop`, o `offrig_shutdown` | lavoro interrotto con tutto ciò che ha avviato; il suo log rimane fino alla scomparsa del pod | l'agente chiamante |
-| Esegue un breve comando su un pod di lavoro (`offrig_exec action=run`) | solo ciò che fa il comando stesso; terminato da `timeout` al massimo dopo 120 secondi, o da `offrig_shutdown` | il pod nello stato in cui lo ha lasciato il comando | l'agente chiamante |
-| Copia i file da o verso un pod di elaborazione (`offrig_put`, `offrig_get`) | elimina la copia (sul pod, `offrig_exec`; qui, il file) | come prima della copia | l'agente chiamante |
+| Esegue un comando breve su un pod di lavoro (`offrig_exec action=run`) | solo ciò che il comando stesso esegue; termina al massimo dopo 120 secondi (`timeout`) o con `offrig_shutdown` | il pod nello stato in cui è stato lasciato dal comando | l'agente chiamante |
+| Copia file da o verso un pod di lavoro (`offrig_put`, `offrig_get`) | elimina la copia (sul pod, `offrig_exec`; qui, il file) | come prima della copia | l'agente chiamante |
 
 ## Layout
 
@@ -499,7 +585,7 @@ atlas/               Atlas map of the repo (regenerate with `atlas map`)
 
 ## Licenza
 
-MIT. Consulta [LICENSE](LICENSE).
+MIT. Consultare [LICENSE](LICENSE).
 
 ---
 
