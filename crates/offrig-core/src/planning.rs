@@ -99,7 +99,9 @@ pub fn choose(profile: &Profile, offers: &[GpuOffer], limits: &Limits) -> Result
     // An empty catalog CUDA list is the copied-list fallback, so those types stay.
     // A type the catalog did not return is not dropped here: there is no list to
     // hold it to. A non-empty list that cannot meet the pin, or the floor, is dropped.
-    // A pin and a floor are never both set: config refuses that pair.
+    // A pin and a min_cuda floor are never both set. cuda_runtime may sit beside a
+    // pin when every pinned version meets that runtime's host floor; the pin is
+    // the constraint this filter applies.
     if let Some(pin) = profile.cuda_versions.as_ref().filter(|v| !v.is_empty()) {
         let list = pin.join(", ");
         narrow(&mut types, &mut dropped, |t| match offer(t) {

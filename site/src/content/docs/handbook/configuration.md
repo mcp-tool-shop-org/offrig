@@ -95,11 +95,12 @@ rented.
 ## Pinning a plan's hardware
 
 Without limits, a plan can land on a fallback card with less memory, an older driver and a
-different price. Four limits keep a plan to hardware its work can use:
+different price. Five limits keep a plan to hardware its work can use:
 
 | Limit | Where | Effect |
 |---|---|---|
 | `min_cuda` | profile | The oldest host CUDA (driver) version, from offrig's list (`13.2`, `13.1`, `13.0`, `12.9`, … `11.8`). The create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. The `job` profile sets `13.0`. |
+| `cuda_runtime` | profile | The CUDA version the pod's software is built for, such as `13.4` for a PyTorch cu134 wheel. It can be newer than any listed host. A 13.x build runs on any CUDA 13 driver under minor-version compatibility, so the floor is the oldest listed host of that major (`13.0` for any 13.x) and is sent as `gpu.minCudaVersion`. A major with no listed host is refused when the config loads. The plan reply names the runtime and a `cuda_note` whenever the runtime differs from that floor: prebuilt kernels work; JIT of newer PTX, and features that need a newer driver, do not. |
 | `min_vram_gb` | profile | The least total VRAM a plan accepts. Smaller offers are dropped. |
 | `max_price_hr` | `offrig_plan` | The most the pod may cost, in total $/hr. Dearer offers are dropped, and so is a type with no price listed now. |
 | `no_fallback` | `offrig_plan` | Only the profile's first GPU family. The two RTX PRO 6000 Blackwell editions count as one family. |
@@ -119,6 +120,12 @@ not accept a 13.1 host: matching is exact. The accepted versions, newest first, 
 v1 enum (read 2026-10-11, which stops at 13.0). They are listed because a writer pod on
 2026-10-11 was placed on a 13.2 host. A floor still sends only `gpu.minCudaVersion`.
 The built-in profiles do not set `cuda_versions`.
+
+`cuda_versions` beside `cuda_runtime` is allowed only when every pinned version is the
+same major as the runtime's host floor and at or above that floor.
+`cuda_runtime = "13.4"` with `cuda_versions = ["13.0"]` is accepted, and the create sends
+the pin only. `cuda_runtime = "13.4"` with `cuda_versions = ["12.8"]` is refused, and the
+message names both values. A pin beside `min_cuda` stays refused.
 
 The worst case becomes `max_hours × min(max_price_hr, the dearest listed price left)`. A
 plan with nothing left is refused, with the reason for every dropped GPU.

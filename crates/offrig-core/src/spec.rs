@@ -537,6 +537,50 @@ mod tests {
     }
 
     #[test]
+    fn a_cuda_runtime_sends_its_host_floor_as_min_cuda_version() {
+        let mut cfg = Config::default();
+        let jam = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "jam")
+            .expect("jam");
+        jam.cuda_runtime = Some("13.4".into());
+        cfg.validate().expect("13.4 floors at a listed host");
+        let body = pod_create(&cfg, cfg.profile("jam").expect("jam"));
+        assert_eq!(
+            body.min_cuda_version.as_deref(),
+            Some("13.0"),
+            "a 13.4 build floors at 13.0, newer than the image's 12.8"
+        );
+        assert!(body.allowed_cuda_versions.is_none());
+        let v = serde_json::to_value(&body).expect("json");
+        assert_eq!(v["gpu"]["minCudaVersion"], "13.0");
+        assert!(
+            v["gpu"].get("allowedCudaVersions").is_none(),
+            "a runtime floor uses the same field as every other floor: {v}"
+        );
+    }
+
+    #[test]
+    fn an_accepted_pin_and_runtime_sends_the_pin_and_not_a_floor() {
+        let mut cfg = Config::default();
+        let medium = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_runtime = Some("13.4".into());
+        medium.cuda_versions = Some(vec!["13.0".into()]);
+        cfg.validate()
+            .expect("13.0 meets the 13.4 runtime's host floor");
+        let body = pod_create(&cfg, cfg.profile("medium").expect("medium"));
+        assert!(body.min_cuda_version.is_none(), "a pin sends no floor");
+        let v = serde_json::to_value(&body).expect("json");
+        assert_eq!(v["gpu"]["allowedCudaVersions"], serde_json::json!(["13.0"]));
+        assert!(v["gpu"].get("minCudaVersion").is_none(), "{v}");
+    }
+
+    #[test]
     fn a_plan_rents_from_its_own_gpu_list_and_cuda_floor() {
         let cfg = Config::default();
         let job = cfg.profile("job").expect("job profile");

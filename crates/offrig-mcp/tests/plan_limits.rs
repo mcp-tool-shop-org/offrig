@@ -360,3 +360,65 @@ async fn offrig_job_repeats_a_rental_warning_at_the_top_and_in_next_action() {
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn a_cuda_runtime_is_named_on_the_plan_reply() {
+    let (url, _hits) = mock(|route, b, _| match route {
+        "GET /catalog/gpus" => (200, graphql("")),
+        "POST /graphql" => (200, graphql(b)),
+        _ => (404, "{}".into()),
+    });
+    let dir = project("plan-cuda-runtime");
+    let mut cfg = Config::default();
+    let medium = cfg
+        .profiles
+        .iter_mut()
+        .find(|p| p.name == "medium")
+        .expect("medium");
+    medium.cuda_runtime = Some("13.4".into());
+    std::fs::create_dir_all(dir.join("cfg")).expect("cfg dir");
+    cfg.save_to(&dir.join("cfg").join("config.toml"))
+        .expect("save config");
+    let client = start(&dir, &url).await;
+    let p = call(
+        &client,
+        "offrig_plan",
+        json!({"profile": "medium", "max_hours": 1.0}),
+    )
+    .await;
+    assert_eq!(p.is_error, Some(false), "{:?}", body(&p));
+    let b = body(&p);
+    assert_eq!(b["cuda_runtime"], "13.4");
+    assert_eq!(b["min_cuda"], "13.0", "the runtime's host floor");
+    assert!(b["cuda_versions"].is_null(), "{b}");
+    let note = b["cuda_note"].as_str().expect("note");
+    assert!(
+        note.contains("minor-version compatibility") && note.contains("13.0+"),
+        "{note}"
+    );
+    client.cancel().await.expect("shutdown");
+
+    let medium = cfg
+        .profiles
+        .iter_mut()
+        .find(|p| p.name == "medium")
+        .expect("medium");
+    medium.cuda_versions = Some(vec!["13.0".into()]);
+    cfg.save_to(&dir.join("cfg").join("config.toml"))
+        .expect("save config");
+    let client = start(&dir, &url).await;
+    let p = call(
+        &client,
+        "offrig_plan",
+        json!({"profile": "medium", "max_hours": 1.0}),
+    )
+    .await;
+    assert_eq!(p.is_error, Some(false), "{:?}", body(&p));
+    let b = body(&p);
+    assert_eq!(b["cuda_versions"], json!(["13.0"]));
+    assert!(b["min_cuda"].is_null(), "a pin is not also a floor: {b}");
+    assert_eq!(b["cuda_runtime"], "13.4");
+    assert!(b["cuda_note"].as_str().is_some_and(|n| n.contains("13.0+")));
+    client.cancel().await.expect("shutdown");
+    let _ = std::fs::remove_dir_all(&dir);
+}

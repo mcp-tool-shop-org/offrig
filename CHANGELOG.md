@@ -6,6 +6,23 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **`cuda_runtime` on a profile: software built for a newer CUDA than any listed host.**
+  A profile names `cuda_runtime = "13.4"` for a PyTorch cu134 wheel. The host floor is
+  the oldest listed version of that major (`13.4`, `13.2` and `13.1` all floor at
+  `13.0`), and that floor is sent as `gpu.minCudaVersion`, the same way every other
+  floor is. It is the newest of `min_cuda`, the job image's floor, and the runtime's,
+  so a 12.8 image floor never puts a 13.4 build on a 12.8 host. A major with no listed
+  host (`14.x` today) is refused when the config loads. `cuda_versions` together with
+  `cuda_runtime` is refused unless every pinned version is that same major and at or
+  above the floor: `13.4` with `["13.0"]` is accepted and sent as
+  `gpu.allowedCudaVersions` (no floor beside it); `13.4` with `["12.8"]` is refused,
+  and the message names both values. A pin beside `min_cuda`, including a job image's
+  floor, stays refused. The plan reply carries `cuda_runtime` and a `cuda_note`
+  whenever the runtime differs from that floor (`13.2` on `13.0`, and `12.8` on
+  `12.0`, included). A runtime that is its own floor (`13.0`, `11.8`) has no note.
+  Prebuilt kernels work; JIT of newer PTX, and features that need a newer driver, do
+  not. Prove the env on the pod before trusting a run.
+
 ## [1.1.0] - 2026-10-11
 
 Everything below shipped after 1.0.0. The bold items that had been listed under
