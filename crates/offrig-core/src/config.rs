@@ -113,10 +113,20 @@ pub struct Profile {
     /// The oldest host CUDA (driver) version this profile's work runs on, from RunPod's
     /// list ([`CUDA_VERSIONS`]). A plan sends that floor as `gpu.minCudaVersion`, so the
     /// pod is never placed on an older driver (issue #9). For a job profile the image's
-    /// own floor ([`Job::min_cuda`]) also applies, and the newer of the two wins
-    /// ([`Profile::effective_min_cuda`]).
+    /// own floor ([`Job::min_cuda`]) also applies, and so does [`Self::cuda_runtime`]'s
+    /// host floor. The newest of those wins ([`Profile::effective_min_cuda`]).
     #[serde(default)]
     pub min_cuda: Option<String>,
+    /// The CUDA version the pod's software is built for (for example `"13.4"` for a
+    /// PyTorch cu134 wheel). It may be newer than any host in [`CUDA_VERSIONS`]. A 13.x
+    /// build runs on any CUDA 13 driver under minor-version compatibility, so the host floor is the oldest listed version
+    /// of that major ([`runtime_host_floor`]): `13.4`, `13.2` and `13.1` all floor at
+    /// `13.0`. That floor joins [`Profile::effective_min_cuda`] and is sent as
+    /// `gpu.minCudaVersion`. A major with no listed host is refused at load. Software
+    /// that JIT-compiles newer PTX, or needs a newer driver's features, is outside that
+    /// guarantee: the plan reply says so in `cuda_note`.
+    #[serde(default)]
+    pub cuda_runtime: Option<String>,
     /// The least total VRAM (all of the profile's GPUs together, in GB) a plan accepts.
     /// Offers below it are never chosen, so the fallback cards cannot silently shrink
     /// the memory the work needs. Compared with the offers' own memory figure.
@@ -125,6 +135,9 @@ pub struct Profile {
     /// Exact host CUDA versions, sent as `gpu.allowedCudaVersions`. Each one must be
     /// in [`CUDA_VERSIONS`]. Mutually exclusive with `min_cuda`, including a job
     /// image's own floor: a floor and an exact list on one create is ambiguous.
+    /// A [`Self::cuda_runtime`] beside this list is allowed only when every pinned
+    /// version is the same major as the runtime's host floor and at or above that
+    /// floor. The create then sends the pin and not the floor.
     /// `None` leaves the floor, or no CUDA constraint, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cuda_versions: Option<Vec<String>>,
@@ -180,6 +193,74 @@ pub const CUDA_VERSIONS: [&str; 14] = [
 pub fn cuda_at_least(min: &str) -> Option<Vec<String>> {
     let at = CUDA_VERSIONS.iter().position(|v| *v == min)?;
     Some(CUDA_VERSIONS[..=at].iter().map(|v| v.to_string()).collect())
+}
+
+/// The oldest listed host CUDA version a build for `runtime` runs on: the oldest
+/// entry in [`CUDA_VERSIONS`] with the same major. `13.4`, `13.2` and `13.1` all
+/// return `13.0`, which stays the oldest 13.x host. `Err` names why not: the version
+/// does not parse as `major.minor`, or that major has no listed host.
+pub fn runtime_host_floor(runtime: &str) -> std::result::Result<String, String> {
+    let (major, _) = parse_cuda(runtime)
+        .ok_or_else(|| format!("cuda_runtime {runtime:?} is not a version like \"13.4\""))?;
+    CUDA_VERSIONS
+        .iter()
+        .rev()
+        .find(|v| parse_cuda(v).is_some_and(|(m, _)| m == major))
+        .map(|v| (*v).to_string())
+        .ok_or_else(|| {
+            format!(
+                "cuda_runtime {runtime:?} needs a CUDA {major} driver, and no listed host has one (the newest listed host is {})",
+                CUDA_VERSIONS[0]
+            )
+        })
+}
+
+/// What a plan for a `cuda_runtime` profile should say about the hosts it may land on.
+/// `None` when the runtime is its own host floor, or when it has no host floor.
+pub fn runtime_note(runtime: &str) -> Option<String> {
+    let floor = runtime_host_floor(runtime).ok()?;
+    if runtime == floor {
+        return None;
+    }
+    Some(format!(
+        "CUDA {runtime} software on a CUDA {floor}+ host runs under minor-version compatibility: prebuilt kernels work; JIT of newer PTX and features that need a newer driver do not. Prove the env on the pod (a smoke against a known result) before trusting a run."
+    ))
+}
+
+/// `Ok` when every pin is the same major as `runtime`'s host floor and at or above it.
+/// The error names `cuda_runtime`, the whole pin, and the entries that miss the floor.
+fn pins_satisfy_runtime(pins: &[String], runtime: &str) -> std::result::Result<(), String> {
+    let floor = runtime_host_floor(runtime)?;
+    let Some((floor_major, _)) = parse_cuda(&floor) else {
+        return Err(format!(
+            "cuda_runtime {runtime:?} host floor {floor} is not a version like \"13.0\""
+        ));
+    };
+    let bad: Vec<&str> = pins
+        .iter()
+        .map(String::as_str)
+        .filter(|v| {
+            let same_major = parse_cuda(v).is_some_and(|(m, _)| m == floor_major);
+            let high_enough = cuda_meets(v, &floor) == Some(true);
+            !(same_major && high_enough)
+        })
+        .collect();
+    if bad.is_empty() {
+        return Ok(());
+    }
+    let listed = pins
+        .iter()
+        .map(|v| format!("{v:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let offending = bad
+        .iter()
+        .map(|v| format!("{v:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "cuda_versions [{listed}] and cuda_runtime {runtime:?} together are refused; {offending} must be CUDA {floor_major} and at least {floor}"
+    ))
 }
 
 impl Job {
@@ -263,16 +344,23 @@ impl Profile {
         self.job.is_some()
     }
 
-    /// The host CUDA floor the pod must be placed above: the newer of the profile's own
-    /// `min_cuda` and the job image's. `None` when neither is set (any host).
+    /// The host CUDA floor the pod must be placed above: the newest of the profile's own
+    /// `min_cuda`, the job image's, and the floor its `cuda_runtime` needs. `None` when
+    /// none is set (any host). A `cuda_versions` pin is a separate path and is not folded
+    /// in here; the create sends the pin instead of this floor.
     pub fn effective_min_cuda(&self) -> Option<String> {
-        let own = self.min_cuda.as_deref();
-        let image = self.job.as_ref().and_then(|j| j.min_cuda.as_deref());
-        match (own, image) {
-            (Some(a), Some(b)) => Some(newer_cuda(a, b).to_string()),
-            (Some(v), None) | (None, Some(v)) => Some(v.to_string()),
-            (None, None) => None,
-        }
+        let runtime = self
+            .cuda_runtime
+            .as_deref()
+            .and_then(|r| runtime_host_floor(r).ok());
+        [
+            self.min_cuda.clone(),
+            self.job.as_ref().and_then(|j| j.min_cuda.clone()),
+            runtime,
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| newer_cuda(&a, &b).to_string())
     }
 }
 
@@ -456,6 +544,7 @@ pub fn default_profiles() -> Vec<Profile> {
             recipe: None,
             job: None,
             min_cuda: None,
+            cuda_runtime: None,
             min_vram_gb: None,
             cuda_versions: None,
         },
@@ -486,6 +575,7 @@ pub fn default_profiles() -> Vec<Profile> {
             recipe: None,
             job: None,
             min_cuda: None,
+            cuda_runtime: None,
             min_vram_gb: None,
             cuda_versions: None,
         },
@@ -530,6 +620,7 @@ pub fn default_profiles() -> Vec<Profile> {
             }),
             job: None,
             min_cuda: None,
+            cuda_runtime: None,
             min_vram_gb: None,
             cuda_versions: None,
         },
@@ -583,6 +674,7 @@ pub fn default_profiles() -> Vec<Profile> {
             // still qualifies. An exact pin is `cuda_versions`, which this profile
             // does not set.
             min_cuda: Some("13.0".into()),
+            cuda_runtime: None,
             min_vram_gb: None,
             cuda_versions: None,
         },
@@ -618,6 +710,7 @@ pub fn default_profiles() -> Vec<Profile> {
                 hf_token_secret: None,
             }),
             min_cuda: None,
+            cuda_runtime: None,
             min_vram_gb: None,
             cuda_versions: None,
         },
@@ -659,6 +752,7 @@ fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
         }),
         job: None,
         min_cuda: None,
+        cuda_runtime: None,
         min_vram_gb: None,
         cuda_versions: None,
     }
@@ -762,6 +856,11 @@ impl Config {
                     CUDA_VERSIONS.join(", ")
                 )));
             }
+            if let Some(rt) = &p.cuda_runtime
+                && let Err(why) = runtime_host_floor(rt)
+            {
+                return Err(Error::Config(format!("profile {}: {why}", p.name)));
+            }
             if let Some(pin) = &p.cuda_versions {
                 if pin.is_empty() {
                     return Err(Error::Config(format!(
@@ -784,6 +883,11 @@ impl Config {
                         "profile {}: cuda_versions and min_cuda together are ambiguous; set one",
                         p.name
                     )));
+                }
+                if let Some(rt) = &p.cuda_runtime
+                    && let Err(why) = pins_satisfy_runtime(pin, rt)
+                {
+                    return Err(Error::Config(format!("profile {}: {why}", p.name)));
                 }
             }
             if p.min_vram_gb == Some(0) {
@@ -880,6 +984,178 @@ mod tests {
         assert!(toml::from_str::<Config>("auto_stop_idle_minutes = \"never\"").is_err());
     }
     use super::*;
+
+    #[test]
+    fn a_cuda_runtime_floors_at_the_oldest_host_of_its_major() {
+        assert_eq!(runtime_host_floor("13.4").as_deref(), Ok("13.0"));
+        assert_eq!(runtime_host_floor("13.2").as_deref(), Ok("13.0"));
+        assert_eq!(runtime_host_floor("13.1").as_deref(), Ok("13.0"));
+        assert_eq!(runtime_host_floor("13.0").as_deref(), Ok("13.0"));
+        assert_eq!(runtime_host_floor("12.8").as_deref(), Ok("12.0"));
+        assert_eq!(runtime_host_floor("11.8").as_deref(), Ok("11.8"));
+        let no_host = runtime_host_floor("14.0").expect_err("no CUDA 14 host is listed");
+        assert!(
+            no_host.contains("CUDA 14 driver") && no_host.contains("13.2"),
+            "{no_host}"
+        );
+        assert!(runtime_host_floor("13").is_err(), "needs major.minor");
+        assert!(runtime_host_floor("thirteen.4").is_err());
+    }
+
+    #[test]
+    fn a_runtime_newer_than_any_host_gets_a_compatibility_note() {
+        let note = runtime_note("13.4").expect("13.4 floors at 13.0");
+        assert!(
+            note.contains("minor-version compatibility") && note.contains("13.0+"),
+            "{note}"
+        );
+        assert_eq!(
+            runtime_note("14.0"),
+            None,
+            "refused at validation, not noted"
+        );
+    }
+
+    #[test]
+    fn runtime_note_13_2_returns_the_note() {
+        let note = runtime_note("13.2").expect("13.2 floors at 13.0");
+        assert!(
+            note.contains("minor-version compatibility") && note.contains("13.0+"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn runtime_note_12_8_returns_the_note() {
+        let note = runtime_note("12.8").expect("12.8 floors at 12.0");
+        assert!(
+            note.contains("minor-version compatibility") && note.contains("12.0+"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn runtime_note_13_0_returns_none() {
+        assert_eq!(runtime_note("13.0"), None);
+    }
+
+    #[test]
+    fn runtime_note_11_8_returns_none() {
+        assert_eq!(runtime_note("11.8"), None);
+    }
+
+    #[test]
+    fn effective_min_cuda_takes_the_newest_of_profile_image_and_runtime() {
+        let mut cfg = Config::default();
+        let jam = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "jam")
+            .expect("jam");
+        assert_eq!(
+            jam.effective_min_cuda().as_deref(),
+            Some("12.8"),
+            "the image floor"
+        );
+        jam.cuda_runtime = Some("13.4".into());
+        assert_eq!(jam.effective_min_cuda().as_deref(), Some("13.0"));
+        jam.cuda_runtime = Some("12.4".into());
+        assert_eq!(
+            jam.effective_min_cuda().as_deref(),
+            Some("12.8"),
+            "12.4 floors at 12.0, which is older than the image"
+        );
+    }
+
+    #[test]
+    fn a_cuda_runtime_with_no_listed_host_is_refused_at_load() {
+        let mut cfg = Config::default();
+        cfg.profiles[0].cuda_runtime = Some("14.1".into());
+        let err = cfg.validate().expect_err("no CUDA 14 hosts").to_string();
+        assert!(
+            err.contains("cuda_runtime \"14.1\"") && err.contains("no listed host"),
+            "{err}"
+        );
+        cfg.profiles[0].cuda_runtime = Some("13.4".into());
+        cfg.validate().expect("13.4 runs on 13.0 hosts");
+    }
+
+    #[test]
+    fn cuda_runtime_round_trips_and_defaults_to_unset() {
+        let toml_text = toml::to_string(&Config::default()).expect("ser");
+        let back: Config = toml::from_str(&toml_text).expect("de");
+        assert!(back.profiles.iter().all(|p| p.cuda_runtime.is_none()));
+        let mut cfg = Config::default();
+        cfg.profiles[0].cuda_runtime = Some("13.4".into());
+        let back: Config = toml::from_str(&toml::to_string(&cfg).expect("ser")).expect("de");
+        assert_eq!(back.profiles[0].cuda_runtime.as_deref(), Some("13.4"));
+    }
+
+    #[test]
+    fn a_runtime_of_13_4_with_a_13_0_pin_is_accepted() {
+        let mut cfg = Config::default();
+        let medium = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_runtime = Some("13.4".into());
+        medium.cuda_versions = Some(vec!["13.0".into()]);
+        cfg.validate().expect("13.0 is the runtime's host floor");
+        let medium = cfg.profile("medium").expect("medium");
+        assert_eq!(medium.effective_min_cuda().as_deref(), Some("13.0"));
+
+        let mut above = Config::default();
+        let medium = above
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_runtime = Some("13.4".into());
+        medium.cuda_versions = Some(vec!["13.2".into(), "13.0".into()]);
+        above
+            .validate()
+            .expect("13.2 and 13.0 are the same major and at or above 13.0");
+    }
+
+    #[test]
+    fn a_runtime_of_13_4_with_a_12_8_pin_is_refused() {
+        let mut cfg = Config::default();
+        let medium = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_runtime = Some("13.4".into());
+        medium.cuda_versions = Some(vec!["12.8".into()]);
+        let err = cfg
+            .validate()
+            .expect_err("12.8 is another major")
+            .to_string();
+        assert!(
+            err.contains("cuda_runtime \"13.4\"")
+                && err.contains("cuda_versions")
+                && err.contains("\"12.8\""),
+            "{err}"
+        );
+
+        let mut mixed = Config::default();
+        let medium = mixed
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_runtime = Some("13.4".into());
+        medium.cuda_versions = Some(vec!["13.0".into(), "12.8".into()]);
+        let err = mixed
+            .validate()
+            .expect_err("one pin misses the floor")
+            .to_string();
+        assert!(
+            err.contains("cuda_runtime \"13.4\"") && err.contains("\"12.8\""),
+            "{err}"
+        );
+    }
 
     #[test]
     fn defaults_validate_and_round_trip() {
