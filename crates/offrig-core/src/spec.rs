@@ -211,9 +211,14 @@ pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
         network_volume_id: profile.network_volume_id.clone(),
         volume_mount_path: "/workspace".into(),
         data_center_ids: profile.data_center_id.iter().cloned().collect(),
-        min_cuda_version: profile
-            .effective_min_cuda()
-            .filter(|v| cuda_at_least(v).is_some()),
+        min_cuda_version: if profile.cuda_versions.is_some() {
+            None
+        } else {
+            profile
+                .effective_min_cuda()
+                .filter(|v| cuda_at_least(v).is_some())
+        },
+        allowed_cuda_versions: profile.cuda_versions.clone(),
         docker_entrypoint: vec!["bash".into(), "-c".into()],
         docker_start_cmd: vec![start.into()],
         env,
@@ -233,6 +238,7 @@ pub fn pod_create_for_plan(
     gpu_types: &[String],
     min_cuda: Option<&str>,
     container_disk_gb: Option<u32>,
+    cuda_versions: Option<&[String]>,
 ) -> PodCreate {
     let mut body = pod_create(cfg, profile);
     if let Some(gb) = container_disk_gb {
@@ -241,8 +247,13 @@ pub fn pod_create_for_plan(
     if !gpu_types.is_empty() {
         body.gpu_type_ids = gpu_types.to_vec();
     }
-    if let Some(v) = min_cuda.filter(|v| cuda_at_least(v).is_some()) {
+    // An exact list replaces the floor. Sending both is a 400 from Runpod.
+    if let Some(list) = cuda_versions {
+        body.allowed_cuda_versions = Some(list.to_vec());
+        body.min_cuda_version = None;
+    } else if let Some(v) = min_cuda.filter(|v| cuda_at_least(v).is_some()) {
         body.min_cuda_version = Some(v.to_string());
+        body.allowed_cuda_versions = None;
     }
     body
 }
@@ -530,15 +541,60 @@ mod tests {
         let cfg = Config::default();
         let job = cfg.profile("job").expect("job profile");
         let only = vec!["NVIDIA RTX PRO 6000 Blackwell Server Edition".to_string()];
-        let body = pod_create_for_plan(&cfg, job, &only, Some("13.0"), None);
+        let body = pod_create_for_plan(&cfg, job, &only, Some("13.0"), None, None);
         assert_eq!(body.gpu_type_ids, only, "not the profile's six cards");
         assert_eq!(body.min_cuda_version.as_deref(), Some("13.0"));
         let v = serde_json::to_value(&body).expect("json");
         assert_eq!(v["gpu"]["id"], only[0]);
         assert_eq!(v["gpu"]["minCudaVersion"], "13.0");
+        assert!(
+            v["gpu"].get("allowedCudaVersions").is_none(),
+            "a floor does not also send the exact list: {v}"
+        );
         // A plan that stored nothing falls back to the profile's.
-        let old = pod_create_for_plan(&cfg, job, &[], None, None);
+        let old = pod_create_for_plan(&cfg, job, &[], None, None, None);
         assert_eq!(old, pod_create(&cfg, job));
+    }
+
+    #[test]
+    fn an_exact_cuda_list_is_sent_as_allowed_cuda_versions() {
+        let mut cfg = Config::default();
+        let medium = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_versions = Some(vec!["13.0".into(), "12.8".into()]);
+        let body = pod_create(&cfg, cfg.profile("medium").expect("medium"));
+        assert!(body.min_cuda_version.is_none(), "a pin sends no floor");
+        let v = serde_json::to_value(&body).expect("json");
+        assert_eq!(
+            v["gpu"]["allowedCudaVersions"],
+            serde_json::json!(["13.0", "12.8"]),
+            "the list is sent in the order written"
+        );
+        assert!(v["gpu"].get("minCudaVersion").is_none(), "{v}");
+
+        let job = cfg.profile("job").expect("job");
+        let pin = vec!["13.0".to_string()];
+        let planned = pod_create_for_plan(&cfg, job, &[], Some("13.0"), None, Some(&pin));
+        let sent = serde_json::to_value(&planned).expect("json");
+        assert_eq!(
+            sent["gpu"]["allowedCudaVersions"],
+            serde_json::json!(["13.0"])
+        );
+        assert!(
+            sent["gpu"].get("minCudaVersion").is_none(),
+            "a stored pin replaces the floor: {sent}"
+        );
+
+        let floor = pod_create_for_plan(&cfg, job, &[], Some("13.0"), None, None);
+        let sent = serde_json::to_value(&floor).expect("json");
+        assert_eq!(sent["gpu"]["minCudaVersion"], "13.0");
+        assert!(
+            sent["gpu"].get("allowedCudaVersions").is_none(),
+            "a floor does not send the whole list: {sent}"
+        );
     }
 
     fn plan(committed_at: Option<i64>) -> crate::store::Plan {
@@ -565,7 +621,7 @@ mod tests {
         for name in ["small", "frontier", "job"] {
             let p = cfg.profile(name).expect("profile");
             let plain = pod_create(&cfg, p);
-            let mut body = pod_create_for_plan(&cfg, p, &[], None, None);
+            let mut body = pod_create_for_plan(&cfg, p, &[], None, None, None);
             mark_plan(&mut body, &plan(Some(1_709_208_000)));
             assert_eq!(body.env[ENV_LANE], "plain", "{name}");
             assert_eq!(body.env[ENV_PLAN], "17", "{name}");
@@ -598,7 +654,7 @@ mod tests {
         let v = serde_json::to_value(pod_create(&cfg, job)).expect("json");
         assert_eq!(v["disk"], 60, "the profile's container disk");
         // A plan's size replaces it in the create body, and nothing else changes.
-        let big = pod_create_for_plan(&cfg, job, &[], None, Some(400));
+        let big = pod_create_for_plan(&cfg, job, &[], None, Some(400), None);
         let v = serde_json::to_value(&big).expect("json");
         assert_eq!(v["disk"], 400);
         let mut same = big.clone();
@@ -634,5 +690,33 @@ mod tests {
         assert!(sshd < serve);
         assert!(BOOTSTRAP.contains("AllowTcpForwarding=local"));
         assert!(BOOTSTRAP.contains("PasswordAuthentication=no"));
+    }
+
+    #[test]
+    fn a_stored_cuda_list_replaces_a_floor_on_the_create_body() {
+        let cfg = Config::default();
+        let mut mini = cfg.profile("frontier-mini").expect("frontier-mini").clone();
+        mini.cuda_versions = Some(vec!["13.0".into()]);
+        let v = serde_json::to_value(pod_create(&cfg, &mini)).expect("json");
+        assert_eq!(v["gpu"]["allowedCudaVersions"], serde_json::json!(["13.0"]));
+        assert!(
+            v["gpu"].get("minCudaVersion").is_none(),
+            "a pin does not also send a floor: {v}"
+        );
+        let pinned = pod_create_for_plan(
+            &cfg,
+            &mini,
+            &[],
+            Some("12.8"),
+            None,
+            Some(&["12.8".into(), "13.0".into()]),
+        );
+        let v = serde_json::to_value(&pinned).expect("json");
+        assert_eq!(
+            v["gpu"]["allowedCudaVersions"],
+            serde_json::json!(["12.8", "13.0"]),
+            "the plan's list, unchanged, even when a floor was also passed"
+        );
+        assert!(v["gpu"].get("minCudaVersion").is_none(), "{v}");
     }
 }

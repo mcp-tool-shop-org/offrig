@@ -75,6 +75,19 @@ pub enum Error {
     #[error("engine: {0}")]
     Engine(String),
 
+    /// The recipe engine logged that startup finished, then `/health` stayed down.
+    /// Reported only: the pod is left running, and a person shuts it down.
+    #[error("{next_action}")]
+    EngineHung {
+        log_lines: Vec<String>,
+        secs_since_startup: u64,
+        next_action: &'static str,
+    },
+
+    /// `/health` answered, and a one-token completion still failed after one retry.
+    #[error("{message}")]
+    EngineUnresponsive { message: String, log_tail: String },
+
     /// The model stopped at its token limit before it finished (`done_reason: length`).
     /// What it wrote is not an answer. `thinking` keeps what a thinking model had reasoned
     /// by then, for diagnosis only; it is never part of the message.
@@ -190,6 +203,8 @@ impl Error {
             Error::Guard(_) => "guard_refused",
             Error::Timeout(_) => "timeout",
             Error::Ollama(_) | Error::Engine(_) => "model_server",
+            Error::EngineHung { .. } => "engine_hung",
+            Error::EngineUnresponsive { .. } => "engine_unresponsive",
             Error::Truncated { .. } => "truncated",
             Error::ContextOverflow(_) => "context_overflow",
             Error::BadVerdict(_) => "bad_verdict",
@@ -225,6 +240,7 @@ impl Error {
             | Error::Timeout(_)
             | Error::Ollama(_)
             | Error::Engine(_)
+            | Error::EngineUnresponsive { .. }
             | Error::NoCapacity(_)
             | Error::PodNotReady { .. } => true,
             _ => false,
@@ -349,6 +365,40 @@ mod tests {
             ),
             (Error::Ollama("x".into()), "model_server", true),
             (Error::Engine("x".into()), "model_server", true),
+            (
+                Error::EngineHung {
+                    log_lines: vec!["line".into()],
+                    secs_since_startup: 180,
+                    next_action: "shut the pod down: the engine finished startup but never became healthy",
+                },
+                "engine_hung",
+                false,
+            ),
+            (
+                Error::EngineUnresponsive {
+                    message: "completion smoke failed".into(),
+                    log_tail: "tail".into(),
+                },
+                "engine_unresponsive",
+                true,
+            ),
+            (
+                Error::EngineHung {
+                    log_lines: vec!["Application startup complete".into()],
+                    secs_since_startup: 180,
+                    next_action: "shut the pod down: the engine finished startup but never became healthy",
+                },
+                "engine_hung",
+                false,
+            ),
+            (
+                Error::EngineUnresponsive {
+                    message: "completion smoke failed".into(),
+                    log_tail: "Application startup complete".into(),
+                },
+                "engine_unresponsive",
+                true,
+            ),
             (Error::truncated("x"), "truncated", false),
             (Error::BadVerdict("x".into()), "bad_verdict", false),
             (

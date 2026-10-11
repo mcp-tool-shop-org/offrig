@@ -353,7 +353,7 @@ pub struct EngineState {
 
 pub const ENGINE_STATE_SCRIPT: &str = "du -sb /workspace/hf 2>/dev/null | cut -f1; \
 if pgrep -f sglang.launch_server >/dev/null; then echo running; else echo stopped; fi; \
-tail -n 6 /workspace/offrig/engine.log 2>/dev/null";
+tail -n 40 /workspace/offrig/engine.log 2>/dev/null";
 
 pub fn parse_engine_state(out: &str) -> EngineState {
     let mut lines = out.lines();
@@ -390,6 +390,14 @@ mod tests {
         let dead = parse_engine_state("\nstopped\n[offrig] engine exited with status 1");
         assert_eq!(dead.hf_bytes, 0);
         assert!(!dead.running && dead.log_tail.contains("status 1"));
+    }
+
+    #[test]
+    fn the_engine_log_tail_is_forty_lines() {
+        assert!(
+            ENGINE_STATE_SCRIPT.contains("tail -n 40 /workspace/offrig/engine.log"),
+            "{ENGINE_STATE_SCRIPT}"
+        );
     }
 
     #[test]

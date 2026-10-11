@@ -98,8 +98,17 @@ pub fn choose(profile: &Profile, offers: &[GpuOffer], limits: &Limits) -> Result
     }
     // An empty catalog CUDA list is the copied-list fallback, so those types stay.
     // A type the catalog did not return is not dropped here: there is no list to
-    // hold it to. A non-empty list that cannot meet the floor is dropped.
-    if let Some(floor) = profile.effective_min_cuda() {
+    // hold it to. A non-empty list that cannot meet the pin, or the floor, is dropped.
+    // A pin and a floor are never both set: config refuses that pair.
+    if let Some(pin) = profile.cuda_versions.as_ref().filter(|v| !v.is_empty()) {
+        let list = pin.join(", ");
+        narrow(&mut types, &mut dropped, |t| match offer(t) {
+            Some(o) if !o.cuda.is_empty() && !o.meets_cuda_allow(pin) => Some(format!(
+                "no available catalog CUDA version is in the profile's cuda_versions ({list})"
+            )),
+            _ => None,
+        });
+    } else if let Some(floor) = profile.effective_min_cuda() {
         narrow(&mut types, &mut dropped, |t| match offer(t) {
             Some(o) if !o.cuda.is_empty() && !o.meets_cuda_floor(&floor) => Some(format!(
                 "no available catalog CUDA version is at or above the floor {floor}"
@@ -893,5 +902,71 @@ mod tests {
         )
         .expect("pod");
         assert_eq!(p.host_cuda(), Some("12.8"));
+    }
+
+    #[test]
+    fn an_exact_cuda_list_keeps_only_an_overlapping_catalog_version() {
+        let mut profile = job();
+        profile.min_cuda = None;
+        profile.job.as_mut().expect("job image").min_cuda = None;
+        profile.cuda_versions = Some(vec!["13.0".into()]);
+        let mut offers = market();
+        let set = |offers: &mut [GpuOffer], id: &str, cuda: Vec<CatalogCuda>| {
+            offers.iter_mut().find(|o| o.id == id).expect("offer").cuda = cuda;
+        };
+        set(
+            &mut offers,
+            RTX_S,
+            vec![CatalogCuda {
+                version: "13.0".into(),
+                available: true,
+            }],
+        );
+        set(
+            &mut offers,
+            A100,
+            vec![
+                CatalogCuda {
+                    version: "12.8".into(),
+                    available: true,
+                },
+                CatalogCuda {
+                    version: "13.1".into(),
+                    available: true,
+                },
+            ],
+        );
+        set(
+            &mut offers,
+            A100_PCIE,
+            vec![CatalogCuda {
+                version: "13.0".into(),
+                available: false,
+            }],
+        );
+        let choice = choose(&profile, &offers, &Limits::default()).expect("choice");
+        assert!(choice.gpu_types.iter().any(|t| t == RTX_S));
+        // An omitted catalog list is the copied-list fallback, so the type stays.
+        assert!(choice.gpu_types.iter().any(|t| t == RTX_W));
+        assert!(!choice.gpu_types.iter().any(|t| t == A100));
+        assert!(!choice.gpu_types.iter().any(|t| t == A100_PCIE));
+        let why = |id: &str| {
+            choice
+                .dropped
+                .iter()
+                .find(|(t, _)| t == id)
+                .map(|(_, w)| w.as_str())
+                .unwrap_or("")
+        };
+        assert!(
+            why(A100).contains("cuda_versions"),
+            "13.1 is not the pin: {}",
+            why(A100)
+        );
+        assert!(
+            why(A100_PCIE).contains("cuda_versions"),
+            "{}",
+            why(A100_PCIE)
+        );
     }
 }

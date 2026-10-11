@@ -65,6 +65,236 @@ pub const OLLAMA_READY_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// A recipe engine downloads its weights from Hugging Face, then loads them: about
 /// 21 minutes for 252 GB at 200 MB/s plus the load. The plan deadline still rules.
 pub const ENGINE_READY_TIMEOUT: Duration = Duration::from_secs(75 * 60);
+/// SGLang prints this when the server has finished starting. `/health` can still
+/// stay down afterwards: that is the hang.
+pub const STARTUP_COMPLETE: &str = "Application startup complete";
+/// How long `/health` may stay down after [`STARTUP_COMPLETE`] before the engine
+/// is reported hung. The clock starts when a poll first sees the line.
+pub const ENGINE_HANG_AFTER: Duration = Duration::from_secs(3 * 60);
+/// The completion that proves the engine can answer, after `/health` is 200.
+pub const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The one retry of that completion.
+pub const SMOKE_RETRY_AFTER: Duration = Duration::from_secs(15);
+/// How many engine-log lines a hang report keeps.
+pub const ENGINE_LOG_LINES: usize = 40;
+/// What `offrig_job` says for [`Error::EngineHung`]. The pod is not shut down.
+pub const ENGINE_HUNG_NEXT: &str =
+    "shut the pod down: the engine finished startup but never became healthy";
+
+/// How the engine wait paces itself. Production uses the constants above. A debug
+/// build may shorten each one with an `OFFRIG_TEST_*_MS` variable, so a test does
+/// not sleep for the real 3 minutes or the real 30 seconds.
+#[derive(Debug, Clone)]
+pub struct EnginePace {
+    pub poll: Duration,
+    pub look_every: Duration,
+    pub hang_after: Duration,
+    pub smoke_timeout: Duration,
+    pub smoke_retry: Duration,
+}
+
+impl EnginePace {
+    pub fn live() -> Self {
+        Self {
+            poll: pace_override("OFFRIG_TEST_ENGINE_POLL_MS", Duration::from_secs(5)),
+            look_every: pace_override("OFFRIG_TEST_ENGINE_LOOK_MS", Duration::from_secs(20)),
+            hang_after: pace_override("OFFRIG_TEST_ENGINE_HANG_MS", ENGINE_HANG_AFTER),
+            smoke_timeout: pace_override("OFFRIG_TEST_SMOKE_TIMEOUT_MS", SMOKE_TIMEOUT),
+            smoke_retry: pace_override("OFFRIG_TEST_SMOKE_RETRY_MS", SMOKE_RETRY_AFTER),
+        }
+    }
+}
+
+fn pace_override(name: &str, fallback: Duration) -> Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var(name)
+        && let Ok(ms) = v.parse::<u64>()
+    {
+        return Duration::from_millis(ms);
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = name;
+    }
+    fallback
+}
+
+/// Seconds since the startup line was seen, when that is at least `hang_after`.
+/// `None` while the wait should continue. The real threshold is [`ENGINE_HANG_AFTER`].
+pub fn engine_hang(since_startup_line: Option<Duration>, hang_after: Duration) -> Option<u64> {
+    let elapsed = since_startup_line?;
+    (elapsed >= hang_after).then_some(elapsed.as_secs())
+}
+
+/// The last `n` lines of an engine log. Fewer, when the log is shorter.
+pub fn last_log_lines(log: &str, n: usize) -> Vec<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    lines
+        .iter()
+        .skip(lines.len().saturating_sub(n))
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// What the engine wait can see. Production reads the tunnel and the pod log.
+/// Tests stand in a script, so nothing calls a live engine.
+trait EngineView {
+    fn health_ok(&mut self) -> bool;
+    fn log(&mut self) -> Result<remote::EngineState>;
+    fn smoke(&mut self, model: &str, timeout: Duration) -> Result<()>;
+}
+
+/// Time as the engine wait sees it. Production sleeps. A test clock jumps.
+trait WaitClock {
+    fn now(&self) -> Instant;
+    fn sleep(&self, d: Duration);
+}
+
+struct RealClock;
+
+impl WaitClock for RealClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, d: Duration) {
+        if !d.is_zero() {
+            std::thread::sleep(d);
+        }
+    }
+}
+
+struct LiveView<'a> {
+    api: &'a Ollama,
+    read_log: &'a mut dyn FnMut() -> Result<remote::EngineState>,
+}
+
+impl EngineView for LiveView<'_> {
+    fn health_ok(&mut self) -> bool {
+        self.api.answers("/health")
+    }
+
+    fn log(&mut self) -> Result<remote::EngineState> {
+        (self.read_log)()
+    }
+
+    fn smoke(&mut self, model: &str, timeout: Duration) -> Result<()> {
+        self.api.smoke_choice(model, timeout)
+    }
+}
+
+/// Wait until `want` can answer one completion. `shutdown` is the pod terminator
+/// a launch would otherwise call. This wait never calls it: a hung engine is
+/// reported and left running, and a completion that fails is the launch's to end.
+fn drive_engine(
+    view: &mut dyn EngineView,
+    clock: &dyn WaitClock,
+    want: &str,
+    limit: Duration,
+    pace: &EnginePace,
+    on: &mut dyn FnMut(Event),
+    _shutdown: &mut dyn FnMut(),
+) -> Result<()> {
+    let started = clock.now();
+    let mut next_look = started;
+    // When a poll first saw the startup line during a stretch of `/health` not
+    // answering. Cleared when `/health` answers, so the three minutes are one stretch.
+    let mut startup_at: Option<Instant> = None;
+    let mut smoke_failures: u32 = 0;
+    let mut retry_at: Option<Instant> = None;
+    let mut last_log = String::new();
+    loop {
+        let now = clock.now();
+        if let Some(at) = retry_at
+            && now < at
+        {
+            let left = at.saturating_duration_since(now);
+            clock.sleep(pace.poll.min(left));
+            continue;
+        }
+        retry_at = None;
+        let healthy = view.health_ok();
+        if healthy {
+            // `/health` answering ends the hang stretch. `/v1/models` answering
+            // is not this check: a server can list a model and still be down.
+            startup_at = None;
+            match view.smoke(want, pace.smoke_timeout) {
+                Ok(()) => {
+                    on(Event::Step("ready".into()));
+                    return Ok(());
+                }
+                Err(e) => {
+                    smoke_failures += 1;
+                    let err = e.to_string();
+                    if smoke_failures >= 2 {
+                        let tail = view.log().map(|s| s.log_tail).unwrap_or_default();
+                        on(Event::Step("engine_unresponsive".into()));
+                        return Err(Error::EngineUnresponsive {
+                            message: err,
+                            log_tail: tail,
+                        });
+                    }
+                    on(Event::Step(format!(
+                        "engine health is up but the completion failed ({err}); retrying once"
+                    )));
+                    retry_at = Some(clock.now() + pace.smoke_retry);
+                    continue;
+                }
+            }
+        }
+        if clock.now() >= next_look {
+            next_look = clock.now() + pace.look_every;
+            if let Ok(st) = view.log() {
+                last_log.clone_from(&st.log_tail);
+                let since_start = clock.now().saturating_duration_since(started);
+                // A process that has exited is not the deadlock. That path still
+                // stops the launch. The hang is a process that stays up.
+                if !st.running && since_start > Duration::from_secs(30) {
+                    return Err(Error::Engine(format!(
+                        "the engine stopped before serving {want}: {}",
+                        st.log_tail.trim()
+                    )));
+                }
+                if st.log_tail.contains(STARTUP_COMPLETE) && startup_at.is_none() && !healthy {
+                    startup_at = Some(clock.now());
+                }
+                let last = st.log_tail.lines().last().unwrap_or("").trim().to_string();
+                on(Event::Step(format!(
+                    "engine starting: {:.1} GB of weights on disk ({}s){}",
+                    st.hf_bytes as f64 / 1e9,
+                    since_start.as_secs(),
+                    if last.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {}", clip_line(&last, 120))
+                    }
+                )));
+            }
+        }
+        if let Some(secs) = engine_hang(
+            startup_at.map(|t| clock.now().saturating_duration_since(t)),
+            pace.hang_after,
+        ) {
+            if let Ok(st) = view.log() {
+                last_log = st.log_tail;
+            }
+            let lines = last_log_lines(&last_log, ENGINE_LOG_LINES);
+            on(Event::Step("engine_hung".into()));
+            return Err(Error::EngineHung {
+                log_lines: lines,
+                secs_since_startup: secs,
+                next_action: ENGINE_HUNG_NEXT,
+            });
+        }
+        if clock.now().saturating_duration_since(started) >= limit {
+            return Err(Error::Timeout(format!(
+                "the engine did not serve {want} within {} minutes",
+                limit.as_secs() / 60
+            )));
+        }
+        clock.sleep(pace.poll);
+    }
+}
 
 /// Refuse a profile whose models already exist in the local Ollama: the same name
 /// could then be served on this machine. Checked before any money is spent.
@@ -535,13 +765,32 @@ impl Session {
         Ok(())
     }
 
-    /// Wait until the recipe engine serves the profile's model through the tunnel,
-    /// reporting download and load progress; fail at once if the engine exits.
+    /// Wait until the recipe engine can answer one completion. `/health` and the
+    /// model list are not enough: one completion has to return a choice. A failure
+    /// is tried once more. If the log says startup finished and `/health` stays
+    /// down, this reports [`Error::EngineHung`] and does not shut the pod down.
+    /// Fail at once if the engine exits.
     pub fn wait_engine(
         &self,
         profile: &Profile,
         limit: Duration,
         on: &mut dyn FnMut(Event),
+    ) -> Result<()> {
+        let alias = self.cfg.ssh_alias.clone();
+        self.wait_engine_with(profile, limit, on, EnginePace::live(), &mut || {
+            remote::engine_state(&alias)
+        })
+    }
+
+    /// [`Self::wait_engine`] with the pace and the log read supplied. Tests pass a
+    /// short pace and a fake log, so nothing waits three real minutes or calls ssh.
+    pub fn wait_engine_with(
+        &self,
+        profile: &Profile,
+        limit: Duration,
+        on: &mut dyn FnMut(Event),
+        pace: EnginePace,
+        log: &mut dyn FnMut() -> Result<remote::EngineState>,
     ) -> Result<()> {
         let want = profile
             .models
@@ -549,49 +798,11 @@ impl Session {
             .map(|m| m.name.clone())
             .unwrap_or_default();
         let api = Ollama::new(&self.cfg.tunnel_base_url());
-        let started = Instant::now();
-        let mut next_look = Instant::now();
-        loop {
-            if api.answers("/health")
-                && let Ok(ids) = api.openai_models()
-                && ids.iter().any(|i| i == &want)
-            {
-                on(Event::Step(format!(
-                    "engine serving {want} after {}s",
-                    started.elapsed().as_secs()
-                )));
-                return Ok(());
-            }
-            if Instant::now() >= next_look {
-                next_look = Instant::now() + Duration::from_secs(20);
-                if let Ok(st) = remote::engine_state(&self.cfg.ssh_alias) {
-                    let last = st.log_tail.lines().last().unwrap_or("").trim().to_string();
-                    if !st.running && started.elapsed() > Duration::from_secs(30) {
-                        return Err(Error::Engine(format!(
-                            "the engine stopped before serving {want}: {}",
-                            st.log_tail.trim()
-                        )));
-                    }
-                    on(Event::Step(format!(
-                        "engine starting: {:.1} GB of weights on disk ({}s){}",
-                        st.hf_bytes as f64 / 1e9,
-                        started.elapsed().as_secs(),
-                        if last.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; {}", clip_line(&last, 120))
-                        }
-                    )));
-                }
-            }
-            if started.elapsed() >= limit {
-                return Err(Error::Timeout(format!(
-                    "the engine did not serve {want} within {} minutes",
-                    limit.as_secs() / 60
-                )));
-            }
-            std::thread::sleep(Duration::from_secs(5));
-        }
+        let mut view = LiveView {
+            api: &api,
+            read_log: log,
+        };
+        drive_engine(&mut view, &RealClock, &want, limit, &pace, on, &mut || {})
     }
 
     /// Zed model entries for the profile's models. Ollama says what each can do; a
@@ -1378,5 +1589,239 @@ mod tests {
         assert_eq!(clip_line("abcdefghij", 10), "abcdefghij");
         assert_eq!(clip_line("abcdefghijk", 10), "abcdefghij...");
         assert_eq!(clip_line("\u{e9}\u{e9}\u{e9}", 2), "\u{e9}\u{e9}...");
+    }
+
+    #[test]
+    fn three_minutes_is_the_hang_threshold() {
+        assert_eq!(ENGINE_HANG_AFTER, Duration::from_secs(3 * 60));
+        assert_eq!(SMOKE_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(SMOKE_RETRY_AFTER, Duration::from_secs(15));
+        assert_eq!(ENGINE_LOG_LINES, 40);
+        assert_eq!(
+            ENGINE_HUNG_NEXT,
+            "shut the pod down: the engine finished startup but never became healthy"
+        );
+        assert_eq!(
+            engine_hang(Some(Duration::from_secs(179)), ENGINE_HANG_AFTER),
+            None
+        );
+        assert_eq!(
+            engine_hang(Some(Duration::from_secs(180)), ENGINE_HANG_AFTER),
+            Some(180)
+        );
+        assert_eq!(engine_hang(None, ENGINE_HANG_AFTER), None);
+        // A sub-second overshoot still reports, and the seconds truncate.
+        assert_eq!(
+            engine_hang(Some(Duration::from_millis(180_400)), ENGINE_HANG_AFTER),
+            Some(180)
+        );
+        let mut lines: Vec<String> = (0..45).map(|i| format!("line {i}")).collect();
+        lines[20].clear();
+        let kept = last_log_lines(&lines.join("\n"), ENGINE_LOG_LINES);
+        assert_eq!(kept.len(), 40);
+        assert_eq!(kept[0], "line 5");
+        assert!(kept.iter().any(String::is_empty), "blank lines stay");
+        assert_eq!(kept.last().map(String::as_str), Some("line 44"));
+    }
+
+    struct FakeClock {
+        now: std::sync::Mutex<Instant>,
+    }
+
+    impl FakeClock {
+        fn new() -> Self {
+            Self {
+                now: std::sync::Mutex::new(Instant::now()),
+            }
+        }
+    }
+
+    impl WaitClock for FakeClock {
+        fn now(&self) -> Instant {
+            *self.now.lock().expect("clock")
+        }
+
+        fn sleep(&self, d: Duration) {
+            let mut now = self.now.lock().expect("clock");
+            *now += d;
+        }
+    }
+
+    struct Script {
+        health: bool,
+        running: bool,
+        log: String,
+        smokes: Vec<std::result::Result<(), String>>,
+        smoke_at: usize,
+    }
+
+    impl Script {
+        fn serving(log: &str) -> Self {
+            Self {
+                health: true,
+                running: true,
+                log: log.into(),
+                smokes: vec![Ok(())],
+                smoke_at: 0,
+            }
+        }
+    }
+
+    impl EngineView for Script {
+        fn health_ok(&mut self) -> bool {
+            self.health
+        }
+
+        fn log(&mut self) -> Result<remote::EngineState> {
+            Ok(remote::EngineState {
+                hf_bytes: 0,
+                running: self.running,
+                log_tail: self.log.clone(),
+            })
+        }
+
+        fn smoke(&mut self, model: &str, timeout: Duration) -> Result<()> {
+            assert_eq!(model, "served");
+            assert_eq!(timeout, SMOKE_TIMEOUT);
+            let at = self.smoke_at;
+            self.smoke_at += 1;
+            match self.smokes.get(at) {
+                Some(Ok(())) => Ok(()),
+                Some(Err(message)) => Err(Error::Ollama(message.clone())),
+                None => Err(Error::Ollama("no scripted smoke".into())),
+            }
+        }
+    }
+
+    fn fast_pace() -> EnginePace {
+        EnginePace {
+            poll: Duration::from_secs(15),
+            look_every: Duration::from_secs(20),
+            hang_after: ENGINE_HANG_AFTER,
+            smoke_timeout: SMOKE_TIMEOUT,
+            smoke_retry: SMOKE_RETRY_AFTER,
+        }
+    }
+
+    fn drive(
+        script: &mut Script,
+        limit: Duration,
+        pace: &EnginePace,
+    ) -> (Result<()>, Vec<String>, u32) {
+        let clock = FakeClock::new();
+        let mut steps = Vec::new();
+        let mut shutdowns = 0u32;
+        let result = drive_engine(
+            script,
+            &clock,
+            "served",
+            limit,
+            pace,
+            &mut |e| {
+                if let Event::Step(s) = e {
+                    steps.push(s);
+                }
+            },
+            &mut || shutdowns += 1,
+        );
+        (result, steps, shutdowns)
+    }
+
+    #[test]
+    fn smoke_pass_reports_ready() {
+        let mut script = Script::serving("Application startup complete");
+        let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(600), &fast_pace());
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(steps, ["ready"]);
+        assert_eq!(script.smoke_at, 1);
+        assert_eq!(shutdowns, 0);
+    }
+
+    #[test]
+    fn smoke_fails_once_then_passes() {
+        let mut script = Script::serving("up");
+        script.smokes = vec![Err("timed out after 30000ms".into()), Ok(())];
+        let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(600), &fast_pace());
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(script.smoke_at, 2);
+        assert!(
+            steps.iter().any(|s| s.contains("retrying once")),
+            "{steps:?}"
+        );
+        assert_eq!(steps.last().map(String::as_str), Some("ready"));
+        assert_eq!(shutdowns, 0);
+    }
+
+    #[test]
+    fn smoke_fails_twice_is_engine_unresponsive() {
+        let mut script = Script::serving("boom line");
+        script.smokes = vec![
+            Err("timed out after 30000ms".into()),
+            Err("http 500: down".into()),
+        ];
+        let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(600), &fast_pace());
+        let err = result.expect_err("two failures");
+        match err {
+            Error::EngineUnresponsive { message, log_tail } => {
+                assert!(message.contains("http 500: down"), "{message}");
+                assert_eq!(log_tail, "boom line");
+            }
+            other => panic!("expected engine_unresponsive, got {other}"),
+        }
+        assert!(
+            steps.iter().any(|s| s == "engine_unresponsive"),
+            "{steps:?}"
+        );
+        assert_eq!(shutdowns, 0);
+    }
+
+    #[test]
+    fn startup_line_and_three_minutes_of_503_is_engine_hung_and_does_not_shut_down() {
+        let mut lines = vec![STARTUP_COMPLETE.to_string()];
+        lines.extend((2..=45).map(|n| format!("line {n}")));
+        let mut script = Script {
+            health: false,
+            running: true,
+            log: lines.join("\n"),
+            smokes: vec![],
+            smoke_at: 0,
+        };
+        let pace = EnginePace {
+            poll: Duration::from_secs(60),
+            look_every: Duration::from_secs(20),
+            hang_after: ENGINE_HANG_AFTER,
+            smoke_timeout: SMOKE_TIMEOUT,
+            smoke_retry: SMOKE_RETRY_AFTER,
+        };
+        let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(600), &pace);
+        let err = result.expect_err("hung");
+        match err {
+            Error::EngineHung {
+                log_lines,
+                secs_since_startup,
+                next_action,
+            } => {
+                assert_eq!(secs_since_startup, ENGINE_HANG_AFTER.as_secs());
+                assert_eq!(log_lines.len(), ENGINE_LOG_LINES);
+                assert_eq!(log_lines[0], "line 6");
+                assert_eq!(log_lines.last().map(String::as_str), Some("line 45"));
+                assert_eq!(next_action, ENGINE_HUNG_NEXT);
+            }
+            other => panic!("expected engine_hung, got {other}"),
+        }
+        assert!(steps.iter().any(|s| s == "engine_hung"), "{steps:?}");
+        assert_eq!(script.smoke_at, 0, "a 503 never gets a completion");
+        assert_eq!(shutdowns, 0, "the hang is reported and the pod stays up");
+    }
+
+    #[test]
+    fn models_without_health_is_not_ready() {
+        let mut script = Script::serving("models are up");
+        script.health = false;
+        let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(30), &fast_pace());
+        assert!(matches!(result, Err(Error::Timeout(_))), "{result:?}");
+        assert_eq!(script.smoke_at, 0);
+        assert!(!steps.iter().any(|s| s == "ready"));
+        assert_eq!(shutdowns, 0);
     }
 }

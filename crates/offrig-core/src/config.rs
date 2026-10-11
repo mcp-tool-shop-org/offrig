@@ -122,6 +122,12 @@ pub struct Profile {
     /// the memory the work needs. Compared with the offers' own memory figure.
     #[serde(default)]
     pub min_vram_gb: Option<u32>,
+    /// Exact host CUDA versions, sent as `gpu.allowedCudaVersions`. Each one must be
+    /// in [`CUDA_VERSIONS`]. Mutually exclusive with `min_cuda`, including a job
+    /// image's own floor: a floor and an exact list on one create is ambiguous.
+    /// `None` leaves the floor, or no CUDA constraint, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_versions: Option<Vec<String>>,
 }
 
 /// The image a job pod runs. Nothing is served and nothing is tunnelled.
@@ -142,13 +148,31 @@ pub struct Job {
     pub hf_token_secret: Option<String>,
 }
 
-/// Host CUDA versions offrig accepts as a floor, newest first. v2 create sends the
-/// floor itself as `gpu.minCudaVersion` (open-ended), not this whole list. The list
-/// was copied from RunPod's v1 `allowedCudaVersions` on 2026-10-07. A version that is
-/// not in it is rejected at config time. At plan time the catalog's per-GPU
-/// `cudaVersions` wins; this list is the fallback when the catalog omits that field.
-pub const CUDA_VERSIONS: [&str; 12] = [
-    "13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8",
+/// Host CUDA versions offrig accepts, newest first.
+///
+/// Sources:
+/// - Runpod's documented v1 `allowedCudaVersions` enum on `POST /pods`
+///   (`https://docs.runpod.io/api-reference/pods/POST/pods`), read 2026-10-11:
+///   13.0, 12.9, 12.8, 12.7, 12.6, 12.5, 12.4, 12.3, 12.2, 12.1, 12.0, 11.8.
+/// - The v2 field `gpu.allowedCudaVersions` (OpenAPI
+///   `https://api.runpod.io/v2/openapi.json`, info.version 2.0.0, fetched
+///   2026-10-11) is a `major.minor` string, not a closed enum. A non-empty
+///   list and `gpu.minCudaVersion` together are a 400. The catalog
+///   (`GET /v2/catalog/gpus`) is how Runpod says to discover live versions,
+///   and that call needs an API key, so it was not used for this list.
+/// - 13.2 and 13.1 are ahead of that v1 enum. A writer pod on 2026-10-12 was
+///   placed on a CUDA 13.2 host (the two that served were on 13.0). They are
+///   listed here so an exact pin can name them. 13.0 stays the oldest 13.x
+///   entry: an open floor of that major still begins at 13.0.
+///
+/// A floor is sent as `gpu.minCudaVersion` (open-ended), not this whole list.
+/// A profile's `cuda_versions` sends that exact list, in the order written,
+/// as `gpu.allowedCudaVersions`, and not a floor. A version that is not in
+/// this list is rejected at config time. At plan time the catalog's per-GPU
+/// `cudaVersions` wins; this list is the fallback when the catalog omits it.
+pub const CUDA_VERSIONS: [&str; 14] = [
+    "13.2", "13.1", "13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1",
+    "12.0", "11.8",
 ];
 
 /// Every host CUDA version at `min` or newer, newest first. `None` for a version
@@ -433,6 +457,7 @@ pub fn default_profiles() -> Vec<Profile> {
             job: None,
             min_cuda: None,
             min_vram_gb: None,
+            cuda_versions: None,
         },
         Profile {
             name: "medium".into(),
@@ -462,6 +487,7 @@ pub fn default_profiles() -> Vec<Profile> {
             job: None,
             min_cuda: None,
             min_vram_gb: None,
+            cuda_versions: None,
         },
         Profile {
             name: "frontier".into(),
@@ -505,6 +531,7 @@ pub fn default_profiles() -> Vec<Profile> {
             job: None,
             min_cuda: None,
             min_vram_gb: None,
+            cuda_versions: None,
         },
         rehearsal(
             "frontier-mini",
@@ -550,12 +577,14 @@ pub fn default_profiles() -> Vec<Profile> {
                 hf_token_secret: None,
             }),
             // The jobs this profile runs install a current vLLM, whose PyTorch is a
-            // CUDA 13 build: an A100 host on a CUDA 12.8 driver cost $0.40 and failed
-            // after setup (issue #9). RunPod lists 13.0 as its newest, so this is the
-            // only allowed version; a plan that cannot find such a host waits or fails
-            // rather than renting one that cannot run the work.
+            // CUDA 13 build: an A100 host on a CUDA 12.8 driver failed after setup
+            // (issue #9). This is a floor (at least 13.0), sent as
+            // `gpu.minCudaVersion`, so a 12.x host is refused and a newer 13.x host
+            // still qualifies. An exact pin is `cuda_versions`, which this profile
+            // does not set.
             min_cuda: Some("13.0".into()),
             min_vram_gb: None,
+            cuda_versions: None,
         },
         Profile {
             name: "jam".into(),
@@ -590,6 +619,7 @@ pub fn default_profiles() -> Vec<Profile> {
             }),
             min_cuda: None,
             min_vram_gb: None,
+            cuda_versions: None,
         },
     ]
 }
@@ -630,6 +660,7 @@ fn rehearsal(name: &str, served: &str, size_gb: f64, repo: &str) -> Profile {
         job: None,
         min_cuda: None,
         min_vram_gb: None,
+        cuda_versions: None,
     }
 }
 
@@ -730,6 +761,30 @@ impl Config {
                     p.name,
                     CUDA_VERSIONS.join(", ")
                 )));
+            }
+            if let Some(pin) = &p.cuda_versions {
+                if pin.is_empty() {
+                    return Err(Error::Config(format!(
+                        "profile {}: cuda_versions is empty; leave it out, or name versions from RunPod's list",
+                        p.name
+                    )));
+                }
+                for v in pin {
+                    if cuda_at_least(v).is_none() {
+                        return Err(Error::Config(format!(
+                            "profile {}: cuda_versions entry {v:?} is not one of RunPod's CUDA versions ({})",
+                            p.name,
+                            CUDA_VERSIONS.join(", ")
+                        )));
+                    }
+                }
+                let image_floor = p.job.as_ref().and_then(|j| j.min_cuda.as_ref());
+                if p.min_cuda.is_some() || image_floor.is_some() {
+                    return Err(Error::Config(format!(
+                        "profile {}: cuda_versions and min_cuda together are ambiguous; set one",
+                        p.name
+                    )));
+                }
             }
             if p.min_vram_gb == Some(0) {
                 return Err(Error::Config(format!(
@@ -956,6 +1011,78 @@ mod tests {
     }
 
     #[test]
+    fn cuda_versions_must_be_listed_and_cannot_share_a_profile_with_min_cuda() {
+        // 13.0 stays the oldest 13.x so an open floor of that major still starts there.
+        let oldest_13 = CUDA_VERSIONS
+            .iter()
+            .rev()
+            .find(|v| v.starts_with("13."))
+            .copied();
+        assert_eq!(oldest_13, Some("13.0"));
+        assert_eq!(&CUDA_VERSIONS[..3], ["13.2", "13.1", "13.0"]);
+
+        let mut pinned = Config::default();
+        let medium = pinned
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_versions = Some(vec!["13.2".into(), "13.0".into()]);
+        pinned.validate().expect("13.2 and 13.0 are listed");
+
+        let mut unknown = Config::default();
+        let medium = unknown
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_versions = Some(vec!["13.3".into()]);
+        let err = unknown
+            .validate()
+            .expect_err("13.3 is not listed")
+            .to_string();
+        assert!(err.contains("13.3") && err.contains("not one of"), "{err}");
+
+        let mut empty = Config::default();
+        let medium = empty
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.cuda_versions = Some(vec![]);
+        let err = empty.validate().expect_err("an empty list").to_string();
+        assert!(err.contains("empty"), "{err}");
+
+        let mut both = Config::default();
+        let medium = both
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "medium")
+            .expect("medium");
+        medium.min_cuda = Some("13.0".into());
+        medium.cuda_versions = Some(vec!["13.0".into()]);
+        let err = both.validate().expect_err("floor and pin").to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+
+        let mut image_floor = Config::default();
+        let jam = image_floor
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "jam")
+            .expect("jam");
+        jam.cuda_versions = Some(vec!["13.0".into()]);
+        let err = image_floor
+            .validate()
+            .expect_err("a job image floor is also min_cuda")
+            .to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+
+        Config::default()
+            .validate()
+            .expect("the built-in profiles set a floor and no pin");
+    }
+
+    #[test]
     fn recipes_are_pinned_and_leave_parallelism_and_ports_to_offrig() {
         let base = Config::default()
             .profile("frontier-mini")
@@ -1026,6 +1153,63 @@ mod tests {
         Config::default().save_to(&good).expect("save");
         assert_eq!(Config::load_from(&good).expect("load"), Config::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cuda_versions_must_be_in_the_runpod_list() {
+        assert!(CUDA_VERSIONS.contains(&"13.2"));
+        assert!(CUDA_VERSIONS.contains(&"13.1"));
+        assert!(CUDA_VERSIONS.contains(&"13.0"));
+        assert!(!CUDA_VERSIONS.contains(&"13.3"));
+        let mut cfg = Config::default();
+        let mini = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "frontier-mini")
+            .expect("frontier-mini");
+        mini.cuda_versions = Some(vec!["13.3".into()]);
+        let unknown = cfg.validate().expect_err("13.3 is not listed");
+        assert!(unknown.to_string().contains("13.3"), "{unknown}");
+        let mini = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "frontier-mini")
+            .expect("frontier-mini");
+        mini.cuda_versions = Some(vec![]);
+        let empty = cfg.validate().expect_err("an empty list");
+        assert!(empty.to_string().contains("empty"), "{empty}");
+        let mini = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "frontier-mini")
+            .expect("frontier-mini");
+        mini.cuda_versions = Some(vec!["13.0".into(), "12.8".into()]);
+        cfg.validate().expect("a documented list");
+    }
+
+    #[test]
+    fn cuda_versions_together_with_min_cuda_is_refused() {
+        let mut cfg = Config::default();
+        let small = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "small")
+            .expect("small");
+        small.min_cuda = Some("12.8".into());
+        small.cuda_versions = Some(vec!["13.0".into()]);
+        let both = cfg.validate().expect_err("profile floor and a pin");
+        assert!(both.to_string().contains("ambiguous"), "{both}");
+
+        let mut cfg = Config::default();
+        let job = cfg
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == "job")
+            .expect("job");
+        job.min_cuda = None;
+        job.cuda_versions = Some(vec!["13.0".into()]);
+        let image = cfg.validate().expect_err("the image floor still applies");
+        assert!(image.to_string().contains("ambiguous"), "{image}");
     }
 
     #[test]

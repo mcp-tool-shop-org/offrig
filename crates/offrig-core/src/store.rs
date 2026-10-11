@@ -2062,6 +2062,25 @@ impl Store {
         self.set_setting(&format!("plan_min_cuda:{plan_id}"), version)
     }
 
+    /// The exact host CUDA list a plan was made with (`offrig_plan` writes it from
+    /// the profile's `cuda_versions`). `None` when the plan used a floor, or none.
+    /// Kept in settings, like the floor, so the schema stays v3. The value is a
+    /// JSON array of version strings, in the profile's order.
+    pub fn plan_cuda_versions(&self, plan_id: i64) -> Result<Option<Vec<String>>> {
+        let Some(raw) = self.setting(&format!("plan_cuda_versions:{plan_id}"))? else {
+            return Ok(None);
+        };
+        serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|e| crate::error::Error::decode("plan cuda versions", e))
+    }
+
+    pub fn set_plan_cuda_versions(&self, plan_id: i64, versions: &[String]) -> Result<()> {
+        let raw = serde_json::to_string(versions)
+            .map_err(|e| crate::error::Error::decode("plan cuda versions", e))?;
+        self.set_setting(&format!("plan_cuda_versions:{plan_id}"), &raw)
+    }
+
     /// How long the plan's launch may wait for capacity, in minutes (`offrig_plan`
     /// `wait_minutes`). `None` means the profile's `wait_for_gpu_minutes`. Kept in
     /// settings like the lane and the CUDA floor, so the schema stays v3.
@@ -3180,6 +3199,14 @@ mod tests {
             s.plan_min_cuda(p.id).expect("read").as_deref(),
             Some("13.0")
         );
+        assert_eq!(s.plan_cuda_versions(p.id).expect("read"), None);
+        s.set_plan_cuda_versions(p.id, &["13.0".into()])
+            .expect("set pin");
+        assert_eq!(
+            s.plan_cuda_versions(p.id).expect("read").as_deref(),
+            Some(["13.0".to_string()].as_slice())
+        );
+        assert_eq!(s.plan_cuda_versions(p.id + 1).expect("read"), None);
         assert_eq!(s.plan_min_cuda(p.id + 1).expect("read"), None, "per plan");
         assert_eq!(
             s.plan_wait_minutes(p.id).expect("read"),

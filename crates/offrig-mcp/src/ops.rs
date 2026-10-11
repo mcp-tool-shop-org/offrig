@@ -175,7 +175,14 @@ pub fn run_launch(
     let result = launch(&ctx, &db, &store, &shared, plan_id, job_id, &cancel);
     match result {
         Ok(v) => {
-            let _ = store.update_job(job_id, "done", &v, None);
+            // A hung engine is reported and left running. `done` would tell
+            // offrig_job and offrig_run that the pod is ready to take work.
+            let state = if v["step"] == "engine_hung" {
+                "running"
+            } else {
+                "done"
+            };
+            let _ = store.update_job(job_id, state, &v, None);
         }
         Err(e) => {
             let state = if matches!(e, Error::Cancelled(_)) {
@@ -192,8 +199,7 @@ pub fn run_launch(
                 .map(|j| j.progress)
                 .filter(Value::is_object)
                 .unwrap_or_else(|| json!({}));
-            progress["failure"] = failure_json(&e, &progress);
-            progress["step"] = json!("stopped");
+            record_launch_stop(&mut progress, &e);
             let _ = store.update_job(job_id, state, &progress, Some(&chain(&e)));
         }
     }
@@ -218,6 +224,22 @@ pub fn failure_json(e: &Error, progress: &Value) -> Value {
         "spent": (progress["spent"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0,
         "pod_terminated": progress["pod_terminated"],
     })
+}
+
+/// The step a stopped launch keeps. A completion that never returned a choice stays
+/// `engine_unresponsive`, with the error and the engine log beside it. Every other
+/// stop is `stopped`. A hang is not a stop: the launch returns it as its result and
+/// the pod stays up.
+fn record_launch_stop(progress: &mut Value, e: &Error) {
+    progress["failure"] = failure_json(e, progress);
+    match e {
+        Error::EngineUnresponsive { message, log_tail } => {
+            progress["step"] = json!("engine_unresponsive");
+            progress["error"] = json!(message);
+            progress["engine_log_tail"] = json!(log_tail);
+        }
+        _ => progress["step"] = json!("stopped"),
+    }
 }
 
 /// A delete that finds nothing: the launch wait already terminated this pod.
@@ -369,10 +391,18 @@ fn launch(
     let cfg = &ctx.cfg_for_plan(store, &plan)?;
     let profile = cfg.profile(&plan.profile)?.clone();
     let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
-    // The plan's own CUDA floor, else the profile's (a plan made before plans stored one).
-    let min_cuda = store
-        .plan_min_cuda(plan_id)?
-        .or_else(|| profile.effective_min_cuda());
+    // The plan's own pin or floor, else the profile's (a plan made before plans stored one).
+    // A pin and a floor are never both sent. A stored pin wins if both were written.
+    let planned_pin = store.plan_cuda_versions(plan_id)?;
+    let planned_floor = store.plan_min_cuda(plan_id)?;
+    let (min_cuda, pinned) = match (planned_pin, planned_floor) {
+        (Some(pin), _) => (None, Some(pin)),
+        (None, Some(floor)) => (Some(floor), None),
+        (None, None) => match profile.cuda_versions.clone() {
+            Some(pin) => (None, Some(pin)),
+            None => (profile.effective_min_cuda(), None),
+        },
+    };
     let mut progress = Progress {
         store,
         job: job_id,
@@ -412,6 +442,7 @@ fn launch(
         &plan.gpu_types,
         min_cuda.as_deref(),
         store.plan_container_disk_gb(plan_id)?,
+        pinned.as_deref(),
     );
     spec::mark_plan(&mut body, &plan);
     let now = now_unix();
@@ -478,6 +509,8 @@ fn launch(
 
     // From here the pod bills. If getting it ready fails, terminate it rather than
     // leave it running unused until the deadline (the launch's compensator).
+    // A hung engine is the exception, like a CUDA or GPU-count mismatch: it is
+    // reported and left running. Shutting it down stays with the person.
     let ready = (|| -> Result<Value> {
         let up = session.wait_ready(&pod.id, &mut |e| progress.event(e))?;
         progress.v["phase"] = json!("after_ssh");
@@ -519,16 +552,37 @@ fn launch(
         }
         let tunnel = session.open_tunnel(&profile, &mut |e| progress.event(e))?;
         *lock(&shared.tunnel) = Some(tunnel);
-        session.ensure_models(&profile, &mut |e| progress.event(e))?;
-        Ok(json!({
-            "step": "ready",
-            "pod_id": pod.id,
-            "cost_per_hr": pod.cost_per_hr,
-            "rented": rented,
-            "tunnel": cfg.tunnel_base_url(),
-            "lane": cfg.lane_tag,
-            "models": profile.models.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
-        }))
+        let models: Vec<String> = profile.models.iter().map(|m| m.name.clone()).collect();
+        match session.ensure_models(&profile, &mut |e| progress.event(e)) {
+            Ok(()) => Ok(json!({
+                "step": "ready",
+                "pod_id": pod.id,
+                "cost_per_hr": pod.cost_per_hr,
+                "rented": rented,
+                "tunnel": cfg.tunnel_base_url(),
+                "lane": cfg.lane_tag,
+                "models": models,
+            })),
+            // Report only. Returning this as Ok skips the compensator below, so
+            // nothing calls delete_pod. The plan's own deadline still applies.
+            Err(Error::EngineHung {
+                log_lines,
+                secs_since_startup,
+                next_action,
+            }) => Ok(json!({
+                "step": "engine_hung",
+                "pod_id": pod.id,
+                "cost_per_hr": pod.cost_per_hr,
+                "rented": rented,
+                "tunnel": cfg.tunnel_base_url(),
+                "lane": cfg.lane_tag,
+                "models": models,
+                "log_tail": log_lines,
+                "since_startup_secs": secs_since_startup,
+                "next_action": next_action,
+            })),
+            Err(e) => Err(e),
+        }
     })();
     match ready {
         Ok(v) => Ok(v),
@@ -1101,6 +1155,30 @@ mod tests {
             (c["code"].as_str(), c["retryable"].as_bool()),
             (Some("cancelled"), Some(false))
         );
+    }
+
+    #[test]
+    fn a_second_smoke_failure_keeps_the_engine_unresponsive_step() {
+        let mut progress = json!({"pod_id": "p1", "cost_per_hr": 1.7, "step": "starting"});
+        let e = Error::EngineUnresponsive {
+            message: "ollama: completion smoke: http 500: down".into(),
+            log_tail: "Application startup complete\nno scheduler".into(),
+        };
+        record_launch_stop(&mut progress, &e);
+        assert_eq!(progress["step"], "engine_unresponsive");
+        assert_eq!(
+            progress["error"],
+            "ollama: completion smoke: http 500: down"
+        );
+        assert_eq!(
+            progress["engine_log_tail"],
+            "Application startup complete\nno scheduler"
+        );
+        assert_eq!(progress["failure"]["code"], "engine_unresponsive");
+        assert_eq!(progress["failure"]["retryable"], true);
+        let mut other = json!({});
+        record_launch_stop(&mut other, &Error::Timeout("ssh".into()));
+        assert_eq!(other["step"], "stopped");
     }
 
     #[test]
