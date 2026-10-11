@@ -283,13 +283,17 @@ log) if the engine exits. It does not call the engine ready when `/health` answe
 sends one chat completion (`max_tokens` 1, `temperature` 0) and waits up to 30 seconds.
 The step is `ready` only when that reply has a choice. If the completion fails or times
 out, offrig tries once more after 15 seconds. A second failure is the step
-`engine_unresponsive`, with the error and the engine log. The side-car shuts that pod
-down. The CLI and the app stop with the error and leave the pod up. If
-the log contains `Application startup complete` and `/health` then stays down for 3
-minutes, the step is `engine_hung`: the last 40 log lines, the seconds since that line
-was seen, and the next action `shut the pod down: the engine finished startup but never
-became healthy`. offrig reports that hang and leaves the pod up. Shutting it down stays
-with you, the same as a GPU-count mismatch.
+`engine_unresponsive`: the job stays running, and the error and the engine log are on
+the job. The next action is `the engine is not answering completions: shut the pod down,
+or wait if it is still warming up`. offrig does not shut the pod down for this, on the
+side-car, the CLI, or the app. A slow first request (graph capture, JIT) is not a reason
+to throw away the download and the load; the plan's deadline still bounds the cost.
+The hang clock starts from a count of `Application startup complete` over the whole
+engine log, not only the last 40 lines. If that count is at least one and `/health`
+then stays down for 3 minutes, the step is `engine_hung`: those last 40 lines, the
+seconds since the count was first seen, and the next action `shut the pod down: the
+engine finished startup but never became healthy`. offrig reports that hang and leaves
+the pod up. Shutting it down stays with you, the same as a GPU-count mismatch.
 
 Each profile lists GPU types in priority order. v2 places one type and does not fall back,
 so offrig tries that list itself, in order, and never past the plan's price. When none is

@@ -85,8 +85,14 @@ pub enum Error {
     },
 
     /// `/health` answered, and a one-token completion still failed after one retry.
-    #[error("{message}")]
-    EngineUnresponsive { message: String, log_tail: String },
+    /// Reported only: the pod is left running. A slow first request on a large engine
+    /// is not a reason to throw away the download and the load.
+    #[error("{message}. {next_action}")]
+    EngineUnresponsive {
+        message: String,
+        log_tail: String,
+        next_action: &'static str,
+    },
 
     /// The model stopped at its token limit before it finished (`done_reason: length`).
     /// What it wrote is not an answer. `thinking` keeps what a thinking model had reasoned
@@ -378,6 +384,7 @@ mod tests {
                 Error::EngineUnresponsive {
                     message: "completion smoke failed".into(),
                     log_tail: "tail".into(),
+                    next_action: crate::session::ENGINE_UNRESPONSIVE_NEXT,
                 },
                 "engine_unresponsive",
                 true,
@@ -395,6 +402,7 @@ mod tests {
                 Error::EngineUnresponsive {
                     message: "completion smoke failed".into(),
                     log_tail: "Application startup complete".into(),
+                    next_action: crate::session::ENGINE_UNRESPONSIVE_NEXT,
                 },
                 "engine_unresponsive",
                 true,

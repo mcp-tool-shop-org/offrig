@@ -1768,7 +1768,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up, 0 when that reading lists no cards; gpu_mismatch is true when the record or the measurement differs from the plan, and gpu_mismatch_source is record, measured or both; a loud warning names that source and nothing is shut down) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. For a recipe engine, ready means one chat completion returned a choice after /health was up. engine_hung means the engine logged that startup finished and /health then stayed down for 3 minutes: the pod is left up, and next_action says to shut it down. engine_unresponsive means that completion failed twice: the error and the engine log are on the job, and the pod was shut down. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up, 0 when that reading lists no cards; gpu_mismatch is true when the record or the measurement differs from the plan, and gpu_mismatch_source is record, measured or both; a loud warning names that source and nothing is shut down) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. For a recipe engine, ready means one chat completion returned a choice after /health was up. engine_hung means the engine logged that startup finished and /health then stayed down for 3 minutes: the pod is left up, and next_action says to shut it down. engine_unresponsive means that completion failed twice: the error and the engine log are on the job, the pod is left up, and next_action says to shut it down or wait if it is still warming up. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1843,21 +1843,28 @@ impl Sidecar {
             }
             _ => "read the error; a pod rented by this launch was terminated; plan again",
         };
-        // A hung engine names its own next step, and that sentence is the whole
-        // next_action. A rental warning stays in `warnings` so it cannot replace it.
-        let next = if job.progress["step"] == "engine_hung" {
+        // A hung or unresponsive engine names its own next step, and that
+        // sentence is the whole next_action. A rental warning stays in
+        // `warnings` so it cannot replace it.
+        let report_only =
+            job.progress["step"] == "engine_hung" || job.progress["step"] == "engine_unresponsive";
+        let next = if report_only {
+            let fallback = if job.progress["step"] == "engine_hung" {
+                offrig_core::session::ENGINE_HUNG_NEXT
+            } else {
+                offrig_core::session::ENGINE_UNRESPONSIVE_NEXT
+            };
             job.progress["next_action"]
                 .as_str()
-                .unwrap_or(offrig_core::session::ENGINE_HUNG_NEXT)
+                .unwrap_or(fallback)
                 .to_string()
-        } else if job.progress["step"] == "engine_unresponsive" {
-            "the engine answered /health but a one-token completion failed twice; the pod was shut down. Read progress.error and progress.engine_log_tail, then plan again".to_string()
         } else {
             next.to_string()
         };
         // What was rented, set against the plan. A mismatch (an old host driver, a GPU
         // the plan did not list, a price above the plan's) is repeated at the top level
-        // and in next_action so it cannot be missed; the pod is never terminated for it.
+        // and, except on a hung or unresponsive report, in next_action so it cannot be
+        // missed. Those two reports keep their own sentence. Nothing is terminated for it.
         let warnings: Vec<String> = job.progress["rented"]["warnings"]
             .as_array()
             .map(|w| {
@@ -1866,7 +1873,7 @@ impl Sidecar {
                     .collect()
             })
             .unwrap_or_default();
-        let next = if job.progress["step"] == "engine_hung" || warnings.is_empty() {
+        let next = if report_only || warnings.is_empty() {
             next
         } else {
             format!(

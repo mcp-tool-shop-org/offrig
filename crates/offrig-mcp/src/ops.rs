@@ -175,9 +175,9 @@ pub fn run_launch(
     let result = launch(&ctx, &db, &store, &shared, plan_id, job_id, &cancel);
     match result {
         Ok(v) => {
-            // A hung engine is reported and left running. `done` would tell
-            // offrig_job and offrig_run that the pod is ready to take work.
-            let state = if v["step"] == "engine_hung" {
+            // A hung or unresponsive engine is reported and left running.
+            // `done` would tell offrig_job and offrig_run that the pod is ready.
+            let state = if v["step"] == "engine_hung" || v["step"] == "engine_unresponsive" {
                 "running"
             } else {
                 "done"
@@ -227,16 +227,22 @@ pub fn failure_json(e: &Error, progress: &Value) -> Value {
 }
 
 /// The step a stopped launch keeps. A completion that never returned a choice stays
-/// `engine_unresponsive`, with the error and the engine log beside it. Every other
-/// stop is `stopped`. A hang is not a stop: the launch returns it as its result and
-/// the pod stays up.
+/// `engine_unresponsive`, with the error, the engine log, and the next action beside
+/// it. Every other stop is `stopped`. A hang and a second smoke failure are not
+/// stops: the launch returns them as its result and the pod stays up. This recorder
+/// is what a leftover error still writes.
 fn record_launch_stop(progress: &mut Value, e: &Error) {
     progress["failure"] = failure_json(e, progress);
     match e {
-        Error::EngineUnresponsive { message, log_tail } => {
+        Error::EngineUnresponsive {
+            message,
+            log_tail,
+            next_action,
+        } => {
             progress["step"] = json!("engine_unresponsive");
             progress["error"] = json!(message);
             progress["engine_log_tail"] = json!(log_tail);
+            progress["next_action"] = json!(next_action);
         }
         _ => progress["step"] = json!("stopped"),
     }
@@ -579,6 +585,26 @@ fn launch(
                 "models": models,
                 "log_tail": log_lines,
                 "since_startup_secs": secs_since_startup,
+                "next_action": next_action,
+            })),
+            // Report only, same as a hang. A slow first completion (graph capture,
+            // JIT) must not throw away the download and the load. Returning Ok
+            // skips the compensator, so nothing calls delete_pod. The plan's
+            // deadline still bounds the cost.
+            Err(Error::EngineUnresponsive {
+                message,
+                log_tail,
+                next_action,
+            }) => Ok(json!({
+                "step": "engine_unresponsive",
+                "pod_id": pod.id,
+                "cost_per_hr": pod.cost_per_hr,
+                "rented": rented,
+                "tunnel": cfg.tunnel_base_url(),
+                "lane": cfg.lane_tag,
+                "models": models,
+                "error": message,
+                "engine_log_tail": log_tail,
                 "next_action": next_action,
             })),
             Err(e) => Err(e),
@@ -1163,6 +1189,7 @@ mod tests {
         let e = Error::EngineUnresponsive {
             message: "ollama: completion smoke: http 500: down".into(),
             log_tail: "Application startup complete\nno scheduler".into(),
+            next_action: offrig_core::session::ENGINE_UNRESPONSIVE_NEXT,
         };
         record_launch_stop(&mut progress, &e);
         assert_eq!(progress["step"], "engine_unresponsive");
@@ -1173,6 +1200,10 @@ mod tests {
         assert_eq!(
             progress["engine_log_tail"],
             "Application startup complete\nno scheduler"
+        );
+        assert_eq!(
+            progress["next_action"],
+            offrig_core::session::ENGINE_UNRESPONSIVE_NEXT
         );
         assert_eq!(progress["failure"]["code"], "engine_unresponsive");
         assert_eq!(progress["failure"]["retryable"], true);

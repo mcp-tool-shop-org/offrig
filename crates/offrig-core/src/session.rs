@@ -69,7 +69,9 @@ pub const ENGINE_READY_TIMEOUT: Duration = Duration::from_secs(75 * 60);
 /// stay down afterwards: that is the hang.
 pub const STARTUP_COMPLETE: &str = "Application startup complete";
 /// How long `/health` may stay down after [`STARTUP_COMPLETE`] before the engine
-/// is reported hung. The clock starts when a poll first sees the line.
+/// is reported hung. The clock starts when a poll's `grep -c` of that line, over
+/// the whole log, is at least one. The 40-line tail is the report, not the clock:
+/// a chatty engine can push the line out of the tail.
 pub const ENGINE_HANG_AFTER: Duration = Duration::from_secs(3 * 60);
 /// The completion that proves the engine can answer, after `/health` is 200.
 pub const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -80,6 +82,10 @@ pub const ENGINE_LOG_LINES: usize = 40;
 /// What `offrig_job` says for [`Error::EngineHung`]. The pod is not shut down.
 pub const ENGINE_HUNG_NEXT: &str =
     "shut the pod down: the engine finished startup but never became healthy";
+/// What `offrig_job` says for [`Error::EngineUnresponsive`]. The pod is not shut down.
+/// A slow first completion on a large engine is not a reason to throw the download away.
+pub const ENGINE_UNRESPONSIVE_NEXT: &str =
+    "the engine is not answering completions: shut the pod down, or wait if it is still warming up";
 
 /// How the engine wait paces itself. Production uses the constants above. A debug
 /// build may shorten each one with an `OFFRIG_TEST_*_MS` variable, so a test does
@@ -184,8 +190,8 @@ impl EngineView for LiveView<'_> {
 }
 
 /// Wait until `want` can answer one completion. `shutdown` is the pod terminator
-/// a launch would otherwise call. This wait never calls it: a hung engine is
-/// reported and left running, and a completion that fails is the launch's to end.
+/// a launch would otherwise call. This wait never calls it. A hung engine and a
+/// completion that fails twice are both reported and left running.
 fn drive_engine(
     view: &mut dyn EngineView,
     clock: &dyn WaitClock,
@@ -197,8 +203,9 @@ fn drive_engine(
 ) -> Result<()> {
     let started = clock.now();
     let mut next_look = started;
-    // When a poll first saw the startup line during a stretch of `/health` not
-    // answering. Cleared when `/health` answers, so the three minutes are one stretch.
+    // When a poll first counted the startup line, over the whole log, during a
+    // stretch of `/health` not answering. Cleared when `/health` answers, so the
+    // three minutes are one stretch. The 40-line tail can drop the line.
     let mut startup_at: Option<Instant> = None;
     let mut smoke_failures: u32 = 0;
     let mut retry_at: Option<Instant> = None;
@@ -232,6 +239,7 @@ fn drive_engine(
                         return Err(Error::EngineUnresponsive {
                             message: err,
                             log_tail: tail,
+                            next_action: ENGINE_UNRESPONSIVE_NEXT,
                         });
                     }
                     on(Event::Step(format!(
@@ -255,7 +263,7 @@ fn drive_engine(
                         st.log_tail.trim()
                     )));
                 }
-                if st.log_tail.contains(STARTUP_COMPLETE) && startup_at.is_none() && !healthy {
+                if st.startup_complete > 0 && startup_at.is_none() && !healthy {
                     startup_at = Some(clock.now());
                 }
                 let last = st.log_tail.lines().last().unwrap_or("").trim().to_string();
@@ -767,9 +775,11 @@ impl Session {
 
     /// Wait until the recipe engine can answer one completion. `/health` and the
     /// model list are not enough: one completion has to return a choice. A failure
-    /// is tried once more. If the log says startup finished and `/health` stays
-    /// down, this reports [`Error::EngineHung`] and does not shut the pod down.
-    /// Fail at once if the engine exits.
+    /// is tried once more. A second failure is [`Error::EngineUnresponsive`] and
+    /// does not shut the pod down. If a count of `Application startup complete`
+    /// over the whole log is at least one, and `/health` then stays down, this
+    /// reports [`Error::EngineHung`] and does not shut the pod down. The 40-line
+    /// tail is what the report shows. Fail at once if the engine exits.
     pub fn wait_engine(
         &self,
         profile: &Profile,
@@ -1602,6 +1612,10 @@ mod tests {
             "shut the pod down: the engine finished startup but never became healthy"
         );
         assert_eq!(
+            ENGINE_UNRESPONSIVE_NEXT,
+            "the engine is not answering completions: shut the pod down, or wait if it is still warming up"
+        );
+        assert_eq!(
             engine_hang(Some(Duration::from_secs(179)), ENGINE_HANG_AFTER),
             None
         );
@@ -1651,6 +1665,9 @@ mod tests {
         health: bool,
         running: bool,
         log: String,
+        /// `grep -c` of the startup line over the whole log. Independent of `log`,
+        /// which is only the tail the report shows.
+        startup_complete: u64,
         smokes: Vec<std::result::Result<(), String>>,
         smoke_at: usize,
     }
@@ -1661,6 +1678,7 @@ mod tests {
                 health: true,
                 running: true,
                 log: log.into(),
+                startup_complete: u64::from(log.contains(STARTUP_COMPLETE)),
                 smokes: vec![Ok(())],
                 smoke_at: 0,
             }
@@ -1676,6 +1694,7 @@ mod tests {
             Ok(remote::EngineState {
                 hf_bytes: 0,
                 running: self.running,
+                startup_complete: self.startup_complete,
                 log_tail: self.log.clone(),
             })
         }
@@ -1762,9 +1781,14 @@ mod tests {
         let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(600), &fast_pace());
         let err = result.expect_err("two failures");
         match err {
-            Error::EngineUnresponsive { message, log_tail } => {
+            Error::EngineUnresponsive {
+                message,
+                log_tail,
+                next_action,
+            } => {
                 assert!(message.contains("http 500: down"), "{message}");
                 assert_eq!(log_tail, "boom line");
+                assert_eq!(next_action, ENGINE_UNRESPONSIVE_NEXT);
             }
             other => panic!("expected engine_unresponsive, got {other}"),
         }
@@ -1783,6 +1807,7 @@ mod tests {
             health: false,
             running: true,
             log: lines.join("\n"),
+            startup_complete: 1,
             smokes: vec![],
             smoke_at: 0,
         };
@@ -1811,6 +1836,53 @@ mod tests {
         }
         assert!(steps.iter().any(|s| s == "engine_hung"), "{steps:?}");
         assert_eq!(script.smoke_at, 0, "a 503 never gets a completion");
+        assert_eq!(shutdowns, 0, "the hang is reported and the pod stays up");
+    }
+
+    #[test]
+    fn a_startup_line_outside_the_tail_still_starts_the_hang_clock() {
+        // The tail the report shows never contains the startup sentence. The
+        // count, from `grep -c` over the whole log, is what starts the clock.
+        let chatter: Vec<String> = (1..=40).map(|n| format!("chatter {n}")).collect();
+        let log = chatter.join("\n");
+        assert!(
+            !log.contains(STARTUP_COMPLETE),
+            "the tail itself must not contain the startup line"
+        );
+        let mut script = Script {
+            health: false,
+            running: true,
+            log,
+            startup_complete: 1,
+            smokes: vec![],
+            smoke_at: 0,
+        };
+        let pace = EnginePace {
+            poll: Duration::from_secs(60),
+            look_every: Duration::from_secs(20),
+            hang_after: ENGINE_HANG_AFTER,
+            smoke_timeout: SMOKE_TIMEOUT,
+            smoke_retry: SMOKE_RETRY_AFTER,
+        };
+        let (result, steps, shutdowns) = drive(&mut script, Duration::from_secs(600), &pace);
+        let err = result.expect_err("hung from the count, not the tail");
+        match err {
+            Error::EngineHung {
+                log_lines,
+                secs_since_startup,
+                next_action,
+            } => {
+                assert_eq!(secs_since_startup, ENGINE_HANG_AFTER.as_secs());
+                assert!(
+                    log_lines.iter().all(|l| !l.contains(STARTUP_COMPLETE)),
+                    "{log_lines:?}"
+                );
+                assert_eq!(log_lines.first().map(String::as_str), Some("chatter 1"));
+                assert_eq!(next_action, ENGINE_HUNG_NEXT);
+            }
+            other => panic!("expected engine_hung, got {other}"),
+        }
+        assert!(steps.iter().any(|s| s == "engine_hung"), "{steps:?}");
         assert_eq!(shutdowns, 0, "the hang is reported and the pod stays up");
     }
 

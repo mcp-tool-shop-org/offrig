@@ -342,17 +342,25 @@ pub fn pod_models_json(alias: &str) -> Result<String> {
     )
 }
 
-/// A recipe engine while it starts: bytes downloaded, whether it still runs, and the
-/// last lines of its log.
+/// A recipe engine while it starts: bytes downloaded, whether it still runs, how many
+/// times the whole log contains the startup line, and the last lines of that log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineState {
     pub hf_bytes: u64,
     pub running: bool,
+    /// `grep -c` of `Application startup complete` over the whole engine log.
+    /// The 40-line tail can drop that line once the engine keeps writing.
+    pub startup_complete: u64,
     pub log_tail: String,
 }
 
-pub const ENGINE_STATE_SCRIPT: &str = "du -sb /workspace/hf 2>/dev/null | cut -f1; \
+/// One ssh read. The count is its own line, ahead of the tail, so a chatty log cannot
+/// hide the startup line from the hang clock.
+pub const ENGINE_STATE_SCRIPT: &str = "\
+du -sb /workspace/hf 2>/dev/null | cut -f1; \
 if pgrep -f sglang.launch_server >/dev/null; then echo running; else echo stopped; fi; \
+c=$(grep -c \"Application startup complete\" /workspace/offrig/engine.log 2>/dev/null || true); \
+echo \"${c:-0}\"; \
 tail -n 40 /workspace/offrig/engine.log 2>/dev/null";
 
 pub fn parse_engine_state(out: &str) -> EngineState {
@@ -362,9 +370,14 @@ pub fn parse_engine_state(out: &str) -> EngineState {
         .and_then(|l| l.trim().parse().ok())
         .unwrap_or(0);
     let running = lines.next().is_some_and(|l| l.trim() == "running");
+    let startup_complete = lines
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+        .unwrap_or(0);
     EngineState {
         hf_bytes,
         running,
+        startup_complete,
         log_tail: lines.collect::<Vec<_>>().join("\n"),
     }
 }
@@ -383,19 +396,29 @@ mod tests {
 
     #[test]
     fn engine_state_reads_bytes_liveness_and_log() {
-        let s = parse_engine_state("31457280000\nrunning\nLoading safetensors 40%\nstill loading");
+        let s =
+            parse_engine_state("31457280000\nrunning\n0\nLoading safetensors 40%\nstill loading");
         assert_eq!(s.hf_bytes, 31_457_280_000);
         assert!(s.running);
+        assert_eq!(s.startup_complete, 0);
         assert_eq!(s.log_tail, "Loading safetensors 40%\nstill loading");
-        let dead = parse_engine_state("\nstopped\n[offrig] engine exited with status 1");
+        let dead = parse_engine_state("\nstopped\n0\n[offrig] engine exited with status 1");
         assert_eq!(dead.hf_bytes, 0);
         assert!(!dead.running && dead.log_tail.contains("status 1"));
+        // The startup line has scrolled out of the tail. The count still says it happened.
+        let scrolled = parse_engine_state("100\nrunning\n1\nchatter\nmore chatter");
+        assert_eq!(scrolled.startup_complete, 1);
+        assert!(!scrolled.log_tail.contains("Application startup complete"));
     }
 
     #[test]
     fn the_engine_log_tail_is_forty_lines() {
         assert!(
             ENGINE_STATE_SCRIPT.contains("tail -n 40 /workspace/offrig/engine.log"),
+            "{ENGINE_STATE_SCRIPT}"
+        );
+        assert!(
+            ENGINE_STATE_SCRIPT.contains("grep -c \"Application startup complete\""),
             "{ENGINE_STATE_SCRIPT}"
         );
     }

@@ -13,7 +13,9 @@ use offrig_core::error::Error;
 use offrig_core::ollama::Ollama;
 use offrig_core::remote::EngineState;
 use offrig_core::runpod::RunPod;
-use offrig_core::session::{ENGINE_HUNG_NEXT, EnginePace, Event, STARTUP_COMPLETE, Session};
+use offrig_core::session::{
+    ENGINE_HUNG_NEXT, ENGINE_UNRESPONSIVE_NEXT, EnginePace, Event, STARTUP_COMPLETE, Session,
+};
 use serde_json::Value;
 use serde_json::json;
 use support::serve;
@@ -64,6 +66,7 @@ fn running(log: &str) -> EngineState {
     EngineState {
         hf_bytes: 1_000,
         running: true,
+        startup_complete: u64::from(log.contains(STARTUP_COMPLETE)),
         log_tail: log.to_string(),
     }
 }
@@ -178,9 +181,14 @@ fn smoke_fails_twice_and_the_step_is_engine_unresponsive() {
         Some("engine_unresponsive")
     );
     match err {
-        Error::EngineUnresponsive { message, log_tail } => {
+        Error::EngineUnresponsive {
+            message,
+            log_tail,
+            next_action,
+        } => {
             assert!(message.contains("http 500"), "{message}");
             assert!(log_tail.contains(STARTUP_COMPLETE), "{log_tail}");
+            assert_eq!(next_action, ENGINE_UNRESPONSIVE_NEXT);
         }
         other => panic!("expected engine_unresponsive, got {other}"),
     }

@@ -1,5 +1,5 @@
-//! A recipe launch against fakes: one completion is ready, a second failure shuts
-//! the pod down, and a hung engine is reported with no delete.
+//! A recipe launch against fakes: one completion is ready, a second failure is
+//! reported and the pod stays up, and a hung engine is reported with no delete.
 //! RunPod, ssh and the engine are mocks. Nothing is rented and nothing is loaded.
 
 mod common;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::{Hits, count, install_fake_tools, mock, path_with, temp};
 use offrig_core::config::Config;
-use offrig_core::session::ENGINE_HUNG_NEXT;
+use offrig_core::session::{ENGINE_HUNG_NEXT, ENGINE_UNRESPONSIVE_NEXT};
 use offrig_core::store::Store;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -28,6 +28,7 @@ const CARD: &str = "\
 const ENGINE_OUT: &str = "\
 5000000000
 running
+1
 Application startup complete
 no scheduler line
 weights resident
@@ -134,7 +135,8 @@ impl Session {
     }
 
     /// Poll until `settled` is true, or the job leaves `running` (ready, failed,
-    /// cancelled). A hung engine stays `running`, so that case passes its own check.
+    /// cancelled). A hung engine and a second smoke failure stay `running`, so
+    /// those cases pass their own check.
     async fn wait(&self, job_id: i64, settled: impl Fn(&Value) -> bool) -> Value {
         let started = Instant::now();
         loop {
@@ -257,7 +259,9 @@ impl Rig {
             .await;
         let mut job = self
             .session
-            .wait(launch["job_id"].as_i64().expect("job"), |_| false)
+            .wait(launch["job_id"].as_i64().expect("job"), |j| {
+                j["progress"]["step"] == "engine_unresponsive"
+            })
             .await;
         job["_plan"] = plan;
         job
@@ -354,10 +358,10 @@ async fn a_completion_choice_is_ready_and_the_create_sends_the_cuda_pin() {
 }
 
 #[tokio::test]
-async fn a_second_smoke_failure_shuts_the_pod_down_and_keeps_the_step() {
+async fn a_second_smoke_failure_is_reported_and_does_not_shut_the_pod_down() {
     let rig = Rig::start("engine-unresponsive", "unresponsive", false, 11544).await;
     let job = rig.launch().await;
-    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(job["state"], "running", "{job}");
     assert_eq!(job["progress"]["step"], "engine_unresponsive", "{job}");
     assert!(
         job["progress"]["error"]
@@ -371,14 +375,16 @@ async fn a_second_smoke_failure_shuts_the_pod_down_and_keeps_the_step() {
             .is_some_and(|t| t.contains("Application startup complete")),
         "{job}"
     );
-    assert_eq!(job["code"], "engine_unresponsive", "{job}");
-    assert_eq!(job["failure"]["retryable"], true, "{job}");
-    assert_eq!(job["plan_state"], "closed", "{job}");
-    assert_eq!(count(&rig.runpod_hits, "DELETE /pods/pod1"), 1);
-    let next = job["next_action"].as_str().expect("next");
-    assert!(
-        next.contains("one-token completion failed twice") && next.contains("shut down"),
-        "{next}"
+    assert_eq!(job["plan_state"], "committed", "the plan stays open: {job}");
+    assert_eq!(
+        count(&rig.runpod_hits, "DELETE /pods/pod1"),
+        0,
+        "a second smoke failure is reported, never shut down"
     );
+    assert_eq!(
+        job["progress"]["next_action"], ENGINE_UNRESPONSIVE_NEXT,
+        "{job}"
+    );
+    assert_eq!(job["next_action"], ENGINE_UNRESPONSIVE_NEXT, "{job}");
     rig.finish().await;
 }

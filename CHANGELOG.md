@@ -11,14 +11,19 @@ All notable changes to offrig are documented here. The format is based on
   30 seconds. The step is `ready` only when that reply has a choice. `/v1/models`
   answering is not readiness. If the completion fails or times out, offrig tries once
   more after 15 seconds. A second failure is the step `engine_unresponsive`, with the
-  error and the engine log. The side-car shuts that pod down. The CLI and the app stop
-  with the error and leave the pod up.
-- **A hung engine is reported and left running.** If the engine log contains
-  `Application startup complete` and `/health` then stays down for 3 minutes, the step
-  is `engine_hung`. The job includes the last 40 log lines, the seconds since that line
-  was seen, and the next action `shut the pod down: the engine finished startup but never
-  became healthy`. offrig does not shut the pod down for this. That stays with the
-  person, as with a GPU-count mismatch. The plan's own deadline still applies.
+  error and the engine log on the job. The job stays running. The next action is
+  `the engine is not answering completions: shut the pod down, or wait if it is still warming up`.
+  offrig does not shut the pod down for this, on the side-car, the CLI, or the app.
+  A slow first request on a large engine (graph capture, JIT) is not a reason to throw
+  away the download and the load. The plan's own deadline still bounds the cost.
+- **A hung engine is reported and left running.** The hang clock starts when a poll
+  counts `Application startup complete` in the whole engine log (`grep -c` on the same
+  ssh read as the tail). A chatty engine can push that line out of the last 40 lines;
+  the count still starts the clock. If `/health` then stays down for 3 minutes, the
+  step is `engine_hung`. The job includes those last 40 log lines, the seconds since
+  the count was first seen, and the next action `shut the pod down: the engine finished
+  startup but never became healthy`. offrig does not shut the pod down for this. That
+  stays with the person, as with a GPU-count mismatch. The plan's own deadline still applies.
 - **A profile can pin exact host CUDA versions.** `cuda_versions`, for example
   `["13.0"]`, is sent as `gpu.allowedCudaVersions` and not together with a floor.
   Setting it with `min_cuda`, including a job image's own floor, is refused: the two
