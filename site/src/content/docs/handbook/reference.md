@@ -106,6 +106,9 @@ and `retryable` existed keep working.
 
 ```text
 offrig verify calibrate gold/grounded.jsonl gold/reasoning.jsonl --model gemma4:31b --think on --split tune
+offrig verify calibrate gold/reasoning.jsonl --model gemma4:31b --think-policy grounded=off,reasoning=escalate:off>on
+offrig verify calibrate --report-only .offrig/out/calibrate-gemma4-31b-<time>
+offrig verify calibrate gold/grounded.jsonl --model gemma4:31b --keep-thinking
 ```
 
 Runs each gold claim through offrig's verifier prompt on a local Ollama (loopback only;
@@ -117,6 +120,24 @@ the run reports `incomplete` and `--resume <dir>` retries those claims with the 
 settings. A reply the model itself breaks counts against it. `--report-only <dir>` rescores
 a run. `--swap-evidence` reverses the
 evidence order to check for position bias; `--gpu-cost-hr` sets the cost per claim.
+
+`--num-ctx` defaults to `auto`. The run measures the longest prompt, then picks one
+window for every call: that prompt, plus the reply budget, plus a margin, and never
+past the model's own maximum. A number, for example `--num-ctx 16384`, is sent as
+given. A resume reuses the window the run chose.
+
+`--think-policy` sets thinking per check type. One value applies to every type
+(`off`, `on`, `low`, `medium`, `high`, or `escalate:off>on`). A list such as
+`grounded=off,reasoning=escalate:off>on` sets them separately, and a type not listed
+uses `--think`. An escalating policy asks once at the first level. `unsupported`
+stands. Anything else is asked again at the second level, and that answer stands.
+If the second reply is cut off, broken, or (with `--loop-stop`) looping, the claim
+ends as `cannot_tell` with the reason `think_fallback:<why>`, never as the first
+call's `supported`. `--think-num-predict` is the second call's reply limit.
+
+`--keep-thinking` writes each reply's thinking text to `thinking.jsonl` in the run
+directory. It is not scored and not part of the resume identity. It can echo the
+evidence. Scan it before it goes anywhere public.
 
 ## Verify a build
 

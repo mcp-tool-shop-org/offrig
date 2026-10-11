@@ -60,11 +60,11 @@ export const config: SiteConfig = {
       features: [
         {
           title: 'Priced before it spends',
-          desc: 'A plan commits its worst case (live price × max hours) against the cap before anything is rented, and a launch takes only a plan id. Plans can pin the GPU family, a top hourly price and a host CUDA floor.',
+          desc: 'A plan commits its worst case (live price × max hours) against the cap before anything is rented, and a launch takes only a plan id. Plans can pin the GPU family, a top hourly price, a host CUDA floor, or an exact CUDA version list.',
         },
         {
           title: 'A watchdog on every pod',
-          desc: 'A separate process ends the pod at the plan\'s deadline even if the agent, the session and the side-car are gone. A failed setup terminates the pod instead of leaving it billing.',
+          desc: 'A separate process ends the pod at the plan\'s deadline even if the agent, the session and the side-car are gone. A setup that fails before the engine is serving terminates the pod. A recipe that hangs after startup, or that cannot answer one completion, is reported and left running until you shut it down or the deadline ends it.',
         },
         {
           title: 'Lanes keep projects apart',

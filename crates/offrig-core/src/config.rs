@@ -160,7 +160,7 @@ pub struct Job {
 ///   list and `gpu.minCudaVersion` together are a 400. The catalog
 ///   (`GET /v2/catalog/gpus`) is how Runpod says to discover live versions,
 ///   and that call needs an API key, so it was not used for this list.
-/// - 13.2 and 13.1 are ahead of that v1 enum. A writer pod on 2026-10-12 was
+/// - 13.2 and 13.1 are ahead of that v1 enum. A writer pod on 2026-10-11 was
 ///   placed on a CUDA 13.2 host (the two that served were on 13.0). They are
 ///   listed here so an exact pin can name them. 13.0 stays the oldest 13.x
 ///   entry: an open floor of that major still begins at 13.0.

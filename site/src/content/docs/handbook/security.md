@@ -33,7 +33,11 @@ sidebar:
   port is refused, never killed.
 - **Runaway spend.** A plan's worst case is committed against a human-set cap before
   anything is rented, a launch takes only a plan id, and a watchdog ends every side-car pod
-  at its deadline.
+  at its deadline. A recipe that hangs after startup, or that cannot answer one
+  completion, is reported and left running, so it keeps billing until you shut it down
+  or that deadline arrives. An engine process that has already exited is deleted by the
+  side-car. The CLI and the app do not delete the pod for any of those three; they stop
+  and show the error.
 - **Projects interfering with each other.** A side-car only touches pods named for its own
   lane.
 

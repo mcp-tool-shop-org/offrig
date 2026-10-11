@@ -6,16 +6,27 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-11
+
+Everything below shipped after 1.0.0. The bold items that had been listed under
+Unreleased are grouped here. Where an earlier note and a later one described the same
+create field, this section states the behavior this version actually has.
+
+### New
+
 - **A recipe engine is ready only when it can answer.** After `/health` returns 200,
   offrig sends one chat completion (`max_tokens` 1, `temperature` 0) and waits up to
   30 seconds. The step is `ready` only when that reply has a choice. `/v1/models`
   answering is not readiness. If the completion fails or times out, offrig tries once
   more after 15 seconds. A second failure is the step `engine_unresponsive`, with the
-  error and the engine log on the job. The job stays running. The next action is
-  `the engine is not answering completions: shut the pod down, or wait if it is still warming up`.
-  offrig does not shut the pod down for this, on the side-car, the CLI, or the app.
-  A slow first request on a large engine (graph capture, JIT) is not a reason to throw
-  away the download and the load. The plan's own deadline still bounds the cost.
+  error and the engine log on the job. The job stays `running` and the plan stays
+  committed. The next action is exactly `the engine is not answering completions: shut
+  the pod down, or wait if it is still warming up`. That report does not shut the pod
+  down, on the side-car, the CLI, or the app. A slow first request on a large engine
+  (graph capture, JIT) is not a reason to throw away the download and the load. The
+  plan's own deadline still bounds the cost. An engine process that has already exited
+  is not this report: on the side-car the launch fails and the compensator deletes the
+  pod.
 - **A hung engine is reported and left running.** The hang clock starts when a poll
   counts `Application startup complete` in the whole engine log (`grep -c` on the same
   ssh read as the tail). A chatty engine can push that line out of the last 40 lines;
@@ -23,13 +34,19 @@ All notable changes to offrig are documented here. The format is based on
   step is `engine_hung`. The job includes those last 40 log lines, the seconds since
   the count was first seen, and the next action `shut the pod down: the engine finished
   startup but never became healthy`. offrig does not shut the pod down for this. That
-  stays with the person, as with a GPU-count mismatch. The plan's own deadline still applies.
+  stays with the person, as with a GPU-count mismatch. The plan's own deadline still
+  applies. A GPU-count warning is not prefixed onto this next action, or onto
+  `engine_unresponsive`, so the sentence stays exact.
 - **A profile can pin exact host CUDA versions.** `cuda_versions`, for example
   `["13.0"]`, is sent as `gpu.allowedCudaVersions` and not together with a floor.
   Setting it with `min_cuda`, including a job image's own floor, is refused: the two
-  together are ambiguous. `offrig_plan` reports the list. The accepted versions now
-  include 13.2 and 13.1, newest first, ahead of RunPod's documented v1 enum (read
-  2026-10-11, which stops at 13.0). A floor still sends only `gpu.minCudaVersion`.
+  together are ambiguous. An empty list is refused. A version offrig does not know is
+  refused. `"13.1"` does not satisfy a pin of `["13.0"]`. `offrig_plan` reports the
+  list. The accepted versions, newest first, are 13.2, 13.1, 13.0, then 12.9 down to
+  11.8. 13.2 and 13.1 are ahead of RunPod's documented v1 enum (read 2026-10-11, which
+  stops at 13.0). They are listed because a writer pod on 2026-10-11 was placed on a
+  CUDA 13.2 host. A floor still sends only `gpu.minCudaVersion`. The built-in profiles
+  are not given a `cuda_versions` pin.
 - **A pod says how many GPUs it has.** `offrig_status` (each pod) and `offrig_job` report
   `gpu_count` and `gpus` (`2x <type>`) from the RunPod pod record, and the plan's
   `planned_gpu_count` beside them. `gpu_mismatch` is true when the record or the
@@ -39,229 +56,206 @@ All notable changes to offrig are documented here. The format is based on
   is measured, leaves `gpu_mismatch` null and warns that the count cannot be checked
   until `offrig_job` measures it. Once ssh is up, `offrig_job` adds `measured_gpu_count`
   from the `nvidia-smi` it already runs; a reading that lists no cards is `0`.
+- **`offrig_job` reports `progress.pod_status`.** While a pod boots, that field is the
+  raw v2 status (`PROVISIONING`, `STARTING`, `RUNNING`, and the rest).
 - **The verifier can think before it accepts.** `verify calibrate --think-policy` sets the
   thinking level per check type, and a type can escalate: `escalate:off>on` asks with
-  thinking off first.
-  - An `unsupported` answer stands after one call. A `supported`, a `cannot_tell` or a
-    first reply that was cut off or broke its schema is asked again with thinking on, and
-    that second answer stands.
-  - If the second call is cut off, breaks its schema or (with `--loop-stop`) loops, the
-    claim becomes a `cannot_tell` for a person with the reason `think_fallback:<why>`,
-    never the first call's `supported`. Server, network and `context_overflow` errors
-    from either call are passed on unchanged.
-  - `--think-policy grounded=off,reasoning=escalate:off>on` sets types separately; a type
-    not listed uses `--think`. `--think-num-predict` gives the second call its own reply
-    limit, and the run's window is sized for the larger one.
-  - Each escalated verdict pins the policy, carries an `escalation` record and sums both
-    calls' timing; the report adds the escalation rate and fallback count per type. A plain
-    `--think` run is unchanged, byte for byte, and a resume under another policy is refused.
-  - The calibration report only mentions `context_overflow` leaving a run incomplete when
-    the run had one.
+  thinking off first. An `unsupported` answer stands after one call. A `supported`, a
+  `cannot_tell`, or a first reply that was cut off or broke its schema is asked again
+  with thinking on, and that second answer stands. If the second call is cut off, breaks
+  its schema, or (with `--loop-stop`) loops, the claim becomes a `cannot_tell` for a
+  person with the reason `think_fallback:<why>`, never the first call's `supported`.
+  Server, network, and `context_overflow` errors from either call are passed on
+  unchanged. `--think-policy grounded=off,reasoning=escalate:off>on` sets types
+  separately; a type not listed uses `--think`. `--think-num-predict` gives the second
+  call its own reply limit, and the run's window is sized for the larger one. Each
+  escalated verdict pins the policy, carries an `escalation` record, and sums both
+  calls' timing. The report adds the escalation rate and fallback count per type. A
+  plain `--think` run is unchanged, byte for byte, and a resume under another policy is
+  refused.
 - **The verifier sizes its own context window, and never lets it overflow silently.**
-  `--num-ctx` now defaults to `auto`.
-  - `verify calibrate` measures the longest prompts in the claim set (a handful of one-token
-    calls), takes the larger of the measured and estimated length, and picks one window for
-    the whole run: the prompt plus the full reply budget (`num_predict`) plus a margin,
-    capped at the model's own maximum. If even that can't fit, it refuses before any
-    scored call, naming the claim.
-  - Every request tells Ollama never to shift or trim the context (`shift: false`,
-    `truncate: false`). A reply that would run past the window becomes a clean
-    `context_overflow`: it isn't charged to the model, and the run stays `incomplete`
-    with a hint to rerun with a larger window. A resume reuses the window the run chose.
-  - A model that doesn't fit fully on the GPU at that window is reported as offloaded.
-  - The chosen window, how it was chosen and the longest prompt are recorded in the run's
-    manifest. A fixed `--num-ctx <n>` still works as before.
+  `--num-ctx` now defaults to `auto`. `verify calibrate` measures the longest prompts in
+  the claim set (a handful of one-token calls), takes the larger of the measured and
+  estimated length, and picks one window for the whole run: the prompt plus the full
+  reply budget (`num_predict`) plus a margin, capped at the model's own maximum. If even
+  that cannot fit, it refuses before any scored call, naming the claim. Every request
+  tells Ollama never to shift or trim the context (`shift: false`, `truncate: false`).
+  A reply that would run past the window becomes a clean `context_overflow`: it is not
+  charged to the model, and the run stays `incomplete` with a hint to rerun with a
+  larger window. A resume reuses the window the run chose. A model that does not fit
+  fully on the GPU at that window is reported as offloaded. The chosen window, how it
+  was chosen, and the longest prompt are recorded in the run's manifest. A fixed
+  `--num-ctx <n>` still works as before.
+- **`offrig verify calibrate` measures a local model as a verifier** before it can become
+  the default. It runs gold claims (JSONL) through offrig's own verifier prompt, one
+  claim per call, with each claim's own evidence (oracle mode, so it measures the
+  verifier, not retrieval), and scores the result against the default rule per check
+  type: the upper bound of the false-accept rate under 10%, abstaining on at most 20%
+  of claims, balanced accuracy on decided claims of at least 0.80, and at least 100
+  false claims per type. Gold `cannot_tell` claims count as false accepts when a model
+  calls them supported. Every outcome goes to `verdicts.jsonl` and the store, marked
+  untrusted. A reply the model breaks (bad verdict, cut off, or timing out twice on the
+  same claim) is counted as unusable and counts against the model. A connection problem
+  or a single timeout is not recorded at all: `--resume` retries it, and until every
+  claim has an answer the result is `incomplete`, never a pass or fail. Runs resume
+  only with the same model, digest, settings, and gold files, and can be rescored from
+  their directory (`--report-only`). Local only: a loopback Ollama, and model names
+  containing "cloud" are refused. The report breaks results down by origin, by whether
+  the context's comments state the behaviour, and gives cost per claim (GPU dollars per
+  hour times wall time; boot and model download are not included).
+- **`verify calibrate --keep-thinking`** writes each claim's thinking text to
+  `thinking.jsonl` in the run directory, every reply included (a truncated one too). It
+  is a diagnosis aid: never scored, stored, or part of the resume identity. It is
+  untrusted model output that can echo the evidence. It is only ever written to the run
+  directory, under its own name so a results copy can skip it, and it should be scanned
+  before it goes anywhere public.
+- **The verifier's verdict contract (schema v6).** The verifier sees the claim and the
+  evidence, never how the claim was made. It replies with its reasoning first, then
+  `supported`, `unsupported`, or `cannot_tell`, a quote, and the passage the quote came
+  from. A `supported` verdict stands only if its quote is at least 12 characters and
+  appears word for word in one evidence passage (whitespace and curly quotes are
+  normalised). Otherwise it becomes `cannot_tell` with the reason `quote_not_found`. An
+  `unsupported` verdict may give no quote, but a quote it gives must be found. A reply
+  that breaks the schema is retried once, then reported as a `bad_verdict` error, never
+  as a verdict. A reply cut off at the output limit is a `truncated` error. Every
+  verdict is stored in an append-only `verdicts` table, always marked untrusted, with
+  what produced it. Calibration metrics for choosing the default model use a Wilson 95%
+  interval on the false-accept rate, the abstain rate, and the balanced accuracy on
+  decided claims. Chat with Ollama uses its native `/api/chat`, which takes a
+  JSON-schema `format`, a `think` level, and pinned sampling settings. The v5 to v6
+  migration is forward-only, so an older offrig refuses a v6 database.
+- **A project index with hybrid search (schema v5).** `offrig index <paths...>` chunks
+  documents, code, and logs into the project database. `--status` and `--rebuild` report
+  and rebuild it. Memory records are indexed too. `offrig_memory_search` gains `mode`
+  (`keyword` or `hybrid`): hybrid fuses BM25 and cosine rankings by reciprocal rank
+  fusion and is the default once the project has an index. Handoff prompts use it as
+  well. Vectors are int8 BLOBs scanned in process; no SQLite extension. A superseded or
+  withdrawn record leaves the index. The v4 to v5 migration is forward-only and indexes
+  the active records. Embeddings come from a dedicated CPU-only Ollama (`embed_url`,
+  default `http://127.0.0.1:11490`, or `OFFRIG_EMBED_URL`), never the shared Ollama on
+  11434 and never a GPU. A port that collides with another offrig port is refused. A
+  missing model or server is an error with the command that fixes it, and a different
+  model or dimension needs `offrig index --rebuild`. nomic-embed-text gets the
+  `search_document: ` and `search_query: ` prefixes it was trained with.
 - **Caps add up across projects.** `offrig budget --show` prints an `account` line per
   provider: the caps across every known project, what they have committed and still
   unspent, beside the provider's balance, with a warning when the projects together
   promise more than the account holds. Before a pod or an OpenRouter completion is
   committed, offrig checks that it, plus everything already committed in this and every
-  other project, fits in the live balance, and refuses if not. If the balance can't be
-  read, the commit goes ahead under the project's caps with a note. A provider with no cap
-  shows `(not set)` instead of `(overall cap)`, `--provider` without a provider and an
-  amount says what it needs, and `offrig budget --show --json` prints the whole view as one
-  versioned object. Two projects committing at once are checked one after the other, and a
-  project whose records can't be read stops the check instead of being skipped. Pods
-  started by hand with `offrig up` or the app aren't counted against caps; `offrig budget`,
-  its JSON (`uncounted`) and `offrig up` itself say so. `offrig_status` now names the
-  project by its folder, and its notes use short codes instead of error text.
+  other project, fits in the live balance, and refuses if not. If the balance cannot be
+  read, the commit goes ahead under the project's caps with a note. A provider with no
+  cap shows `(not set)` instead of `(overall cap)`. `--provider` without a provider and
+  an amount says what it needs. `offrig budget --show --json` prints the whole view as
+  one versioned object. Two projects committing at once are checked one after the other,
+  and a project whose records cannot be read stops the check instead of being skipped.
+  Pods started by hand with `offrig up` or the app are not counted against caps;
+  `offrig budget`, its JSON (`uncounted`), and `offrig up` itself say so. `offrig_status`
+  now names the project by its folder, and its notes use short codes instead of error
+  text.
 - **A cap per provider.** RunPod and OpenRouter hold separate money, so each now has its
-  own cap: `offrig budget --provider runpod <usd>` and `--provider openrouter <usd>`. A pod
-  is checked against the RunPod cap, an OpenRouter completion against the OpenRouter cap,
-  and both against the overall ceiling when one is set. `offrig budget --show` and
-  `offrig_status` print each cap with its committed, spent and remaining, beside the
-  balance the provider itself reports (RunPod's account balance, OpenRouter's credits),
-  and warn when a cap is above what the account holds. A project with one cap behaves as
-  before: that cap is the overall ceiling and each provider's starting cap.
-  `--clear-overall` drops the ceiling once both provider caps are set. Only a person sets
-  caps.
-- **`verify calibrate --keep-thinking`** writes each claim's thinking text to
-  `thinking.jsonl` in the run directory, every reply included (a truncated one too), to
-  show what a model was doing. It's a diagnosis aid: never scored, stored, or part of the
-  resume identity. It is untrusted model output that can echo the evidence: it is only
-  ever written to the run directory, under its own name so a results copy can skip it,
-  and it should be scanned before it goes anywhere public.
-- **Quote rule 2.** A verdict's quote now matches the evidence with each line's leading
-  diff and comment markers removed, as well as written. A model quoting the prose of a
-  `///` comment across its line wraps was being downgraded to `cannot_tell` for a quote
-  that is in the evidence. A quote under 12 characters counts when it is a whole evidence
-  line (`return v`), so short lines of code can be quoted. Paraphrase and elision still
-  don't match. Every verdict pins the rule it was judged by (`quote_rule`), calibration
-  settings record it, and a calibration run never resumes across rules.
-- **`offrig verify calibrate`** measures a local model as a verifier before it can become
-  the default. It runs gold claims (JSONL) through offrig's own verifier prompt, one claim
-  per call, with each claim's own evidence (oracle mode, so it measures the verifier, not
-  retrieval), and scores the result against the default rule per check type: the upper
-  bound of the false-accept rate under 10%, abstaining on at most 20% of claims, balanced
-  accuracy on decided claims of at least 0.80, and at least 100 false claims per type.
-  - Gold `cannot_tell` claims count as false accepts when a model calls them supported.
-  - Every outcome goes to `verdicts.jsonl` and the store, marked untrusted. A reply the
-    model breaks (bad verdict, cut off, or timing out twice on the same claim) is counted as
-    unusable and counts against the model. A connection problem or a single timeout is not
-    recorded at all: `--resume` retries it, and until every claim has an answer the result
-    is `incomplete`, never a pass or fail.
-  - A server error (HTTP 5xx) or dropped reply on the same claim twice is recorded as unusable
-    (`server_error`) and counts against the model, like a repeated timeout. Ollama can
-    cancel a reply mid-generation with a 500 on every try for one model and claim, which
-    used to leave the run `incomplete` for good. The same holds for a reply whose connection
-    drops mid-generation (Ollama aborting with a 500 whose body never arrives, which the
-    client sees as a network failure). A single one is still retried, and a repeat
-    counts only if the server still answers a claim it answered before, so a server that is
-    down or out of memory is never charged to the model.
-  - Wilson intervals have exact edges: no events gives a lower bound of exactly 0, and every
-    claim an upper bound of exactly 1, not a rounding error away. `verify calibrate --help`
-    now describes failed calls the way the command treats them.
-  - Runs resume (`--resume`) only with the same model, digest, settings and gold files,
-    and can be rescored from their directory (`--report-only`).
-  - Local only: a loopback Ollama, and model names containing "cloud" are refused.
-  - The report breaks results down by origin, by whether the context's comments state the
-    behaviour, and gives cost per claim (GPU dollars per hour times wall time; boot and
-    model download are not included).
-
-- **Prices and stock come from the v2 catalog.**
-  `GET /catalog/gpus?include=AVAILABILITY&product=POD` replaces the GraphQL price
-  query. The listed secure-cloud price is per GPU and is multiplied by the GPU count.
-  Stock is `NONE`, `LOW`, `MEDIUM` or `HIGH`, and a pinned data center uses that
-  center's own level. `NONE`, a max count below the request, or a data center that
-  does not list the type, is not free. The public pricing page is not used.
-- **The catalog's CUDA list wins at plan time.** Each GPU type's `cudaVersions` is
-  what a plan checks against the floor. A version marked unavailable does not count,
-  and a version newer than the copied list does. `CUDA_VERSIONS` is only the fallback
-  when the catalog omits that list, and it is still what config validation accepts.
-- **The account balance stays on GraphQL until early 2027.** The v2 spec read on
-  2026-10-08 has no balance field. Billing history is spend, not the balance. Listing
-  data centers stays on GraphQL too; nothing in the CLI, the app or the side-car calls it.
-- **A debug build can force an unplaceable GPU first.** `OFFRIG_UNPLACEABLE_GPU`
-  (debug builds only, off unless set) is tried before the plan's list, even above the
-  price cap, so a live test can see the 400 fallback. A release build ignores it.
-- **`offrig_job` reports `progress.pod_status`.** While a pod boots, that field is the
-  raw v2 status (`PROVISIONING`, `STARTING`, `RUNNING`, and the rest).
-
-- **The verifier's verdict contract (schema v6).** The groundwork for `offrig verify`; no
-  command uses it yet.
-  - The verifier sees the claim and the evidence, never how the claim was made. It replies
-    with its reasoning first, then `supported`, `unsupported` or `cannot_tell`, a quote and
-    the passage the quote came from.
-  - A `supported` verdict stands only if its quote is at least 12 characters and appears
-    word for word in one evidence passage (whitespace and curly quotes are normalised).
-    Otherwise it becomes `cannot_tell` with the reason `quote_not_found`. An `unsupported`
-    verdict may give no quote, but a quote it gives must be found.
-  - A reply that breaks the schema is retried once, then reported as a `bad_verdict`
-    error, never as a verdict. A reply cut off at the output limit is a `truncated` error.
-  - Every verdict is stored in an append-only `verdicts` table, always marked untrusted,
-    with what produced it: the model and digest, the embedding model, the prompt and
-    role-card hashes, the evidence ids, and the temperature, seed, think level and limits.
-  - Calibration metrics for choosing the default model: per check type, the false-accept
-    rate with a Wilson 95% interval, the abstain rate and the balanced accuracy on decided
-    claims. A model qualifies only if, for grounded and reasoning checks, the upper end of
-    its false-accept interval is under 10%, it abstains on at most 20% of claims, it is
-    right on at least 80% of the claims it decides, and the gold set has at least 100
-    false claims.
-  - Chat with Ollama now uses its native `/api/chat`, which takes a JSON-schema `format`,
-    a `think` level and pinned sampling settings.
-  - The v5 to v6 migration is forward-only, so an older offrig refuses a v6 database.
-
-- **A project index with hybrid search (schema v5).** `offrig index <paths...>` chunks
-  documents, code and logs into the project database; `--status` and `--rebuild` report
-  and rebuild it. Memory records are indexed too. `offrig_memory_search` gains `mode`
-  (`keyword` or `hybrid`): hybrid fuses BM25 and cosine rankings by reciprocal rank fusion
-  and is the default once the project has an index. Handoff prompts use it as well.
-  - Vectors are int8 BLOBs scanned in process; no SQLite extension. A superseded or
-    withdrawn record leaves the index. The v4 to v5 migration is forward-only and indexes
-    the active records.
-  - Embeddings come from a dedicated CPU-only Ollama (`embed_url`, default
-    `http://127.0.0.1:11490`, or `OFFRIG_EMBED_URL`), never the shared Ollama on 11434 and
-    never a GPU. A port that collides with another offrig port is refused. A missing model
-    or server is an error with the command that fixes it, and a different model or
-    dimension needs `offrig index --rebuild`.
-  - nomic-embed-text gets the `search_document: ` and `search_query: ` prefixes it was
-    trained with.
-
-- **RunPod REST v2.** Pod and network-volume calls use `https://api.runpod.io/v2`.
-  A create sends one nested request per GPU type. v2 does not fall back, so offrig
-  tries the plan's GPU list itself, in that list's order, and never past the plan's
-  price. A 400 tries the next type. A 422, a 401 or a 402 stops. Every attempt is logged.
-- **The CUDA floor is `gpu.minCudaVersion`.** It is the plan's floor (`major.minor`),
-  compared as a version, so a host newer than the copied list (through 13.0) qualifies.
-  `allowedCudaVersions` is no longer sent.
-- **`startSsh` is set,** so RunPod still injects `PUBLIC_KEY` for the bootstrap.
-  Direct SSH is read from `ssh.direct`. The proxy is not used: it cannot forward ports.
-- **Stop** is `POST /pods/{id}/action` with `{"action":"stop"}`. There is no reset.
-  Terminate is still `DELETE /pods/{id}`.
-- **Network volumes** use `/network-volumes` and send `dataCenter`.
-- **Not in v2, and not rebuilt:** spot (`interruptible`) and the host-quality filters
-  (`minDownloadMbps`, `minDiskBandwidthMBps`). They are absent from the v2 create schema.
-  `supportPublicIp` is gone; publishing `22/tcp` is what makes direct SSH appear.
-- **The account balance stayed on GraphQL in the v2 client.** The v2 spec read on
-  2026-10-08 has no balance field. Prices and stock moved to the catalog in the
-  change above. GraphQL retires in early 2027.
-- **A broken pod is terminated during the launch.** v2 `status` is the pod's actual
-  state. `PROVISIONING` and `STARTING` are progress. `ERROR`, and `EXITED` while the
-  launch is waiting, fail the launch and terminate the pod immediately, so it does
-  not bill until the ready timeout.
-- **A 429 on create is retried.** `POST /pods` waits for `Retry-After` and tries the
-  same GPU type again, up to 3 times and not past the plan deadline. The first 429
-  does not fail the launch, and it does not move on to the next GPU type.
-- **A failed live price check is reported.** The plan's GPU list is already
-  price-filtered. If the live lookup fails, that second check is skipped, a warning
-  is logged, and every listed type is still tried.
-- **A placement failure names every GPU type.** The error lists each type with the
-  reason RunPod returned. A 400 is not assumed to mean only "no capacity".
-
-- **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget and
-  any running plans, then offers to set a new cap (confirmed first) or stop new spending.
-  `--show` prints the one-line budget, and so does any run where stdout isn't a terminal.
-- **The cap can't take back money given to a run.** It can never be set below spent plus
-  committed, from the menu or from `offrig budget <usd>`. Stopping new spending sets it to
-  exactly that, so a running training job keeps its allocation and runs to its deadline.
-
-- **A Hugging Face token on job pods.** A job profile can name a RunPod secret with
-  `hf_token_secret`, as a recipe already could. RunPod substitutes it at start, and the
-  bootstrap writes it to a root-only file. Job commands get `HF_TOKEN_PATH`, because an ssh
-  session doesn't inherit the pod's environment. The token never enters the spec, a command
-  line or a log. (2026-10-08: an anonymous download at about 11 MB/s stopped a training run
-  before it could finish inside its cap.)
+  own cap: `offrig budget --provider runpod <usd>` and `--provider openrouter <usd>`. A
+  pod is checked against the RunPod cap, an OpenRouter completion against the OpenRouter
+  cap, and both against the overall ceiling when one is set. `offrig budget --show` and
+  `offrig_status` print each cap with its committed, spent, and remaining, beside the
+  balance the provider itself reports, and warn when a cap is above what the account
+  holds. A project with one cap behaves as before: that cap is the overall ceiling and
+  each provider's starting cap. `--clear-overall` drops the ceiling once both provider
+  caps are set. Only a person sets caps.
 - **`offrig_complete`, an OpenRouter lane under the budget.** One chat completion against
   OpenRouter, approved for one job: Kimi-K3 (`moonshotai/kimi-k3`) piano arrangements for
   the ai-jam-sessions project. Both the model and the project are allow-listed in code;
   any other model or project is refused, and widening either takes a pull request.
-  - Before the call, the worst case is priced from the dearest provider, and the request
-    caps the provider price at that rate. The worst case is input bound x input price plus
-    max_tokens x output price, and max_tokens covers reasoning and answer together. It is
-    committed against the project's budget in the same ledger as pods, and refused
-    (`budget_exceeded`) when it exceeds what is left.
-  - After the call, OpenRouter's real charge (`usage.cost`) is recorded and the
-    commitment released. A charge above the worst case is recorded as charged, with a
-    WARNING.
-  - If the stream fails, the charge is looked up by generation id and recorded. A
-    charge that cannot be read yet stays committed until a later call settles it.
-  - The answer goes to a project file, and its inputs must be project files. The key
-    (`OPENROUTER_API_KEY`) is never written anywhere. There is no fallback to any other
-    service.
+  Before the call, the worst case is priced from the dearest provider, and the request
+  caps the provider price at that rate. It is committed against the project's budget in
+  the same ledger as pods, and refused (`budget_exceeded`) when it exceeds what is left.
+  After the call, OpenRouter's real charge (`usage.cost`) is recorded and the commitment
+  released. A charge above the worst case is recorded as charged, with a warning. If the
+  stream fails, the charge is looked up by generation id and recorded. A charge that
+  cannot be read yet stays committed until a later call settles it. The answer goes to a
+  project file, and its inputs must be project files. The key (`OPENROUTER_API_KEY`) is
+  never written anywhere. There is no fallback to any other service.
 - **Schema v4.** The ledger holds completions as well as plans, and is rebuilt in a
   transaction with every row kept. An older side-car refuses a v4 store ("Update
   offrig") and reads a v4 sibling as unreadable, so every side-car is updated together.
   `offrig_status` lists held and recent completions.
+- **A Hugging Face token on job pods.** A job profile can name a RunPod secret with
+  `hf_token_secret`, as a recipe already could. RunPod substitutes it at start, and the
+  bootstrap writes it to a root-only file. Job commands get `HF_TOKEN_PATH`, because an
+  ssh session does not inherit the pod's environment. The token never enters the spec, a
+  command line, or a log.
+- **A debug build can force an unplaceable GPU first.** `OFFRIG_UNPLACEABLE_GPU` (debug
+  builds only, off unless set) is tried before the plan's list, even above the price
+  cap, so a live test can see the 400 fallback. A release build ignores it.
+
+### Changed
+
+- **RunPod REST v2.** Pod and network-volume calls use `https://api.runpod.io/v2`. A
+  create sends one nested request per GPU type. v2 does not fall back, so offrig tries
+  the plan's GPU list itself, in that list's order, and never past the plan's price. A
+  400 tries the next type. A 422, a 401, or a 402 stops. Every attempt is logged.
+  `startSsh` is set, so RunPod still injects `PUBLIC_KEY` for the bootstrap. Direct SSH
+  is read from `ssh.direct`. The proxy is not used: it cannot forward ports. Stop is
+  `POST /pods/{id}/action` with `{"action":"stop"}`. There is no reset. Terminate is
+  still `DELETE /pods/{id}`. Network volumes use `/network-volumes` and send
+  `dataCenter`. Spot (`interruptible`) and the host-quality filters
+  (`minDownloadMbps`, `minDiskBandwidthMBps`) are not in the v2 create schema and are
+  not rebuilt. `supportPublicIp` is gone; publishing `22/tcp` is what makes direct SSH
+  appear.
+- **The CUDA floor is `gpu.minCudaVersion`.** It is the plan's floor (`major.minor`),
+  compared as a version, so a host newer than the copied list still qualifies. A floor
+  does not send `allowedCudaVersions`. The exact pin in New is the only create that
+  sends that list, and it is never sent together with a floor.
+- **Prices and stock come from the v2 catalog.**
+  `GET /catalog/gpus?include=AVAILABILITY&product=POD` replaces the GraphQL price
+  query. The listed secure-cloud price is per GPU and is multiplied by the GPU count.
+  Stock is `NONE`, `LOW`, `MEDIUM`, or `HIGH`, and a pinned data center uses that
+  center's own level. `NONE`, a max count below the request, or a data center that does
+  not list the type, is not free. The public pricing page is not used.
+- **The catalog's CUDA list wins at plan time.** Each GPU type's `cudaVersions` is what
+  a plan checks against the floor. A version marked unavailable does not count, and a
+  version newer than the copied list does. `CUDA_VERSIONS` is only the fallback when
+  the catalog omits that list, and it is still what config validation accepts.
+- **The account balance stays on GraphQL until early 2027.** The v2 spec read on
+  2026-10-08 has no balance field. Billing history is spend, not the balance. Listing
+  data centers stays on GraphQL too; nothing in the CLI, the app, or the side-car calls
+  it. GraphQL retires in early 2027.
+- **`offrig budget` opens a menu in a terminal.** With no amount, it shows the budget
+  and any running plans, then offers to set a new cap (confirmed first) or stop new
+  spending. `--show` prints the budget, and so does any run where stdout is not a
+  terminal. The cap can never be set below spent plus committed, from the menu or from
+  `offrig budget <usd>`. Stopping new spending sets it to exactly that, so a running
+  training job keeps its allocation and runs to its deadline.
+
+### Fixed
+
+- **A 429 on create is retried.** `POST /pods` waits for `Retry-After` and tries the
+  same GPU type again, up to 3 times and not past the plan deadline. The first 429 does
+  not fail the launch, and it does not move on to the next GPU type.
+- **A failed live price check is reported.** The plan's GPU list is already
+  price-filtered. If the live lookup fails, that second check is skipped, a warning is
+  logged, and every listed type is still tried.
+- **A placement failure names every GPU type.** The error lists each type with the
+  reason RunPod returned. A 400 is not assumed to mean only "no capacity".
+- **A broken pod is terminated during the launch.** v2 `status` is the pod's actual
+  state. `PROVISIONING` and `STARTING` are progress. `ERROR`, and `EXITED` while the
+  launch is waiting, fail the launch and terminate the pod immediately, so it does not
+  bill until the ready timeout.
+- **Quote rule 2.** A verdict's quote now matches the evidence with each line's leading
+  diff and comment markers removed, as well as written. A model quoting the prose of a
+  `///` comment across its line wraps was being downgraded to `cannot_tell` for a quote
+  that is in the evidence. A quote under 12 characters counts when it is a whole
+  evidence line (`return v`), so short lines of code can be quoted. Paraphrase and
+  elision still do not match. Every verdict pins the rule it was judged by
+  (`quote_rule`), calibration settings record it, and a calibration run never resumes
+  across rules.
+- **Failed calls and Wilson edges in calibration.** A server error (HTTP 5xx) or a
+  dropped reply on the same claim twice is recorded as unusable (`server_error`) and
+  counts against the model, like a repeated timeout. A single one is still retried, and
+  a repeat counts only if the server still answers a claim it answered before, so a
+  server that is down or out of memory is never charged to the model. Wilson intervals
+  have exact edges: no events gives a lower bound of exactly 0, and every claim an
+  upper bound of exactly 1. `verify calibrate --help` describes failed calls the way
+  the command treats them.
 
 ## [1.0.0] - 2026-10-07
 

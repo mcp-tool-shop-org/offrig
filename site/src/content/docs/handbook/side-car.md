@@ -93,10 +93,12 @@ an agent's shell), `offrig budget` prints the one-line budget as before.
    commits the worst case, waits for GPUs (renting nothing while it waits), boots the pod,
    and starts the watchdog. Calling it twice with the same plan returns the same job.
 4. **`offrig_job`.** Launch progress, the GPU type and price rented (as soon as the pod
-   exists) and the host CUDA version once ssh is up, minutes left, and spend so far. Poll it
-   with the `plan_id`, or with the `job_id` from `offrig_launch`; the two are different
-   numbers. If the launch fails, `offrig_job` gives the failure's `code`, whether it is
-   `retryable`, and whether a pod was rented and billed (see below).
+   exists), the card count, and the host CUDA version once ssh is up, minutes left, and
+   spend so far. Poll it with the `plan_id`, or with the `job_id` from `offrig_launch`;
+   the two are different numbers. If the launch fails, `offrig_job` gives the failure's
+   `code`, whether it is `retryable`, and whether a pod was rented and billed (see below).
+   A recipe is `ready` only when one completion returned a choice. `engine_hung` and
+   `engine_unresponsive` leave the pod up.
 5. **The work.** On a model pod: `offrig_ask` or `offrig_run`. On a job pod: `offrig_put`,
    `offrig_exec`, then `offrig_get`.
 6. **`offrig_shutdown`.** Terminates the pod and closes the plan's books with the measured
@@ -113,11 +115,66 @@ offrig_plan profile=job max_hours=3.5
             container_disk_gb=150 a bigger local disk for downloads
 ```
 
-See [Configuration](../configuration/) for what each limit does.
+The CUDA pin is on the profile, not on the plan call. A floor is `min_cuda`. An exact
+list is `cuda_versions`. The plan reply names whichever one the profile set. See
+[Configuration](../configuration/) for what each limit does.
+
+Once the pod record has a count, `offrig_status` and `offrig_job` include it:
+
+```json
+{
+  "gpu_count": 1,
+  "gpus": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "planned_gpu_count": 1,
+  "measured_gpu_count": 1,
+  "gpu_mismatch": false
+}
+```
+
+`gpu_mismatch` is true when the record or the `nvidia-smi` reading differs from the
+plan. `gpu_mismatch_source` is `record`, `measured`, or `both`. Nothing is shut down
+for it. Before a measurement, a record that omits the count leaves `gpu_mismatch` null.
+A reading that lists no cards is `measured_gpu_count` `0`.
+
+A recipe that cannot answer looks like this on `offrig_job`. The job `state` stays
+`running`. The step lives under `progress`. The `error` is the completion's own
+message. One real case is a 200 whose body had no choice:
+
+```json
+{
+  "state": "running",
+  "progress": {
+    "step": "engine_unresponsive",
+    "error": "ollama: completion smoke: the reply carried no choice",
+    "engine_log_tail": "the last lines of the engine log",
+    "next_action": "the engine is not answering completions: shut the pod down, or wait if it is still warming up"
+  },
+  "next_action": "the engine is not answering completions: shut the pod down, or wait if it is still warming up"
+}
+```
+
+A hang, after `grep -c` has seen `Application startup complete` and `/health` has stayed
+down for 3 minutes. `log_tail` here is the last 40 lines, as a list:
+
+```json
+{
+  "state": "running",
+  "progress": {
+    "step": "engine_hung",
+    "log_tail": ["the last 40 lines, one string each"],
+    "since_startup_secs": 180,
+    "next_action": "shut the pod down: the engine finished startup but never became healthy"
+  },
+  "next_action": "shut the pod down: the engine finished startup but never became healthy"
+}
+```
+
+The 40-line tail is the report. The clock is the count over the whole log, taken on
+the same ssh read, so the startup line can already have scrolled out of the tail.
 
 ## The watchdog
 
-Every launch starts a **watchdog**: a separate process that terminates the pod at the
+Every side-car launch starts a **watchdog**: a separate process that terminates the pod at the
 plan's deadline (the time the plan was committed, plus its max hours), even if the agent,
 the session and the side-car are all gone.
 
@@ -125,9 +182,17 @@ the session and the side-car are all gone.
 - It terminates exactly once, then closes the books.
 - It logs to `.offrig/watchdog-<plan>.log`.
 
-If getting a rented pod ready fails, the launch terminates the pod itself instead of
-leaving it billing. The two ways a launch can fail cost different amounts, and
-`offrig_job` says which happened:
+If getting a rented pod ready fails before the engine is serving, the side-car launch terminates
+the pod itself instead of leaving it billing. `engine_hung` and `engine_unresponsive`
+are not those failures. The side-car returns them as a normal result, so nothing
+deletes the pod, the plan stays committed, and the job stays `running`. You shut it
+down, or the plan's deadline does. An engine process that has already exited is a real
+failure, and that pod is deleted. A pod started with `offrig up` or the app has no
+watchdog. When the command stops with an error (a hang, an unresponsive engine, an
+engine that exited, or a timeout), the pod keeps billing until `offrig down <profile>
+--yes` or the app's Shut down. A pod RunPod reports as `ERROR` or `EXITED` is the
+exception: that one is terminated on every surface. The two ways a side-car launch can
+fail before that cost different amounts, and `offrig_job` says which happened:
 
 | Code | What happened | Cost |
 |---|---|---|

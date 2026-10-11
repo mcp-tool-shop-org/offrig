@@ -27,7 +27,9 @@ offrig rents the hardware by the hour, gets it ready, and keeps the bill bounded
    falling through to the local server. Seven checks verify this on every launch.
 2. **No pod outlives its plan.** Every side-car launch starts a watchdog: a separate
    process that terminates the pod at the plan's deadline, even if everything else is
-   gone. A failed setup terminates the pod instead of leaving it billing.
+   gone. A setup that fails before the engine is serving terminates the pod. A recipe
+   that has started and then hangs, or that cannot answer one completion, is reported
+   and left running until you shut it down or the deadline ends it.
 3. **An agent cannot name its own price.** A human sets each project's budget cap. A plan
    commits its worst case against it before anything is rented, and a launch takes only a
    plan id.
@@ -55,3 +57,10 @@ offrig has run real work since 2026-10-02. Highlights:
 - Two projects using it at once, each in its own lane.
 
 The local GPU stayed idle throughout.
+
+On 2026-10-11 a SGLang pod logged that startup had finished, then `/health` stayed down
+for 7 minutes while `/v1/models` still answered, on a CUDA 13.2 host. Working pods that
+week were on 13.0. 13.2 is not shown to be the cause; the pin lets a profile stay on the
+version that worked. The ready check and the exact CUDA pin in this handbook describe
+what 1.1.0 does about that. They have not been re-run on a rented pod. Tests cover them
+with a fake ssh session and a fake RunPod.
