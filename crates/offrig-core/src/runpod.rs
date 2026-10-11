@@ -266,8 +266,13 @@ pub struct PodCreate {
     pub volume_mount_path: String,
     pub data_center_ids: Vec<String>,
     /// Host CUDA floor (`major.minor`), from [`crate::config::Profile::effective_min_cuda`].
-    /// Sent as `gpu.minCudaVersion`. `None` accepts any host.
+    /// Sent as `gpu.minCudaVersion`. `None` accepts any host. Not sent when
+    /// [`Self::allowed_cuda_versions`] is set: a floor and an exact list together
+    /// are refused by Runpod.
     pub min_cuda_version: Option<String>,
+    /// Exact host CUDA versions, sent as `gpu.allowedCudaVersions` and nothing else.
+    /// The list is the profile's `cuda_versions`, unchanged. `None` sends no list.
+    pub allowed_cuda_versions: Option<Vec<String>>,
     pub docker_entrypoint: Vec<String>,
     pub docker_start_cmd: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -302,7 +307,9 @@ impl PodCreate {
             "id": gpu_id,
             "count": self.gpu_count,
         });
-        if let Some(version) = &self.min_cuda_version {
+        if let Some(versions) = &self.allowed_cuda_versions {
+            gpu["allowedCudaVersions"] = serde_json::json!(versions);
+        } else if let Some(version) = &self.min_cuda_version {
             gpu["minCudaVersion"] = serde_json::json!(version);
         }
         let mut body = serde_json::json!({
@@ -392,6 +399,19 @@ impl GpuOffer {
         self.cuda
             .iter()
             .any(|c| c.available && crate::config::cuda_meets(&c.version, floor) == Some(true))
+    }
+
+    /// Whether this type offers an available CUDA version from `allow`.
+    /// An empty [`Self::cuda`] list means the catalog omitted `cudaVersions`, so
+    /// the type stays (the copied list is the fallback, and config already
+    /// checked `allow` against it). A non-empty list must overlap.
+    pub fn meets_cuda_allow(&self, allow: &[String]) -> bool {
+        if self.cuda.is_empty() {
+            return true;
+        }
+        self.cuda
+            .iter()
+            .any(|c| c.available && allow.iter().any(|a| a == &c.version))
     }
 }
 
@@ -1266,6 +1286,7 @@ mod tests {
             volume_mount_path: "/workspace".into(),
             data_center_ids: vec![],
             min_cuda_version: None,
+            allowed_cuda_versions: None,
             docker_entrypoint: vec!["bash".into(), "-c".into()],
             docker_start_cmd: vec!["echo".into()],
             env: BTreeMap::new(),
@@ -1291,6 +1312,10 @@ mod tests {
         assert!(
             v["gpu"].get("minCudaVersion").is_none(),
             "any host when unset"
+        );
+        assert!(
+            v["gpu"].get("allowedCudaVersions").is_none(),
+            "no exact list when unset"
         );
         assert!(v.get("gpuTypeIds").is_none());
         assert!(v.get("interruptible").is_none());
@@ -1435,6 +1460,17 @@ mod tests {
             offer.meets_cuda_floor("13.0"),
             "a newer live version counts"
         );
+        let only_13 = vec!["13.0".to_string()];
+        assert!(
+            !offer.meets_cuda_allow(&only_13),
+            "13.0 is listed unavailable, and 13.1 is not the pin"
+        );
+        assert!(offer.meets_cuda_allow(&["13.1".into()]));
+        offer.cuda.clear();
+        assert!(
+            offer.meets_cuda_allow(&only_13),
+            "an omitted catalog list keeps the type"
+        );
     }
 
     fn bare_create() -> PodCreate {
@@ -1452,6 +1488,7 @@ mod tests {
             volume_mount_path: "/workspace".into(),
             data_center_ids: vec![],
             min_cuda_version: None,
+            allowed_cuda_versions: None,
             docker_entrypoint: vec!["bash".into(), "-c".into()],
             docker_start_cmd: vec!["echo".into()],
             env: BTreeMap::new(),

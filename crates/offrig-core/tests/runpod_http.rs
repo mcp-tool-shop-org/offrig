@@ -110,6 +110,10 @@ fn pod_calls_use_the_right_routes_and_the_bearer_key() {
         None => assert!(sent["gpu"].get("minCudaVersion").is_none(), "{sent}"),
     }
     assert!(
+        sent["gpu"].get("allowedCudaVersions").is_none(),
+        "a floor-only create does not send the exact list: {sent}"
+    );
+    assert!(
         m.last()
             .header("content-type")
             .is_some_and(|t| t.contains("json"))

@@ -159,6 +159,53 @@ impl Ollama {
     pub fn openai_models(&self) -> Result<Vec<String>> {
         Ok(model_ids(&self.get("/v1/models", "model list")?))
     }
+
+    /// One completion, `max_tokens` 1 and `temperature` 0, bounded by `timeout`.
+    /// Ready means the reply has a choice. The text may be empty: one token often is.
+    /// `/v1/models` answering is not this check.
+    pub fn smoke_choice(&self, model: &str, timeout: Duration) -> Result<()> {
+        let what = "completion smoke";
+        let body = json!({
+            "model": model,
+            "stream": false,
+            "temperature": 0,
+            "max_tokens": 1,
+            "messages": [{ "role": "user", "content": "ok" }],
+        });
+        let call = self
+            .agent
+            .post(format!("{}/v1/chat/completions", self.base))
+            .config()
+            .timeout_global(Some(timeout))
+            .build()
+            .send_json(&body);
+        let mut resp = match call {
+            Ok(resp) => resp,
+            Err(ureq::Error::Timeout(_)) => {
+                return Err(Error::Ollama(format!(
+                    "{what}: timed out after {}ms",
+                    timeout.as_millis()
+                )));
+            }
+            Err(e) => return Err(Error::http(what, e)),
+        };
+        let status = resp.status().as_u16();
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| Error::http(what, e))?;
+        if status != 200 {
+            return Err(Error::Ollama(format!("{what}: http {status}: {text}")));
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|e| Error::decode(what, e))?;
+        if v["choices"].as_array().is_some_and(|a| !a.is_empty()) {
+            Ok(())
+        } else {
+            Err(Error::Ollama(format!(
+                "{what}: the reply carried no choice"
+            )))
+        }
+    }
 }
 
 impl Ollama {

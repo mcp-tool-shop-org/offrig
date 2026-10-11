@@ -114,6 +114,7 @@ pub fn stage_pod(profile: &Profile, volume: &NetworkVolume) -> Result<PodCreate>
         volume_mount_path: "/workspace".into(),
         data_center_ids: vec![volume.data_center_id.clone()],
         min_cuda_version: None,
+        allowed_cuda_versions: None,
         max_price_hr: None,
         try_first: None,
         docker_entrypoint: vec!["bash".into(), "-c".into()],

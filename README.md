@@ -276,9 +276,24 @@ A profile with a `recipe` runs another engine than Ollama: a pinned image
 extra server arguments. offrig sets tensor parallelism from the GPU count, the context
 length from the profile, and keeps the engine on the pod's loopback; a recipe cannot
 override those. For a gated repo, `hf_token_secret` names a RunPod secret, referenced as
-`{{ RUNPOD_SECRET_<name> }}` so the token never enters the pod spec. The launch waits
-for the engine's `/health` and model list, reports weights on disk while it downloads,
-and stops at once (with the engine's log) if the engine exits.
+`{{ RUNPOD_SECRET_<name> }}` so the token never enters the pod spec. The launch reports
+weights on disk while the engine downloads them, and stops at once (with the engine's
+log) if the engine exits. It does not call the engine ready when `/health` answers, and
+`/v1/models` answering is not readiness either. After `/health` returns 200, offrig
+sends one chat completion (`max_tokens` 1, `temperature` 0) and waits up to 30 seconds.
+The step is `ready` only when that reply has a choice. If the completion fails or times
+out, offrig tries once more after 15 seconds. A second failure is the step
+`engine_unresponsive`: the job stays running, and the error and the engine log are on
+the job. The next action is `the engine is not answering completions: shut the pod down,
+or wait if it is still warming up`. offrig does not shut the pod down for this, on the
+side-car, the CLI, or the app. A slow first request (graph capture, JIT) is not a reason
+to throw away the download and the load; the plan's deadline still bounds the cost.
+The hang clock starts from a count of `Application startup complete` over the whole
+engine log, not only the last 40 lines. If that count is at least one and `/health`
+then stays down for 3 minutes, the step is `engine_hung`: those last 40 lines, the
+seconds since the count was first seen, and the next action `shut the pod down: the
+engine finished startup but never became healthy`. offrig reports that hang and leaves
+the pod up. Shutting it down stays with you, the same as a GPU-count mismatch.
 
 Each profile lists GPU types in priority order. v2 places one type and does not fall back,
 so offrig tries that list itself, in order, and never past the plan's price. When none is
@@ -312,21 +327,32 @@ free; the limits only narrow what the plan may rent.
 
 | Limit | Where | Effect |
 |---|---|---|
-| `min_cuda` | profile (`config.toml`) | The oldest host CUDA (driver) version, from RunPod's list (`13.0`, `12.9`, ... `11.8`). The pod create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. When the catalog returns `cudaVersions` for a GPU, a plan keeps that type only if some version is available at or above this floor. When the catalog omits the list, the copied list is the fallback. For a job profile the newer of this and the image's own `[profiles.job] min_cuda` applies. |
+| `min_cuda` | profile (`config.toml`) | The oldest host CUDA (driver) version, from RunPod's list (`13.2`, `13.1`, `13.0`, `12.9`, ... `11.8`). The pod create sends that floor as `gpu.minCudaVersion`, so a host newer than the newest copied version still qualifies. When the catalog returns `cudaVersions` for a GPU, a plan keeps that type only if some version is available at or above this floor. When the catalog omits the list, the copied list is the fallback. For a job profile the newer of this and the image's own `[profiles.job] min_cuda` applies. |
 | `min_vram_gb` | profile | The least total VRAM (all of the profile's GPUs together) a plan accepts. Offers below it are dropped; a type RunPod lists no memory for is dropped too. |
 | `max_price_hr` | `offrig_plan` argument | The most the pod may cost, in total $/hr for all its GPUs (the figure `offrig_offers` shows). Offers above it are dropped, as is a type with no price listed now (it cannot be held to a cap). |
 | `no_fallback` | `offrig_plan` argument | Only the profile's first GPU family is allowed. The two RTX PRO 6000 Blackwell editions (Server and Workstation) are one family; every other card, including the A100 SXM and PCIe, is its own. |
 
-Both profile fields are optional and default to unset, so a `config.toml` written by an
+The profile fields are optional and default to unset, so a `config.toml` written by an
 earlier offrig loads unchanged. The `job` profile sets `min_cuda = "13.0"`.
+
+`cuda_versions` is an optional exact list beside `min_cuda`, for example
+`cuda_versions = ["13.0"]`. When it is set, the pod create sends that list as
+`gpu.allowedCudaVersions`, in the order written, and does not also send a floor.
+`offrig_plan` reports the list. Setting it together with `min_cuda`, including a job
+image's own floor, is refused: the two together are ambiguous. Each version has to be
+one offrig accepts. That list, newest first, is 13.2, 13.1, 13.0, then 12.9 down to
+11.8. 13.2 and 13.1 are ahead of RunPod's documented v1 enum (read 2026-10-11, which
+stops at 13.0). They are listed because a writer pod on 2026-10-12 was placed on a
+13.2 host. A floor still sends only `gpu.minCudaVersion`.
 
 `offrig_plan` prices the worst case from what is left:
 `max_hours x min(max_price_hr, the dearest listed price among the remaining GPUs)`. Without
 `max_price_hr` that is the dearest listed price in the profile, as before. A plan with
 nothing left is refused with the reason for every dropped GPU, and nothing is written.
 
-The plan stores the GPU list that is left and the CUDA floor, and `offrig_launch` rents only
-from them, never from the profile's full list. `offrig_job` and the side-car's launch result
+The plan stores the GPU list that is left, and either the CUDA floor or the exact CUDA
+list, and `offrig_launch` rents only from what the plan stored, never from a later edit
+of the profile. `offrig_job` and the side-car's launch result
 report the GPU type and the host's CUDA version actually rented, in a `rented` object. The
 pod API does not report the host's CUDA version, so once ssh is up the launch runs
 `nvidia-smi` once through the lane and reads it from the header (`CUDA Version: 12.8`, or

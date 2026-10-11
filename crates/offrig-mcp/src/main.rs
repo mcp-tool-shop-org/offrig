@@ -988,7 +988,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_plan",
-        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Optional container_disk_gb overrides the profile's container disk size for this plan (not priced into the worst case). The reply names the lane's ssh alias and the pod name the launch will create. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
+        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Optional container_disk_gb overrides the profile's container disk size for this plan (not priced into the worst case). The reply names the lane's ssh alias and the pod name the launch will create, and min_cuda or cuda_versions when the profile sets one (cuda_versions is the exact host CUDA list the create will send). Returns plan_id, which launching will require. Writes a plan; spends nothing.",
         annotations(
             title = "Plan a session",
             read_only_hint = false,
@@ -1089,10 +1089,23 @@ impl Sidecar {
                 );
             }
         };
-        // The plan records its host CUDA floor, so its launch applies the one it was
-        // priced with even if the profile is edited in between.
-        let min_cuda = profile.effective_min_cuda();
-        if let Some(v) = &min_cuda
+        // The plan records its host CUDA pin or floor, so its launch applies the one
+        // it was priced with even if the profile is edited in between. A pin and a
+        // floor are never both set.
+        let cuda_versions = profile.cuda_versions.clone();
+        let min_cuda = if cuda_versions.is_some() {
+            None
+        } else {
+            profile.effective_min_cuda()
+        };
+        if let Some(v) = &cuda_versions {
+            if let Err(e) = self.with_store(|s| s.set_plan_cuda_versions(plan.id, v)) {
+                return fail_err(
+                    &e,
+                    "the plan could not record its CUDA list; nothing was spent, plan again",
+                );
+            }
+        } else if let Some(v) = &min_cuda
             && let Err(e) = self.with_store(|s| s.set_plan_min_cuda(plan.id, v))
         {
             return fail_err(
@@ -1147,6 +1160,7 @@ impl Sidecar {
             "no_fallback": limits.no_fallback,
             "min_vram_gb": profile.min_vram_gb,
             "min_cuda": min_cuda,
+            "cuda_versions": cuda_versions,
             "wait_minutes": wait_minutes,
             "left_out": choice.dropped.iter().map(|(t, w)| json!({"gpu": t, "why": w})).collect::<Vec<_>>(),
             "max_hours": plan.max_hours,
@@ -1754,7 +1768,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_job",
-        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up, 0 when that reading lists no cards; gpu_mismatch is true when the record or the measurement differs from the plan, and gpu_mismatch_source is record, measured or both; a loud warning names that source and nothing is shut down) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
+        description = "Progress of a launch: the current step, GPU wait (each capacity retry is counted in progress.capacity_wait), pod id and rate, the GPU type, the card count (gpu_count and gpus as 2x the type, beside the plan's planned_gpu_count; measured_gpu_count from the same nvidia-smi once ssh is up, 0 when that reading lists no cards; gpu_mismatch is true when the record or the measurement differs from the plan, and gpu_mismatch_source is record, measured or both; a loud warning names that source and nothing is shut down) and host CUDA version actually rented (measured with nvidia-smi on the pod once ssh is up, with a loud warning if the host driver is older than the plan's CUDA floor; nothing is shut down for that), model pulls, whether the watchdog is alive, time left before the deadline, and spend so far. For a recipe engine, ready means one chat completion returned a choice after /health was up. engine_hung means the engine logged that startup finished and /health then stayed down for 3 minutes: the pod is left up, and next_action says to shut it down. engine_unresponsive means that completion failed twice: the error and the engine log are on the job, the pod is left up, and next_action says to shut it down or wait if it is still warming up. A launch that stopped carries failure: the error's code (pod_not_ready means a pod WAS rented and billed but never got ready; no_capacity means nothing was rented), retryable, whether a pod was rented, and what it cost. `rented` is filled as soon as the pod exists, before ssh is up. Takes job_id or plan_id. While the pod boots, the step is derived from the pod's state at the moment of the call (RunPod's answer and whether sshd answers), never read back from an earlier event. progress.pod_status is the raw v2 status then (PROVISIONING, STARTING, RUNNING, and the rest). Use after offrig_launch until it reports ready, then work handoffs with offrig_ask. Read-only.",
         annotations(
             title = "Launch progress",
             read_only_hint = true,
@@ -1829,9 +1843,28 @@ impl Sidecar {
             }
             _ => "read the error; a pod rented by this launch was terminated; plan again",
         };
+        // A hung or unresponsive engine names its own next step, and that
+        // sentence is the whole next_action. A rental warning stays in
+        // `warnings` so it cannot replace it.
+        let report_only =
+            job.progress["step"] == "engine_hung" || job.progress["step"] == "engine_unresponsive";
+        let next = if report_only {
+            let fallback = if job.progress["step"] == "engine_hung" {
+                offrig_core::session::ENGINE_HUNG_NEXT
+            } else {
+                offrig_core::session::ENGINE_UNRESPONSIVE_NEXT
+            };
+            job.progress["next_action"]
+                .as_str()
+                .unwrap_or(fallback)
+                .to_string()
+        } else {
+            next.to_string()
+        };
         // What was rented, set against the plan. A mismatch (an old host driver, a GPU
         // the plan did not list, a price above the plan's) is repeated at the top level
-        // and in next_action so it cannot be missed; the pod is never terminated for it.
+        // and, except on a hung or unresponsive report, in next_action so it cannot be
+        // missed. Those two reports keep their own sentence. Nothing is terminated for it.
         let warnings: Vec<String> = job.progress["rented"]["warnings"]
             .as_array()
             .map(|w| {
@@ -1840,8 +1873,8 @@ impl Sidecar {
                     .collect()
             })
             .unwrap_or_default();
-        let next = if warnings.is_empty() {
-            next.to_string()
+        let next = if report_only || warnings.is_empty() {
+            next
         } else {
             format!(
                 "WARNING, read before using this pod: {} Then: {next}",
