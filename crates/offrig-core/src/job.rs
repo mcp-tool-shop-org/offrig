@@ -358,16 +358,17 @@ fn split_local(local: &Path) -> Result<(std::path::PathBuf, String)> {
 
 /// Create `dir` and its parents. A path that exists but is not a folder is refused.
 fn ensure_local_dir(dir: &Path) -> Result<()> {
-    if dir.is_dir() {
-        return Ok(());
+    if !dir.is_dir() {
+        if dir.exists() {
+            return Err(Error::Refused(format!(
+                "{} exists and is not a directory",
+                dir.display()
+            )));
+        }
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::io(format!("creating {}", dir.display()), e))?;
     }
-    if dir.exists() {
-        return Err(Error::Refused(format!(
-            "{} exists and is not a directory",
-            dir.display()
-        )));
-    }
-    std::fs::create_dir_all(dir).map_err(|e| Error::io(format!("creating {}", dir.display()), e))
+    crate::fsutil::ensure_offrig_ignore(dir)
 }
 
 fn scp(alias: &str, local: &Path, remote: &str, upload: bool) -> Result<String> {

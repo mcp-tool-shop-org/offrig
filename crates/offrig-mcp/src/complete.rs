@@ -210,6 +210,7 @@ fn write(path: &Path, text: &str) -> Result<()> {
             what: format!("creating {}", dir.display()),
             source: e,
         })?;
+        offrig_core::fsutil::ensure_offrig_ignore(dir)?;
     }
     std::fs::write(path, text).map_err(|e| Error::Io {
         what: format!("writing {}", path.display()),

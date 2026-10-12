@@ -1207,6 +1207,7 @@ pub fn run(
         }
     }
     std::fs::create_dir_all(dir).map_err(|e| Error::io("creating the output directory", e))?;
+    crate::fsutil::ensure_offrig_ignore(dir)?;
     write_json(&dir.join("manifest.json"), &manifest)?;
 
     let prior = read_lines(dir, true)?;

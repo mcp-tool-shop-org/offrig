@@ -882,6 +882,7 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| Error::io(format!("creating {}", dir.display()), e))?;
+            crate::fsutil::ensure_offrig_ignore(dir)?;
         }
         let conn = Connection::open(path).map_err(db("opening the project database"))?;
         Self::init(conn)
@@ -4035,6 +4036,74 @@ mod tests {
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn ignore_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("offrig-ignore-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn creating_the_store_writes_a_gitignore_that_ignores_the_directory() {
+        let project = ignore_project("create");
+        std::fs::write(project.join(".gitignore"), b"target/\n").expect("project ignore");
+        let db = project.join(".offrig").join("offrig.db");
+        Store::open(&db).expect("open");
+        assert_eq!(
+            std::fs::read(project.join(".offrig").join(".gitignore")).expect("gitignore"),
+            b"*\n"
+        );
+        assert_eq!(
+            std::fs::read(project.join(".gitignore")).expect("project gitignore"),
+            b"target/\n",
+            "the project's own .gitignore is not changed"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn an_existing_offrig_gitignore_is_left_byte_for_byte() {
+        let project = ignore_project("keep");
+        let dir = project.join(".offrig");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let ignore = dir.join(".gitignore");
+        std::fs::write(&ignore, b"keep-this").expect("seed");
+        Store::open(&dir.join("offrig.db")).expect("open");
+        Store::open(&dir.join("offrig.db")).expect("reopen");
+        assert_eq!(std::fs::read(&ignore).expect("read"), b"keep-this");
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn a_preexisting_offrig_directory_gets_a_gitignore_on_next_open() {
+        let project = ignore_project("next");
+        let dir = project.join(".offrig");
+        std::fs::create_dir_all(&dir).expect("dir");
+        assert!(!dir.join(".gitignore").exists());
+        Store::open(&dir.join("offrig.db")).expect("open");
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).expect("gitignore"),
+            b"*\n"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn a_read_only_open_does_not_write_the_gitignore() {
+        let project = ignore_project("readonly");
+        let dir = project.join(".offrig");
+        let db = dir.join("offrig.db");
+        Store::open(&db).expect("create");
+        std::fs::remove_file(dir.join(".gitignore")).expect("remove ignore");
+        Store::open_read_only(&db).expect("read");
+        assert!(
+            !dir.join(".gitignore").exists(),
+            "a read-only open of another project's store writes nothing"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
     fn ro_dir(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("offrig-ro-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);

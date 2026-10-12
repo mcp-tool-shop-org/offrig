@@ -1412,9 +1412,9 @@ impl Sidecar {
                 // Harvest the result to a file the agent can read and commit.
                 let dir = self.project.join(".offrig").join("out");
                 let file = dir.join(format!("handoff-{id}.md"));
-                let written = std::fs::create_dir_all(&dir)
-                    .and_then(|()| std::fs::write(&file, &best.body))
-                    .is_ok();
+                let written = std::fs::create_dir_all(&dir).is_ok()
+                    && offrig_core::fsutil::ensure_offrig_ignore(&dir).is_ok()
+                    && std::fs::write(&file, &best.body).is_ok();
                 ok(json!({
                     "id": id,
                     "state": h.state.as_str(),

@@ -6,6 +6,12 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **A project's `.offrig/` ignores itself.** When offrig creates that directory,
+  and when it next opens one that is already there without the file, it writes
+  `.offrig/.gitignore` containing `*`. An existing `.offrig/.gitignore` is left
+  byte-for-byte. The project's own `.gitignore` is not changed. Opening another
+  project's store read-only still writes nothing.
+
 - **`cuda_runtime` on a profile: software built for a newer CUDA than any listed host.**
   A profile names `cuda_runtime = "13.4"` for a PyTorch cu134 wheel. The host floor is
   the oldest listed version of that major (`13.4`, `13.2` and `13.1` all floor at

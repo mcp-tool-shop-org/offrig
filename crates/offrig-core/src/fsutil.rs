@@ -1,9 +1,50 @@
 //! Small file helpers shared by the modules that edit user files.
 
+use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::error::{Error, Result};
+
+/// The bytes of a new `.offrig/.gitignore`. `*` makes the directory ignore itself.
+const OFFRIG_GITIGNORE: &[u8] = b"*\n";
+
+/// Write `.offrig/.gitignore` when `dir` is that directory, or sits inside it.
+///
+/// An existing file is left byte-for-byte, including a file that is not `*`.
+/// This does not create `.offrig` and does not touch the project's own
+/// `.gitignore`. A path that is not under `.offrig` is left alone.
+pub fn ensure_offrig_ignore(dir: &Path) -> Result<()> {
+    let Some(root) = dir
+        .ancestors()
+        .find(|path| path.file_name() == Some(OsStr::new(".offrig")))
+    else {
+        return Ok(());
+    };
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let path = root.join(".gitignore");
+    if path.exists() {
+        return Ok(());
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(e) => return Err(Error::io("writing .offrig/.gitignore", e)),
+    };
+    if let Err(e) = file.write_all(OFFRIG_GITIGNORE) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(Error::io("writing .offrig/.gitignore", e));
+    }
+    Ok(())
+}
 
 /// Write via a sibling temp file and a rename, so a crash never leaves half a file.
 /// Bytes are written as given (no BOM is added).
