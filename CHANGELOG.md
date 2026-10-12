@@ -6,6 +6,13 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **A release binary contains no test switch.** CI builds `offrig`, `offrig-mcp`
+  and `offrig-app` with `--release` and fails if any of them contains
+  `OFFRIG_TEST_`. Those names, including the one that skips the watchdog, are
+  test-only and compiled out of release builds. The handbook's Configuration
+  page names the environment variables a person sets, and says `OFFRIG_TEST_*`
+  exist only in debug builds. The README carries the M8ven score badge.
+
 - **Every side-car tool sets all four behaviour hints.** `readOnlyHint`,
   `destructiveHint`, `idempotentHint` and `openWorldHint` are explicit booleans
   on each of the 15 tools, matching what that handler does. `offrig_status` is

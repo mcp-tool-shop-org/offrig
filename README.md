@@ -13,6 +13,8 @@
   <a href="https://mcp-tool-shop-org.github.io/offrig/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/mcp-tool-shop-org-offrig-790exm?v=3bd60e98b65d7124b74c4126c5ce5ce7)](https://m8ven.ai/mcp/mcp-tool-shop-org-offrig-790exm?s=readme)
+
 Run big models on rented RunPod GPUs, with a guarantee: they never run on your own
 GPU. A desktop app, a CLI and an MCP side-car for agents, over one Rust library.
 

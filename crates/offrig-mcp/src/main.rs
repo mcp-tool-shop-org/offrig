@@ -445,6 +445,7 @@ pub struct ShutdownArgs {
 /// Start the plan's watchdog as its own process, so it outlives this side-car,
 /// this session and a crash of either.
 fn spawn_watchdog(project: &Path, plan_id: i64) -> Result<(), String> {
+    // Test-only, and compiled out of release builds. A shipped binary cannot skip the watchdog.
     #[cfg(debug_assertions)]
     if std::env::var_os("OFFRIG_TEST_NO_WATCHDOG").is_some() {
         return Ok(());
@@ -2258,6 +2259,7 @@ fn wlog(project: &Path, plan_id: i64, msg: &str) {
 fn run_watchdog(project: &Path, plan_id: i64) -> anyhow::Result<()> {
     let store = Store::open(&project.join(".offrig").join("offrig.db"))?;
     // Debug builds let a test shorten the poll; a release build always polls every minute.
+    // Test-only, and compiled out of release builds.
     #[cfg(debug_assertions)]
     let poll = std::env::var("OFFRIG_TEST_WATCHDOG_POLL_SECS")
         .ok()
