@@ -6,6 +6,8 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-12
+
 - **A release binary contains no test switch.** CI builds `offrig`, `offrig-mcp`
   and `offrig-app` with `--release` and fails if any of them contains
   `OFFRIG_TEST_`. Those names, including the one that skips the watchdog, are
