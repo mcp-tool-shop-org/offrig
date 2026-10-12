@@ -9,6 +9,18 @@ offrig's settings live in `%APPDATA%\offrig\config.toml`. The file is written th
 time something changes; `offrig init` writes the defaults and prints the path. Delete the
 file to return to the defaults.
 
+## Environment
+
+The project directory is `--project`, otherwise `OFFRIG_PROJECT`, otherwise the current
+directory.
+
+Users set `RUNPOD_API_KEY`. Completions read `OPENROUTER_API_KEY`. `OFFRIG_API_KEY`,
+`OFFRIG_SIDECAR_PORT` and `OFFRIG_EMBED_URL` are optional overrides, described where each
+one is used.
+
+`OFFRIG_TEST_*` exist only in debug builds for the test suite. They are compiled out of
+release binaries, including any switch that would skip the watchdog.
+
 ## Tiers
 
 A **profile** is a tier: which GPUs to rent, in priority order, and what runs on them.

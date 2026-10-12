@@ -101,26 +101,38 @@ pub struct EnginePace {
 
 impl EnginePace {
     pub fn live() -> Self {
-        Self {
-            poll: pace_override("OFFRIG_TEST_ENGINE_POLL_MS", Duration::from_secs(5)),
-            look_every: pace_override("OFFRIG_TEST_ENGINE_LOOK_MS", Duration::from_secs(20)),
-            hang_after: pace_override("OFFRIG_TEST_ENGINE_HANG_MS", ENGINE_HANG_AFTER),
-            smoke_timeout: pace_override("OFFRIG_TEST_SMOKE_TIMEOUT_MS", SMOKE_TIMEOUT),
-            smoke_retry: pace_override("OFFRIG_TEST_SMOKE_RETRY_MS", SMOKE_RETRY_AFTER),
+        // The override names are test-only and compiled out of release builds.
+        // A release build always uses these intervals.
+        #[cfg(debug_assertions)]
+        {
+            Self {
+                poll: pace_override("OFFRIG_TEST_ENGINE_POLL_MS", Duration::from_secs(5)),
+                look_every: pace_override("OFFRIG_TEST_ENGINE_LOOK_MS", Duration::from_secs(20)),
+                hang_after: pace_override("OFFRIG_TEST_ENGINE_HANG_MS", ENGINE_HANG_AFTER),
+                smoke_timeout: pace_override("OFFRIG_TEST_SMOKE_TIMEOUT_MS", SMOKE_TIMEOUT),
+                smoke_retry: pace_override("OFFRIG_TEST_SMOKE_RETRY_MS", SMOKE_RETRY_AFTER),
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Self {
+                poll: Duration::from_secs(5),
+                look_every: Duration::from_secs(20),
+                hang_after: ENGINE_HANG_AFTER,
+                smoke_timeout: SMOKE_TIMEOUT,
+                smoke_retry: SMOKE_RETRY_AFTER,
+            }
         }
     }
 }
 
+/// Test-only. Compiled out of release builds.
+#[cfg(debug_assertions)]
 fn pace_override(name: &str, fallback: Duration) -> Duration {
-    #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var(name)
         && let Ok(ms) = v.parse::<u64>()
     {
         return Duration::from_millis(ms);
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = name;
     }
     fallback
 }

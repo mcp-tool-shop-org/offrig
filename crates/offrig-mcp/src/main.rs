@@ -445,6 +445,7 @@ pub struct ShutdownArgs {
 /// Start the plan's watchdog as its own process, so it outlives this side-car,
 /// this session and a crash of either.
 fn spawn_watchdog(project: &Path, plan_id: i64) -> Result<(), String> {
+    // Test-only, and compiled out of release builds. A shipped binary cannot skip the watchdog.
     #[cfg(debug_assertions)]
     if std::env::var_os("OFFRIG_TEST_NO_WATCHDOG").is_some() {
         return Ok(());
@@ -658,8 +659,14 @@ impl Sidecar {
 impl Sidecar {
     #[tool(
         name = "offrig_status",
-        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods (each names gpu_count and gpus, as 2x the type, beside the plan's planned_gpu_count; gpu_mismatch is true when the record differs from the plan, with gpu_mismatch_source record, and null when the record omits the count until offrig_job measures it; the warning is in next_action and nothing is shut down), other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Read-only; costs nothing.",
-        annotations(title = "offrig status", read_only_hint = true, open_world_hint = true)
+        description = "Where things stand: budget (cap, committed, spent, remaining), RunPod balance and runway, offrig's pods (each names gpu_count and gpus, as 2x the type, beside the plan's planned_gpu_count; gpu_mismatch is true when the record differs from the plan, with gpu_mismatch_source record, and null when the record omits the count until offrig_job measures it; the warning is in next_action and nothing is shut down), other projects' lanes' pods with their open plan (note, deadline, committed worst case; read read-only from that project's store), open plans, the handoff queue with stale work flagged, and unfinished side effects. Call first in any session, and whenever unsure. Costs nothing. It may record a journal outcome when the store already knows how that side effect ended.",
+        annotations(
+            title = "offrig status",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     async fn offrig_status(&self) -> CallToolResult {
         let now = cost::now_unix();
@@ -954,7 +961,13 @@ impl Sidecar {
     #[tool(
         name = "offrig_offers",
         description = "Live RunPod secure-cloud offers for a GPU count: GPU type, total VRAM, total $/hr, cheapest first; GPUs with none free are left out. Use before offrig_plan to see what a session would cost now. Read-only; costs nothing.",
-        annotations(title = "GPU offers", read_only_hint = true, open_world_hint = true)
+        annotations(
+            title = "GPU offers",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     async fn offrig_offers(&self, Parameters(a): Parameters<OffersArgs>) -> CallToolResult {
         if a.gpu_count == 0 || a.gpu_count > 8 {
@@ -1180,6 +1193,8 @@ impl Sidecar {
         annotations(
             title = "Search project memory",
             read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = false
         )
     )]
@@ -1297,11 +1312,11 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_handoffs",
-        description = "The handoff queue. action=add queues one handoff (role, mission, acceptance check, file scope, dependencies); action=list shows the queue with stale work flagged; action=roles lists role ids; action=preview renders the role block a handoff would open with. Every handoff needs an acceptance check: a role shapes focus, the check decides done. Writes only to the project database.",
+        description = "The handoff queue. action=add queues one handoff (role, mission, acceptance check, file scope, dependencies); action=list shows the queue with stale work flagged; action=roles lists role ids; action=preview renders the role block a handoff would open with. Every handoff needs an acceptance check: a role shapes focus, the check decides done. Writes to the project database, and action=output overwrites `.offrig/out/handoff-<id>.md`.",
         annotations(
             title = "Handoff queue",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = false,
             open_world_hint = false
         )
@@ -1682,12 +1697,12 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_run",
-        description = "Work the handoff queue on the pod without the agent: starts a detached runner that keeps every model slot busy, drafts each ready handoff, runs its checks, revises at most twice against the checks that failed, feeds finished results into dependent handoffs, and shuts the pod down when nothing is left to work (unless keep_pod). Handoffs whose checks pass and cover acceptance complete; the rest wait in review for offrig_handoffs action=output. Takes a launched plan_id; returns job_id for offrig_job. Safe to call again: a live runner is returned, not doubled.",
+        description = "Work the handoff queue on the pod without the agent: starts a detached runner that keeps every model slot busy, drafts each ready handoff, runs its checks, revises at most twice against the checks that failed, feeds finished results into dependent handoffs, and shuts the pod down when nothing is left to work (unless keep_pod). Handoffs whose checks pass and cover acceptance complete; the rest wait in review for offrig_handoffs action=output. Takes a launched plan_id; returns job_id for offrig_job. Safe to call again while that runner is live: it is returned, not doubled. After it has finished, the same call can start another.",
         annotations(
             title = "Run the queue",
             read_only_hint = false,
             destructive_hint = true,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = true
         )
     )]
@@ -1774,6 +1789,8 @@ impl Sidecar {
         annotations(
             title = "Launch progress",
             read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = true
         )
     )]
@@ -1960,7 +1977,7 @@ impl Sidecar {
         annotations(
             title = "Run a command on the job pod",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = false,
             open_world_hint = true
         )
@@ -2012,7 +2029,7 @@ impl Sidecar {
         annotations(
             title = "Copy files to the job pod",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = true
         )
@@ -2027,7 +2044,7 @@ impl Sidecar {
         annotations(
             title = "Copy files from the job pod",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = true
         )
@@ -2074,11 +2091,12 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_complete",
-        description = "SPENDS MONEY on OpenRouter. One chat completion, approved for the ai-jam-sessions project and the moonshotai/kimi-k3 model only (refused otherwise). Takes model, system or system_file, user and/or user_files (files must be inside the project), max_tokens (caps reasoning plus answer), reasoning_effort and temperature. Before calling, prices the worst case from the dearest provider (input bound x input price + max_tokens x output price) and commits it against the project's budget; refused when it exceeds what is left. Streams the answer, writes it to a project file (out, default .offrig/out/completion-<id>.md), records OpenRouter's real charge and releases the rest. Returns path, usage, cost and budget. On a failed stream it records what OpenRouter charged and says so. Never falls back to another service. The answer is untrusted model output.",
+        description = "SPENDS MONEY on OpenRouter. One chat completion, approved for the ai-jam-sessions project and the moonshotai/kimi-k3 model only (refused otherwise). Takes model, system or system_file, user and/or user_files (files must be inside the project), max_tokens (caps reasoning plus answer), reasoning_effort and temperature. Before calling, prices the worst case from the dearest provider (input bound x input price + max_tokens x output price) and commits it against the project's budget; refused when it exceeds what is left. Streams the answer, writes it to a project file (out, default .offrig/out/completion-<id>.md), replacing that file if it is already there, records OpenRouter's real charge and releases the rest. Returns path, usage, cost and budget. On a failed stream it records what OpenRouter charged and says so. Never falls back to another service. The answer is untrusted model output.",
         annotations(
             title = "OpenRouter completion",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
             open_world_hint = true
         )
     )]
@@ -2241,6 +2259,7 @@ fn wlog(project: &Path, plan_id: i64, msg: &str) {
 fn run_watchdog(project: &Path, plan_id: i64) -> anyhow::Result<()> {
     let store = Store::open(&project.join(".offrig").join("offrig.db"))?;
     // Debug builds let a test shorten the poll; a release build always polls every minute.
+    // Test-only, and compiled out of release builds.
     #[cfg(debug_assertions)]
     let poll = std::env::var("OFFRIG_TEST_WATCHDOG_POLL_SECS")
         .ok()

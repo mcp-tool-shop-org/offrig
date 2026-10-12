@@ -86,3 +86,17 @@ jobs:
 
       - name: Atlas check
         run: npx --yes @dogfood-lab/atlas@1.24.0 check
+
+      # A switch that can skip the watchdog must never ship. The watchdog is what
+      # stops pod billing when everything else is gone.
+      - name: Release binaries contain no test switches
+        run: |
+          cargo build --release --locked -p offrig-cli -p offrig-mcp -p offrig-app
+          fail=0
+          for bin in offrig offrig-mcp offrig-app; do
+            if grep -a -q 'OFFRIG_TEST_' "target/release/${bin}"; then
+              echo "::error::${bin} contains OFFRIG_TEST_"
+              fail=1
+            fi
+          done
+          test "$fail" -eq 0
