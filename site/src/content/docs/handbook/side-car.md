@@ -299,6 +299,7 @@ every search and index call stops and tells you to run `offrig index --rebuild`.
 | `offrig_exec` | pod time | Start, follow, stop or briefly run a command on a job pod |
 | `offrig_get` | pod time | Copy files back from a job pod |
 | `offrig_shutdown` | stops billing | Terminate the pod and close the plan's books |
+| `offrig_complete` | **yes** | One OpenRouter chat completion for an allow-listed project and model. Commits the worst case, writes the answer to a project file, records the real charge |
 
 Every error a tool returns is a structured result that names a next action. Error codes
 are listed in the [Reference](../reference/).

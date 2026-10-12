@@ -6,6 +6,18 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **Every side-car tool sets all four behaviour hints.** `readOnlyHint`,
+  `destructiveHint`, `idempotentHint` and `openWorldHint` are explicit booleans
+  on each of the 15 tools, matching what that handler does. `offrig_status` is
+  not read-only: it may record a journal outcome the store already knows.
+  `offrig_handoffs` is destructive because `action=output` overwrites a file.
+  `offrig_launch` stays idempotent (a second call returns the same job and
+  never a second pod). `offrig_run` is destructive because the runner shuts the
+  pod down unless `keep_pod`, and it is not idempotent once that runner has
+  finished. `offrig_complete` can replace the file it writes, and a second call
+  spends again. A tool that omits a hint fails CI, and the values are pinned.
+  The README and the handbook list `offrig_complete` with the other tools.
+
 - **A project's `.offrig/` ignores itself.** When offrig creates that directory,
   and when it next opens one that is already there without the file, it writes
   `.offrig/.gitignore` containing `*`. An existing `.offrig/.gitignore` is left

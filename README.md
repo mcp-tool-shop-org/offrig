@@ -186,6 +186,7 @@ so a session survives compaction or a restart without re-explaining anything.
 | `offrig_exec` | Runs a bash command on a job pod, detached so it outlives the side-car (`start`), reports running or exited with its exit code and log tail (`status`; `save_log` also copies the whole log to a local file), kills it (`stop`), or runs a short command now and returns its stdout, stderr and exit code (`run`, `timeout_secs` default 30, at most 120). Optional `plan_id` (see below) |
 | `offrig_get` | Copies a file or directory back from a job pod, creating missing local parent folders; do it before the shutdown, which deletes the pod's disk. Optional `plan_id` (see below) |
 | `offrig_shutdown` | **Destroys the pod.** Terminates it and closes the plan's books with measured spend; refused while handoffs are in flight unless given a reason. Removes the lane's own `~/.ssh/config` block when it names that pod (`ssh_block_removed`) |
+| `offrig_complete` | **Spends.** One OpenRouter chat completion, for an allow-listed project and model only. Commits the worst case against the budget, writes the answer to a project file (replacing that path if it is already there), and records the real charge |
 
 **Which job plan a job tool acts on.** `offrig_put`, `offrig_exec` and `offrig_get` take an
 optional `plan_id`. With exactly one open job plan and no `plan_id` they use it, as before.
