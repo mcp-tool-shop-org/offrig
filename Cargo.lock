@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "offrig-app"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "eframe",
  "egui_kittest",
@@ -2752,7 +2752,7 @@ dependencies = [
 
 [[package]]
 name = "offrig-cli"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "offrig-core"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "dirs",
  "ignore",
@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "offrig-mcp"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "offrig-core",

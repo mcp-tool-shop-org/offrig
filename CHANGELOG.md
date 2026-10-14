@@ -6,6 +6,8 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-14
+
 - Build fake credentials at runtime in `trace.rs` unit tests so secret scanners do not flag test fixtures.
 
 ## [1.1.1] - 2026-10-12
