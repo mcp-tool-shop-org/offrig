@@ -6,6 +6,8 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- Build fake credentials at runtime in `trace.rs` unit tests so secret scanners do not flag test fixtures.
+
 ## [1.1.1] - 2026-10-12
 
 - **A release binary contains no test switch.** CI builds `offrig`, `offrig-mcp`
