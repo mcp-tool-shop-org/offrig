@@ -12,8 +12,9 @@ answers the parts of Ollama's API that offrig's embed client calls: `/api/embed`
   check offrig makes, and a store would silently mix two models.
 - It never touches a GPU: it refuses to start when torch can see CUDA, and `/api/ps` reports `size_vram: 0`.
 - Requests are encoded in sub-batches (default 8), which bounds the attention memory of long chunks.
+- `--threads N` caps torch's CPU threads, so a long rebuild can leave cores to other work. The default uses all.
 
-    python embed_serve.py [--port 11490] [--sub-batch 8]
+    python embed_serve.py [--port 11490] [--sub-batch 8] [--threads N]
 """
 
 from __future__ import annotations
@@ -79,11 +80,15 @@ class SentenceTransformerEncoder:
         return out
 
 
-def load_encoder(sub_batch: int) -> SentenceTransformerEncoder:
+def load_encoder(sub_batch: int, threads: int | None = None) -> SentenceTransformerEncoder:
     import torch
     from sentence_transformers import SentenceTransformer
 
     refuse_if_cuda(torch)
+    if threads is not None:
+        if threads < 1:
+            raise SystemExit("REFUSED: --threads must be at least 1")
+        torch.set_num_threads(threads)
     model = SentenceTransformer(
         REPO,
         revision=REVISION,
@@ -181,11 +186,12 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="EmbeddingGemma 2 on the CPU behind Ollama's embedding API")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--sub-batch", type=int, default=DEFAULT_SUB_BATCH)
+    ap.add_argument("--threads", type=int, default=None, help="cap torch's CPU threads (default: all cores)")
     a = ap.parse_args(argv)
-    encoder = load_encoder(a.sub_batch)
+    encoder = load_encoder(a.sub_batch, a.threads)
     srv = make_server(encoder, a.port)
     print(f"embed-serve: {MODEL_NAME} ({REPO}@{REVISION[:7]}, {encoder.dim}d, CPU) on "
-          f"http://127.0.0.1:{a.port}, sub-batch {a.sub_batch}", flush=True)
+          f"http://127.0.0.1:{a.port}, sub-batch {a.sub_batch}, threads {a.threads or 'all'}", flush=True)
     srv.serve_forever()
 
 

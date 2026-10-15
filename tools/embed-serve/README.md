@@ -37,6 +37,8 @@ python -m venv .venv
 
 The first start downloads the model, about 1.5 GB, into the Hugging Face cache.
 
+`--threads N` caps torch's CPU threads, so a long rebuild leaves cores to other work. By default it uses every core.
+
 ## What it refuses
 
 - **Any model name but `embeddinggemma-2:f32`,** with a 404. A server that embedded a

@@ -169,13 +169,20 @@ class LoadTests(unittest.TestCase):
             def parameters(self):
                 return [SimpleNamespace(numel=lambda: params)]
 
-        torch = SimpleNamespace(float32="f32", cuda=SimpleNamespace(is_available=lambda: cuda))
+        torch = SimpleNamespace(float32="f32", cuda=SimpleNamespace(is_available=lambda: cuda),
+                                set_num_threads=lambda n: seen.__setitem__("threads", n))
         return {"torch": torch, "sentence_transformers": SimpleNamespace(SentenceTransformer=FakeST)}, seen
 
-    def load(self, cuda=False, params=271_002_624):
+    def load(self, cuda=False, params=271_002_624, threads=None):
         mods, seen = self.fake_modules(cuda, params)
         with unittest.mock.patch.dict(sys.modules, mods):
-            return es.load_encoder(8), seen
+            return es.load_encoder(8, threads), seen
+
+    def test_threads_default_to_all_and_cap_when_asked(self):
+        self.assertNotIn("threads", self.load()[1])
+        self.assertEqual(self.load(threads=6)[1]["threads"], 6)
+        with self.assertRaises(SystemExit):
+            self.load(threads=0)
 
     def test_loads_the_pinned_text_only_model_on_the_cpu_in_float32(self):
         enc, seen = self.load()
@@ -204,11 +211,11 @@ class LoadTests(unittest.TestCase):
             served["port"] = port
             return FakeSrv()
 
-        with unittest.mock.patch.object(es, "load_encoder", lambda sb: es.SentenceTransformerEncoder(
-                FakeModel(), sb, 1)), unittest.mock.patch.object(es, "make_server", fake_make), \
+        with unittest.mock.patch.object(es, "load_encoder", lambda sb, th: served.update(threads=th) or
+                es.SentenceTransformerEncoder(FakeModel(), sb, 1)), unittest.mock.patch.object(es, "make_server", fake_make), \
                 unittest.mock.patch("builtins.print"):
-            es.main(["--port", "11490", "--sub-batch", "4"])
-        self.assertEqual(served, {"port": 11490, "ran": True})
+            es.main(["--port", "11490", "--sub-batch", "4", "--threads", "6"])
+        self.assertEqual(served, {"port": 11490, "ran": True, "threads": 6})
 
 
 class SubBatchTests(unittest.TestCase):
