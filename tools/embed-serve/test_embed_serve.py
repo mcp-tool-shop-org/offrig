@@ -173,14 +173,19 @@ class LoadTests(unittest.TestCase):
                                 set_num_threads=lambda n: seen.__setitem__("threads", n))
         return {"torch": torch, "sentence_transformers": SimpleNamespace(SentenceTransformer=FakeST)}, seen
 
-    def load(self, cuda=False, params=271_002_624, threads=None):
+    def load(self, cuda=False, params=271_002_624, threads=4):
         mods, seen = self.fake_modules(cuda, params)
         with unittest.mock.patch.dict(sys.modules, mods):
             return es.load_encoder(8, threads), seen
 
-    def test_threads_default_to_all_and_cap_when_asked(self):
-        self.assertNotIn("threads", self.load()[1])
+    def test_threads_are_always_capped_and_default_to_half_the_cores(self):
         self.assertEqual(self.load(threads=6)[1]["threads"], 6)
+        with unittest.mock.patch.object(es.os, "cpu_count", lambda: 24):
+            self.assertEqual(es.default_threads(), 12)
+        with unittest.mock.patch.object(es.os, "cpu_count", lambda: None):
+            self.assertEqual(es.default_threads(), 1)
+        with unittest.mock.patch.object(es.os, "cpu_count", lambda: 1):
+            self.assertEqual(es.default_threads(), 1)
         with self.assertRaises(SystemExit):
             self.load(threads=0)
 

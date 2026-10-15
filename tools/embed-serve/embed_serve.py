@@ -12,7 +12,8 @@ answers the parts of Ollama's API that offrig's embed client calls: `/api/embed`
   check offrig makes, and a store would silently mix two models.
 - It never touches a GPU: it refuses to start when torch can see CUDA, and `/api/ps` reports `size_vram: 0`.
 - Requests are encoded in sub-batches (default 8), which bounds the attention memory of long chunks.
-- `--threads N` caps torch's CPU threads, so a long rebuild can leave cores to other work. The default uses all.
+- It uses half the machine's logical cores by default (`--threads N` sets another cap), because the rig is shared: with
+  every core, a rebuild takes the whole CPU from everything else running.
 
     python embed_serve.py [--port 11490] [--sub-batch 8] [--threads N]
 """
@@ -20,6 +21,7 @@ answers the parts of Ollama's API that offrig's embed client calls: `/api/embed`
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import math
 import threading
@@ -34,6 +36,11 @@ REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b"
 DEFAULT_PORT = 11490
 SHARED_OLLAMA_PORT = 11434
 DEFAULT_SUB_BATCH = 8
+
+
+def default_threads() -> int:
+    """Half the logical cores, at least one: the rig is shared, so a rebuild never takes the whole CPU by default."""
+    return max(1, (os.cpu_count() or 2) // 2)
 MAX_TEXT_PARAMS = 300_000_000  # the text-only model is 271M; more means the vision or audio encoder loaded
 MAX_BODY_BYTES = 32 * 1024 * 1024
 
@@ -80,15 +87,14 @@ class SentenceTransformerEncoder:
         return out
 
 
-def load_encoder(sub_batch: int, threads: int | None = None) -> SentenceTransformerEncoder:
+def load_encoder(sub_batch: int, threads: int) -> SentenceTransformerEncoder:
     import torch
     from sentence_transformers import SentenceTransformer
 
     refuse_if_cuda(torch)
-    if threads is not None:
-        if threads < 1:
-            raise SystemExit("REFUSED: --threads must be at least 1")
-        torch.set_num_threads(threads)
+    if threads < 1:
+        raise SystemExit("REFUSED: --threads must be at least 1")
+    torch.set_num_threads(threads)
     model = SentenceTransformer(
         REPO,
         revision=REVISION,
@@ -186,12 +192,12 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="EmbeddingGemma 2 on the CPU behind Ollama's embedding API")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--sub-batch", type=int, default=DEFAULT_SUB_BATCH)
-    ap.add_argument("--threads", type=int, default=None, help="cap torch's CPU threads (default: all cores)")
+    ap.add_argument("--threads", type=int, default=default_threads(), help="torch's CPU threads (default: half the logical cores)")
     a = ap.parse_args(argv)
     encoder = load_encoder(a.sub_batch, a.threads)
     srv = make_server(encoder, a.port)
     print(f"embed-serve: {MODEL_NAME} ({REPO}@{REVISION[:7]}, {encoder.dim}d, CPU) on "
-          f"http://127.0.0.1:{a.port}, sub-batch {a.sub_batch}, threads {a.threads or 'all'}", flush=True)
+          f"http://127.0.0.1:{a.port}, sub-batch {a.sub_batch}, threads {a.threads} of {os.cpu_count()}", flush=True)
     srv.serve_forever()
 
 
