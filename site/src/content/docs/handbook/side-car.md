@@ -273,8 +273,10 @@ python -m venv .venv
 
 `requirements.txt` pins every package exactly, with torch's CPU build from the PyTorch CPU
 index. The first start downloads the model, about 1.5 GB, into the Hugging Face cache.
-It uses half the machine's logical cores by default, so a rebuild never takes the whole CPU
-from other work on a shared machine. `--threads N` sets another cap.
+It's built for a shared machine. Every thread pool is capped before torch loads: by default a
+quarter of the logical cores, at most 6, and `--threads N` sets another cap. It runs at
+below-normal priority, and serves one request at a time within fixed bounds (4 MiB, 256 texts,
+2,048 tokens a text).
 
 The server guards itself:
 - It refuses to start when torch can see CUDA.

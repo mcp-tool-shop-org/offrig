@@ -37,7 +37,10 @@ python -m venv .venv
 
 The first start downloads the model, about 1.5 GB, into the Hugging Face cache.
 
-It uses half the machine's logical cores by default, so a rebuild never takes the whole CPU from other work on a shared machine. `--threads N` sets another cap.
+It's built to be a good neighbour on a shared machine:
+- every thread pool in the stack (torch, OpenMP, MKL, the tokenizers) is capped before torch loads. By default that's a quarter of the logical cores, at most 6, and `--threads N` sets another cap;
+- it runs at below-normal priority, so interactive work always comes first;
+- it serves one request at a time, and bounds what a request can carry: 4 MiB of body, 256 texts, 12,000 characters a text, 2,000,000 in all, and 2,048 tokens a text.
 
 ## What it refuses
 
@@ -48,7 +51,7 @@ It uses half the machine's logical cores by default, so a rebuild never takes th
 - **Port 11434,** the shared Ollama's port.
 - **A non-finite vector.** It answers 500 and returns nothing.
 
-It binds `127.0.0.1` only. offrig adds the task prefixes (`title: none | text: ` for
+It binds `127.0.0.1` only, and refuses browser requests (an `Origin` or `Sec-Fetch-Site` header), non-loopback `Host` headers, chunked bodies and any body not sent as JSON. offrig adds the task prefixes (`title: none | text: ` for
 documents, `task: search result | query: ` for queries). The model's own default prompt is
 empty, so nothing else is added.
 
