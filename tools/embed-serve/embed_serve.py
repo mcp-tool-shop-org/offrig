@@ -111,7 +111,7 @@ def load_encoder(sub_batch: int, threads: int) -> SentenceTransformerEncoder:
 class State:
     def __init__(self, encoder: Encoder):
         self.encoder = encoder
-        self.lock = threading.Lock()  # one encode at a time: the model uses every CPU thread
+        self.lock = threading.Lock()  # one encode at a time: each encode already uses all the threads it is given
         self.started = time.time()
 
 
