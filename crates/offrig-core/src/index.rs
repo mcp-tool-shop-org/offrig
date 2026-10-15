@@ -8,8 +8,9 @@
 //! 2009); a header on each chunk gives the retriever context (Anthropic 2024); int8
 //! vectors keep about 99% of retrieval quality at a quarter of the size.
 //!
-//! Embeddings are computed by a dedicated CPU-only Ollama (`embed_url`), never the
-//! shared one on 11434 and never a GPU. Search by meaning never silently degrades: a
+//! Embeddings are computed by a dedicated CPU-only embed server that speaks Ollama's
+//! embedding API (`embed_url`; by default `tools/embed-serve` running EmbeddingGemma 2),
+//! never the shared Ollama on 11434 and never a GPU. Search by meaning never silently degrades: a
 //! missing model or a different model is an error that says what to run.
 
 use std::path::{Path, PathBuf};
@@ -22,12 +23,17 @@ use crate::lanes::{LANE_COUNT, LANE_PORT_BASE, LANE_PORT_STEP, SIDECAR_PORT_BASE
 use crate::ollama::Ollama;
 use crate::store::{NewChunk, Query, Record, Store};
 
-/// The dedicated CPU-only Ollama the embeddings come from. The port sits clear of the
+/// The dedicated CPU-only embed server the embeddings come from. The port sits clear of the
 /// local Ollama (11434), the plain lane (11435, 11436), the lane range (11500..11628)
 /// and the side-car range (11700..11764).
 pub const DEFAULT_EMBED_URL: &str = "http://127.0.0.1:11490";
 pub const EMBED_URL_ENV: &str = "OFFRIG_EMBED_URL";
-pub const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
+/// EmbeddingGemma 2, text only, float32 on the CPU, as `tools/embed-serve` serves it. It
+/// replaced nomic-embed-text in 1.2.0 after a pre-registered benchmark on studio queries
+/// (rnd `experiments/embeddinggemma-2/results.md`: dense nDCG@10 +0.112, one-sided 95%
+/// lower bound +0.065, on 93 queries). The `:f32` tag keeps it apart from Ollama's
+/// `embeddinggemma-2:*` builds, whose vectors would otherwise pass every check here.
+pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma-2:f32";
 
 /// Chunk size, in characters (about 200 to 500 tokens).
 pub const MIN_CHARS: usize = 800;
@@ -81,7 +87,7 @@ pub fn resolve_embed_url(cfg_url: &str, env: Option<&str>, tunnel_port: u16) -> 
     };
     if let Some(why) = embed_port_conflict(port, tunnel_port) {
         return Err(Error::Config(format!(
-            "{from} = {url} uses port {port}, which is {why}; embeddings need their own CPU-only Ollama, e.g. {DEFAULT_EMBED_URL}"
+            "{from} = {url} uses port {port}, which is {why}; embeddings need their own CPU-only embed server, e.g. {DEFAULT_EMBED_URL}"
         )));
     }
     Ok(url.trim_end_matches('/').to_string())
@@ -100,10 +106,18 @@ pub fn embed_client() -> Result<Ollama> {
     Ok(Ollama::new(&embed_url()?))
 }
 
-fn start_line(base: &str) -> String {
+/// How to start the embed server for `model`: `tools/embed-serve` for the default model,
+/// or a CPU-only Ollama for any other model a user asks for with `--model`.
+fn start_line(base: &str, model: &str) -> String {
+    if model == DEFAULT_EMBED_MODEL {
+        let port = url_port(base).unwrap_or(11490);
+        return format!(
+            "start the CPU-only embed server for {DEFAULT_EMBED_MODEL} with `python embed_serve.py --port {port}` from offrig's tools/embed-serve, in a virtual environment made from its requirements.txt (the handbook's side-car page has the steps)"
+        );
+    }
     let hostport = base.split("://").nth(1).unwrap_or(base);
     format!(
-        "start a CPU-only Ollama for embeddings with `OLLAMA_HOST={hostport} CUDA_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0 ollama serve`, then `OLLAMA_HOST={hostport} ollama pull {DEFAULT_EMBED_MODEL}`"
+        "start a CPU-only Ollama for {model} with `OLLAMA_HOST={hostport} CUDA_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0 ollama serve`, then `OLLAMA_HOST={hostport} ollama pull {model}`"
     )
 }
 
@@ -117,16 +131,19 @@ pub enum Task {
     Query,
 }
 
-/// The task prefix `model` expects: nomic-embed-text was trained with
-/// `search_document: ` and `search_query: ` and its model card says to always use them.
-/// Other models get none.
+/// The task prefix `model` expects. nomic-embed-text was trained with `search_document: `
+/// and `search_query: `, and its model card says to always use them. EmbeddingGemma 2's
+/// card gives `title: none | text: ` for documents with no title and
+/// `task: search result | query: ` for queries. Its `task: code retrieval` prefix is not
+/// used: on the studio's code queries it scored no better (-0.008 nDCG@10), so one query
+/// prefix serves every kind. Other models get none.
 pub fn task_prefix(model: &str, task: Task) -> &'static str {
-    if !model.starts_with("nomic-embed-text") {
-        return "";
-    }
-    match task {
-        Task::Document => "search_document: ",
-        Task::Query => "search_query: ",
+    match (model, task) {
+        (m, Task::Document) if m.starts_with("nomic-embed-text") => "search_document: ",
+        (m, Task::Query) if m.starts_with("nomic-embed-text") => "search_query: ",
+        (m, Task::Document) if m.starts_with("embeddinggemma-2") => "title: none | text: ",
+        (m, Task::Query) if m.starts_with("embeddinggemma-2") => "task: search result | query: ",
+        _ => "",
     }
 }
 
@@ -142,11 +159,19 @@ pub fn embed_call(
         Error::Http { .. } => Error::Refused(format!(
             "no embedding server answers at {}; {}",
             ollama.base(),
-            start_line(ollama.base())
+            start_line(ollama.base(), model)
         )),
+        Error::Refused(m) if m.contains("does not serve") => Error::Refused(if model == DEFAULT_EMBED_MODEL {
+            format!("{m}; {}", start_line(ollama.base(), model))
+        } else {
+            format!(
+                "{m}. If this project's index was built with {model}, re-embed it with the default model ({DEFAULT_EMBED_MODEL}) by running `offrig index --rebuild`, or search with mode=keyword meanwhile. To keep {model}, serve it there instead: {}",
+                start_line(ollama.base(), model)
+            )
+        }),
         other => other,
     })?;
-    check_cpu_only(ollama)?;
+    check_cpu_only(ollama, model)?;
     Ok(vectors)
 }
 
@@ -155,7 +180,7 @@ pub fn embed_call(
 /// `CUDA_VISIBLE_DEVICES=-1` can still load onto it. The check runs before any vector is
 /// returned, so nothing is written. Only positive evidence refuses: a server that does not
 /// answer `/api/ps` is not blocked here.
-fn check_cpu_only(ollama: &Ollama) -> Result<()> {
+fn check_cpu_only(ollama: &Ollama, model: &str) -> Result<()> {
     let Ok(loaded) = ollama.loaded() else {
         return Ok(());
     };
@@ -165,7 +190,7 @@ fn check_cpu_only(ollama: &Ollama) -> Result<()> {
             ollama.base(),
             l.name,
             l.size_vram as f64 / 1e9,
-            start_line(ollama.base())
+            start_line(ollama.base(), model)
         )));
     }
     Ok(())
@@ -822,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn nomic_gets_its_task_prefixes_and_other_models_none() {
+    fn nomic_and_embeddinggemma_get_their_task_prefixes_and_other_models_none() {
         assert_eq!(
             task_prefix("nomic-embed-text", Task::Document),
             "search_document: "
@@ -831,7 +856,16 @@ mod tests {
             task_prefix("nomic-embed-text:v1.5", Task::Query),
             "search_query: "
         );
+        assert_eq!(
+            task_prefix(DEFAULT_EMBED_MODEL, Task::Document),
+            "title: none | text: "
+        );
+        assert_eq!(
+            task_prefix(DEFAULT_EMBED_MODEL, Task::Query),
+            "task: search result | query: "
+        );
         assert_eq!(task_prefix("bge-m3", Task::Query), "");
+        assert_eq!(task_prefix("bge-m3", Task::Document), "");
     }
 
     #[test]

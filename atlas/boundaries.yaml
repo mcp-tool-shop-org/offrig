@@ -16,6 +16,10 @@ boundaries:
     globs:
       - crates/offrig-mcp/**
     role: code
+  - name: embed-serve
+    globs:
+      - tools/embed-serve/**
+    role: code
   - name: root
     globs:
       - "*"

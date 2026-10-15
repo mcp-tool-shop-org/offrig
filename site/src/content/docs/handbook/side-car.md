@@ -251,39 +251,96 @@ records. Active records are chunks too, so memory search ranks them the same way
 
 ### The embed server
 
-Embeddings come from a dedicated, CPU-only Ollama, never the shared one on `11434` and never
-a GPU: loading an embedding model into the shared server can evict a GPU model mid-run, and
-a zero-GPU request can still open a CUDA context. Hiding CUDA is not enough on its own:
-Ollama 0.40 also reaches an NVIDIA card through Vulkan, so the server has to be told to
-skip every GPU path. Start it once, on its own port:
+Embeddings come from **EmbeddingGemma 2** by Google DeepMind (`google/embeddinggemma-2`,
+revision `914f7f8`). It's an open model under the Apache-2.0 licence, with no gate to pass
+before you download it. offrig runs it text only, in float32, on the CPU. On a pre-registered
+benchmark of the studio's own queries it beat nomic-embed-text, offrig's embedder before
+1.2.0: dense nDCG@10 +0.112, code +0.174, prose +0.041. The design and the per-query numbers
+are in the rnd library, `experiments/embeddinggemma-2/`.
+
+It's served by `tools/embed-serve`, a small server in this repository that answers the part
+of Ollama's API that offrig's embed client uses. Ollama on Windows can't run the model,
+because its library builds need MLX. The server runs on its own port, never the shared
+Ollama on `11434` and never a GPU. Loading an embedding model into the shared server can
+evict a GPU model mid-run. Start it once, from an offrig checkout, with Python 3.12:
+
+```bash
+cd tools/embed-serve
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt    # Linux: .venv/bin/python
+.venv/Scripts/python embed_serve.py --port 11490 --sub-batch 8
+```
+
+`requirements.txt` pins every package exactly, with torch's CPU build from the PyTorch CPU
+index. The first start downloads the model, about 1.5 GB, into the Hugging Face cache.
+
+The server guards itself:
+- It refuses to start when torch can see CUDA.
+- It serves one model name, `embeddinggemma-2:f32`, and answers 404 for any other.
+- It binds `127.0.0.1` only.
+
+offrig checks too. After each embedding call it reads the server's `/api/ps`, and if a model
+sits in GPU memory it refuses and shows the start line.
+
+offrig sends documents with `title: none | text: ` and queries with
+`task: search result | query: `, the prefixes from the model's card. nomic-embed-text, if you
+choose it with `--model`, gets its `search_document: ` and `search_query: `. Other models get
+none.
+
+The URL is `embed_url` in `config.toml` (default `http://127.0.0.1:11490`), and
+`OFFRIG_EMBED_URL` overrides it. offrig refuses a port that belongs to something else it
+runs:
+- `11434`;
+- the configured tunnel port and its runner;
+- the plain lane;
+- the lane range;
+- the side-car range.
+
+If nothing answers, the error shows the start line above. If the index was built with a
+different model or dimension, every search and index call stops and tells you to run
+`offrig index --rebuild`.
+
+**Measured cost** (2026-10-15, a 24-thread desktop CPU):
+- **Speed:** about 2 chunks a second over HTTP, so about 8 minutes per 1,000 chunks.
+- **Memory:** about 1.7 GiB resident once the model is loaded. Long chunks briefly need
+  more, which the server bounds by encoding in sub-batches of 8.
+
+#### Upgrading from nomic-embed-text (offrig 1.1.x)
+
+A project index built with nomic-embed-text keeps its vectors, and offrig never mixes them
+with the new model's:
+- **`offrig index`** refuses: "the project index was built with nomic-embed-text, not
+  embeddinggemma-2:f32; run `offrig index --rebuild`". It writes nothing.
+- **Hybrid search**, the default once a project has an index, embeds the query with the
+  index's own model. embed-serve doesn't serve that model, so the search is refused, never
+  quietly downgraded. Search with `mode=keyword` meanwhile.
+- **The side-car's background embed** leaves new records unembedded until the rebuild.
+  They're still found by keywords.
+
+Re-embed each such project once, with the server running:
+
+```bash
+offrig index --rebuild --project <dir>
+```
+
+It runs on the CPU at the rate above. Chunks are kept, and only the vectors are replaced. A
+project with no vectors yet needs nothing: its first `offrig index` embeds with the new model.
+
+#### Rollback
+
+1. Reinstall the previous offrig.
+2. Restart the nomic Ollama on 11490.
+3. Any store already rebuilt with the new model then needs
+   `offrig index --rebuild --model nomic-embed-text`.
+
+Chunks are kept, and only vectors are replaced.
+
+The CPU-only Ollama line for nomic-embed-text is:
 
 ```bash
 OLLAMA_HOST=127.0.0.1:11490 CUDA_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0 ollama serve
 OLLAMA_HOST=127.0.0.1:11490 ollama pull nomic-embed-text
 ```
-
-In PowerShell, set the variables first, then run the same two commands, each in its own
-window or job:
-
-```powershell
-$env:OLLAMA_HOST = '127.0.0.1:11490'; $env:CUDA_VISIBLE_DEVICES = '-1'; $env:GGML_VK_VISIBLE_DEVICES = '-1'; $env:OLLAMA_VULKAN = '0'; $env:OLLAMA_IGPU_ENABLE = '0'
-ollama serve
-```
-
-The server's log should list `inference compute id=cpu library=cpu`, and `nvidia-smi` should
-show no process from it. offrig checks too: after each embedding call it reads the embed
-server's `/api/ps`, and if the model sits in GPU memory it refuses and shows the start line.
-
-offrig sends documents and queries to nomic-embed-text with the `search_document: ` and
-`search_query: ` prefixes the model was trained with; other models get none.
-
-The URL is `embed_url` in `config.toml` (default `http://127.0.0.1:11490`), and
-`OFFRIG_EMBED_URL` overrides it. offrig refuses a port that belongs to something else it
-runs: `11434`, the configured tunnel port and its runner, the plain lane, the lane range
-and the side-car range. Requests also carry `num_gpu: 0` as a second guard. If nothing
-answers, the error shows the lines above; if the model is missing, it says
-`ollama pull nomic-embed-text`. If the index was built with a different model or dimension,
-every search and index call stops and tells you to run `offrig index --rebuild`.
 
 ## All tools
 

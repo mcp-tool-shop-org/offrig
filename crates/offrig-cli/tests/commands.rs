@@ -572,7 +572,7 @@ some notes",
     let status = run(&["index", "--status", "--project", p]);
     let text = out(&status);
     assert!(
-        text.contains("1 doc") && text.contains("nomic-embed-text, dimension: 3"),
+        text.contains("1 doc") && text.contains("embeddinggemma-2:f32, dimension: 3"),
         "{text}"
     );
     let calls = count(&hits, "POST /api/embed");

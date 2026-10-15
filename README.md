@@ -238,8 +238,11 @@ offrig verify calibrate --think-policy grounded=off,reasoning=escalate:off>on --
 offrig verify calibrate --report-only .offrig/out/calibrate-<model>-<time>
 ```
 
-`offrig index` embeds with a CPU-only Ollama (`embed_url`, default
-`http://127.0.0.1:11490`), never the shared server on 11434 and never a GPU. Once the
+`offrig index` embeds with **EmbeddingGemma 2** by Google DeepMind (Apache-2.0, not gated),
+served on the CPU by [`tools/embed-serve`](tools/embed-serve/) (`embed_url`, default
+`http://127.0.0.1:11490`), never the shared server on 11434 and never a GPU. It replaced
+nomic-embed-text in 1.2.0 after a pre-registered benchmark on the studio's own queries
+(dense nDCG@10 +0.112); a nomic-built index is refused until `offrig index --rebuild`. Once the
 project has an index, `offrig_memory_search` defaults to hybrid (keyword plus meaning).
 `offrig verify calibrate` scores a local loopback model as a verifier, one gold claim
 per call, with that claim's own evidence. A model name containing "cloud" is refused.
@@ -731,6 +734,7 @@ crates/offrig-cli    `offrig` command line
 crates/offrig-app    `offrig-app` desktop app (egui)
 crates/offrig-mcp    `offrig-mcp` side-car: MCP server for agents, plus the detached
                      watchdog and runner processes
+tools/embed-serve    the CPU embed server for the project index (Python; EmbeddingGemma 2)
 docs/                the side-car's design and its research grounding
 atlas/               Atlas map of the repo (regenerate with `atlas map`)
 ```
