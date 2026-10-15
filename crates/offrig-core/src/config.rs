@@ -44,7 +44,7 @@ pub struct Config {
     /// Role OS checkout whose dossiers and cards define handoff roles. `None` uses
     /// only offrig's built-in game roles.
     pub role_os_dir: Option<String>,
-    /// Where project-index embeddings are computed: a dedicated CPU-only Ollama, never
+    /// Where project-index embeddings are computed: a dedicated CPU-only embed server, never
     /// the shared one on 11434 (loading an embedding model there can evict a GPU model).
     /// `OFFRIG_EMBED_URL` overrides it.
     pub embed_url: String,

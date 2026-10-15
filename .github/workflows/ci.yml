@@ -12,6 +12,7 @@ on:
       - "rustfmt.toml"
       - "osv-scanner.toml"
       - "atlas/**"
+      - "tools/**"
       - ".github/workflows/**"
   # A required check runs on every pull request, with no paths filter.
   pull_request:
@@ -28,7 +29,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # id-token is for the Codecov upload (OIDC, no stored token). This is the only job.
+    # id-token is for the Codecov upload (OIDC, no stored token), in this job only.
     permissions:
       contents: read
       id-token: write
@@ -100,3 +101,28 @@ jobs:
             fi
           done
           test "$fail" -eq 0
+
+  # The embed server (tools/embed-serve). Its tests use a stub encoder and a fake torch,
+  # so this job installs no model and no torch: only coverage, pinned.
+  embed-serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tools/embed-serve
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Coverage tool
+        run: python -m pip install --quiet coverage==7.16.2
+
+      - name: Test with coverage
+        run: python -m coverage run --source=embed_serve -m unittest -v
+
+      # The same bar as the Rust job: lines >= 90%.
+      - name: Coverage summary and gate (lines >= 90%)
+        run: python -m coverage report -m --fail-under=90

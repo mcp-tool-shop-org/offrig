@@ -6,6 +6,58 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-15
+
+### Changed
+
+- **The project index embeds with EmbeddingGemma 2.** The default model is now
+  `embeddinggemma-2:f32`: Google DeepMind's `google/embeddinggemma-2` at revision
+  `914f7f8`, an open model under Apache-2.0 with no gate, text only, float32, on the CPU.
+  It replaces nomic-embed-text. On a pre-registered benchmark of 93 studio queries over an
+  11,525-chunk index it scored dense nDCG@10 +0.112 over nomic-embed-text, with a one-sided
+  95% lower bound of +0.065 (code +0.174, prose +0.041). The 256-dimension cut lost 0.043,
+  so vectors stay at 768. The record is in the rnd library, `experiments/embeddinggemma-2/`.
+- Documents are sent with `title: none | text: ` and queries with
+  `task: search result | query: `. The code-retrieval prefix scored no better on code
+  queries (−0.008), so one query prefix serves every kind.
+
+### Added
+
+- **`tools/embed-serve`, the CPU embed server.** Ollama on Windows can't run EmbeddingGemma 2,
+  so this small loopback server answers the part of Ollama's API that offrig's embed client
+  uses, on the same default `embed_url` (`http://127.0.0.1:11490`).
+  - It serves one name and answers 404 for any other, so no store can silently mix models.
+  - It refuses to start when torch can see CUDA, and `/api/ps` reports `size_vram: 0`.
+  - It encodes in sub-batches of 8.
+  - It's built for a shared machine, after an outside review:
+    - every thread pool (torch, OpenMP, MKL, OpenBLAS, the tokenizers) is capped before torch loads, by default to a quarter of the logical cores and at most 6 (`--threads`);
+    - it runs at below-normal priority, single-threaded, one request at a time;
+    - it bounds each request: 4 MiB, 256 texts, 12,000 characters a text, 2,048 tokens;
+    - it refuses browser requests, non-loopback hosts, chunked or non-JSON bodies and a bad `Content-Length`.
+  - Measured on a Core Ultra 9 285K with 6 threads on 6 efficiency cores: a 201-chunk rebuild took 163 s, the server used about 20% of the machine (never more than 22%), and peaked at 2.8 GiB. Its vectors match the benchmark's (cosine at least 0.9999999).
+  - Python 3.12. `requirements.txt` pins every package exactly, with torch's CPU build.
+  - Its tests use a stub encoder and run in CI's new `embed-serve` job, gated at 90% line
+    coverage.
+- Atlas: `tools/embed-serve` is its own part.
+
+### Upgrading: what a nomic-indexed store does
+
+A project index built with nomic-embed-text keeps its vectors, and nothing mixes them with
+the new model's:
+- **`offrig index`** is refused: "the project index was built with nomic-embed-text, not
+  embeddinggemma-2:f32; run `offrig index --rebuild`". It writes nothing.
+- **Hybrid search**, the default once an index exists, embeds the query with the index's
+  own model. The new server doesn't serve that model, so the search is refused, never
+  downgraded. The refusal names `offrig index --rebuild` and `mode=keyword`.
+- **The side-car's background embed** leaves new records keyword-only until the rebuild.
+
+Re-embed each such project once, with embed-serve running:
+`offrig index --rebuild --project <dir>`. Chunks are kept, and only vectors are replaced. A
+project with no vectors yet needs nothing.
+
+The refusal and start-line messages name embed-serve for the default model, and a CPU-only
+Ollama for a model chosen with `--model`.
+
 ## [1.1.3] - 2026-10-15
 
 ### Fixed

@@ -587,7 +587,7 @@ impl Ollama {
 impl Ollama {
     /// Embed `inputs` in one `/api/embed` call, one vector per input in order. With
     /// `cpu_only` the request carries `num_gpu: 0` so the model never loads on a GPU.
-    /// A model the server does not have is reported with the pull line.
+    /// A model the server does not have is refused, naming the model and the server.
     pub fn embed(&self, model: &str, inputs: &[String], cpu_only: bool) -> Result<Vec<Vec<f32>>> {
         let what = "embed";
         let mut body = json!({ "model": model, "input": inputs });
@@ -596,7 +596,7 @@ impl Ollama {
         }
         let v = self.post("/api/embed", &body, what).map_err(|e| match &e {
             Error::Ollama(m) if m.contains("http 404") => Error::Refused(format!(
-                "the embedding model {model} is not installed on {}; run `ollama pull {model}` against that host",
+                "the embed server at {} does not serve {model}",
                 self.base
             )),
             _ => e,

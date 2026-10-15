@@ -234,9 +234,9 @@ fn embed_sends_the_cpu_guard_and_checks_the_vectors() {
     // Too few vectors for the inputs.
     assert!(o.embed("m", &two, false).is_err());
     assert!(m.last().body.contains("input") && !m.last().body.contains("num_gpu"));
-    // A missing model names the pull line.
+    // A model the server does not serve is refused by name.
     let e = o.embed("x", &two, true).expect_err("404").to_string();
-    assert!(e.contains("ollama pull x"), "{e}");
+    assert!(e.contains("does not serve x"), "{e}");
     // Ragged vectors.
     assert!(o.embed("m", &two, true).is_err());
 }

@@ -223,13 +223,38 @@ fn memory_search_is_hybrid_once_embedded_and_keyword_before() {
 fn a_missing_model_a_dead_server_and_a_resized_model_are_all_errors() {
     let s = Store::open_in_memory().expect("store");
     record(&s, Kind::Fact, "alpha");
-    // The model is not installed.
+    // The server does not serve the model. An index built with an older model is told
+    // to rebuild with the default, or to search by keywords meanwhile.
     let m = serve(|_, _| (404, r#"{"error":"model not found"}"#.into()));
     let e = index::embed_pending(&s, &Ollama::new(&m.url), "nomic-embed-text")
         .expect_err("404")
         .to_string();
-    assert!(e.contains("ollama pull nomic-embed-text"), "{e}");
-    // Nothing answers: the error names the CPU-only start line, not the shared Ollama.
+    assert!(
+        e.contains("does not serve nomic-embed-text")
+            && e.contains("offrig index --rebuild")
+            && e.contains("mode=keyword")
+            && e.contains("ollama pull nomic-embed-text"),
+        "{e}"
+    );
+    // The default model missing names the embed server's start line.
+    let e = index::embed_pending(&s, &Ollama::new(&m.url), index::DEFAULT_EMBED_MODEL)
+        .expect_err("404 default")
+        .to_string();
+    assert!(
+        e.contains("does not serve embeddinggemma-2:f32") && e.contains("embed_serve.py --port"),
+        "{e}"
+    );
+    // Nothing answers: the error names the CPU-only start line, not the shared Ollama:
+    // embed-serve for the default model, a CPU-only Ollama for any other.
+    let e = index::embed_pending(&s, &Ollama::new(&dead_url()), index::DEFAULT_EMBED_MODEL)
+        .expect_err("dead")
+        .to_string();
+    assert!(
+        e.contains("no embedding server answers")
+            && e.contains("embed_serve.py --port")
+            && e.contains("requirements.txt"),
+        "{e}"
+    );
     let e = index::embed_pending(&s, &Ollama::new(&dead_url()), "nomic-embed-text")
         .expect_err("dead")
         .to_string();
@@ -237,7 +262,7 @@ fn a_missing_model_a_dead_server_and_a_resized_model_are_all_errors() {
         e.contains("CUDA_VISIBLE_DEVICES=-1")
             && e.contains("OLLAMA_VULKAN=0")
             && e.contains("ollama serve")
-            && e.contains("OLLAMA_HOST="),
+            && e.contains("ollama pull nomic-embed-text"),
         "{e}"
     );
     assert!(!e.contains("11434"), "{e}");

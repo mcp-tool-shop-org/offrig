@@ -230,7 +230,7 @@ enum Cmd {
         project: Option<std::path::PathBuf>,
     },
     /// Index documents and code for hybrid (keyword + meaning) search of this project.
-    /// Embeddings come from a dedicated CPU-only Ollama (config `embed_url`, default
+    /// Embeddings come from a dedicated CPU-only embed server (config `embed_url`, default
     /// http://127.0.0.1:11490), never the shared one and never a GPU. Only changed files
     /// are re-embedded; .gitignore is respected, and binaries, files over 1 MB and
     /// secrets-like files (.env*, *.pem, *.key, id_*, *credentials*) are skipped.
