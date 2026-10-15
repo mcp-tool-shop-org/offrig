@@ -103,7 +103,7 @@ pub fn embed_client() -> Result<Ollama> {
 fn start_line(base: &str) -> String {
     let hostport = base.split("://").nth(1).unwrap_or(base);
     format!(
-        "start a CPU-only Ollama for embeddings with `OLLAMA_HOST={hostport} CUDA_VISIBLE_DEVICES=-1 ollama serve`, then `OLLAMA_HOST={hostport} ollama pull {DEFAULT_EMBED_MODEL}`"
+        "start a CPU-only Ollama for embeddings with `OLLAMA_HOST={hostport} CUDA_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0 ollama serve`, then `OLLAMA_HOST={hostport} ollama pull {DEFAULT_EMBED_MODEL}`"
     )
 }
 
@@ -138,14 +138,37 @@ pub fn embed_call(
 ) -> Result<Vec<Vec<f32>>> {
     let prefix = task_prefix(model, task);
     let inputs: Vec<String> = inputs.iter().map(|t| format!("{prefix}{t}")).collect();
-    ollama.embed(model, &inputs, true).map_err(|e| match e {
+    let vectors = ollama.embed(model, &inputs, true).map_err(|e| match e {
         Error::Http { .. } => Error::Refused(format!(
             "no embedding server answers at {}; {}",
             ollama.base(),
             start_line(ollama.base())
         )),
         other => other,
-    })
+    })?;
+    check_cpu_only(ollama)?;
+    Ok(vectors)
+}
+
+/// Refuse when the embed server holds a model in GPU memory. Hiding CUDA is not enough:
+/// Ollama 0.40 also reaches the card through Vulkan, so a server started with only
+/// `CUDA_VISIBLE_DEVICES=-1` can still load onto it. The check runs before any vector is
+/// returned, so nothing is written. Only positive evidence refuses: a server that does not
+/// answer `/api/ps` is not blocked here.
+fn check_cpu_only(ollama: &Ollama) -> Result<()> {
+    let Ok(loaded) = ollama.loaded() else {
+        return Ok(());
+    };
+    if let Some(l) = loaded.iter().find(|l| l.size_vram > 0) {
+        return Err(Error::Refused(format!(
+            "the embed server at {} holds {} with {:.1} GB in GPU memory; embeddings must run CPU-only and never take the card. Stop that server and {}",
+            ollama.base(),
+            l.name,
+            l.size_vram as f64 / 1e9,
+            start_line(ollama.base())
+        )));
+    }
+    Ok(())
 }
 
 /// Refuse when the index was built with another model than `model`.

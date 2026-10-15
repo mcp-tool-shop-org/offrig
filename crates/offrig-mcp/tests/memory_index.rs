@@ -30,7 +30,11 @@ fn ids(r: &CallToolResult) -> Vec<i64> {
 }
 
 /// Axis 0 for "alpha" or "first letter"; the third axis keeps every vector non-zero.
-fn embed(_: &str, body: &str, _: usize) -> (u16, String) {
+fn embed(route: &str, body: &str, _: usize) -> (u16, String) {
+    // Only the embedding route; the CPU-only check's `/api/ps` gets a 404 (no evidence).
+    if route != "POST /api/embed" {
+        return (404, "{}".into());
+    }
     let v: Value = serde_json::from_str(body).expect("json");
     let rows: Vec<Vec<f64>> = v["input"]
         .as_array()

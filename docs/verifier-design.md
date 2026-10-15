@@ -207,11 +207,12 @@ Missing today:
   - Done on the host CPU (the maintainer's decision) by a **dedicated CPU-only Ollama
     instance**, never the shared one:
     - It runs on its own port (default `127.0.0.1:11490`, clear of the local Ollama on 11434, the plain-lane tunnel on 11435, lane ports from 11500 and side-car ports from 11700; a guard test refuses any collision), started with
-      `CUDA_VISIBLE_DEVICES=-1`.
+      `CUDA_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0`
+      (Ollama 0.40 also reaches the card through Vulkan, so hiding CUDA alone is not enough).
     - `num_gpu: 0` is sent as well, as a second guard.
     - On the shared instance, loading an embedding model can evict a GPU model mid-run,
       and `num_gpu: 0` alone may still open a CUDA context (R&D's review).
-    - It is verified by `nvidia-smi` listing no process for it.
+    - It is verified by `nvidia-smi` listing no process for it, and offrig refuses an embed server whose `/api/ps` shows the model in GPU memory.
     - offrig never falls back to the shared instance on its own.
   - Batched, and incremental by hash.
   - Missing the model is a clear error with the `ollama pull` line, not a silent fall
