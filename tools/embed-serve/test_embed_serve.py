@@ -66,7 +66,9 @@ class Server:
             return e.code, json.load(e)
 
     def raw(self, method, path, body=b"", headers=None):
-        """A request with exactly these headers (urllib would add or fix some)."""
+        """A request with exactly these headers (urllib would add or fix some). A request the server refuses on its
+        headers is sent with no body: the server closes without reading one, and on Windows unread bytes turn
+        that close into a reset that can lose the reply."""
         port = self.srv.server_address[1]
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
@@ -143,9 +145,8 @@ class HttpTests(unittest.TestCase):
         return {"Host": self.host(), "Content-Type": "application/json", **extra}
 
     def test_content_length_must_be_a_positive_number_within_the_cap(self):
-        body = json.dumps({"model": es.MODEL_NAME, "input": ["x"]}).encode()
         for length, code in [(str(es.MAX_BODY_BYTES + 1), 413), ("-1", 413), ("0", 413), ("ten", 411)]:
-            got = self.s.raw("POST", "/api/embed", body, self.headers(**{"Content-Length": length}))[0]
+            got = self.s.raw("POST", "/api/embed", b"", self.headers(**{"Content-Length": length}))[0]
             self.assertEqual(got, code, length)
         self.assertEqual(self.s.raw("POST", "/api/embed", b"", self.headers())[0], 411)
         self.assertEqual(self.enc.calls, [])
@@ -157,7 +158,7 @@ class HttpTests(unittest.TestCase):
     def test_a_body_not_typed_as_json_is_415(self):
         body = json.dumps({"model": es.MODEL_NAME, "input": ["x"]}).encode()
         h = {"Host": self.host(), "Content-Length": str(len(body)), "Content-Type": "text/plain"}
-        self.assertEqual(self.s.raw("POST", "/api/embed", body, h)[0], 415)
+        self.assertEqual(self.s.raw("POST", "/api/embed", b"", h)[0], 415)
         self.assertEqual(self.enc.calls, [])
 
     def test_browser_and_non_loopback_requests_are_403(self):
@@ -170,7 +171,7 @@ class HttpTests(unittest.TestCase):
             {"Content-Type": "application/json", **n},
         ]
         for h in cases:
-            self.assertEqual(self.s.raw("POST", "/api/embed", body, h)[0], 403, h)
+            self.assertEqual(self.s.raw("POST", "/api/embed", b"", h)[0], 403, h)
         self.assertEqual(self.s.raw("GET", "/api/ps", headers={"Host": self.host(), "Origin": "https://x"})[0], 403)
         local = {"Host": f"localhost:{self.s.srv.server_address[1]}"}
         self.assertEqual(self.s.raw("GET", "/api/ps", headers=local)[0], 200)
