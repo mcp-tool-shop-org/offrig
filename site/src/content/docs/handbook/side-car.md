@@ -304,10 +304,15 @@ If nothing answers, the error shows the start line above. If the index was built
 different model or dimension, every search and index call stops and tells you to run
 `offrig index --rebuild`.
 
-**Measured cost** (2026-10-15, a 24-thread desktop CPU):
-- **Speed:** about 2 chunks a second over HTTP, so about 8 minutes per 1,000 chunks.
-- **Memory:** about 1.7 GiB resident once the model is loaded. Long chunks briefly need
-  more, which the server bounds by encoding in sub-batches of 8.
+**Measured cost** (2026-10-15, a Core Ultra 9 285K, 6 threads on 6 efficiency cores at
+below-normal priority):
+- **Speed:** a 201-chunk index rebuilt in 163 s, about 1.2 chunks a second, so roughly
+  13–14 minutes per 1,000 chunks.
+- **CPU:** the server used about 20% of the machine, and never more than 22%.
+- **Memory:** about 1.7 GiB resident once the model is loaded, peaking at 2.8 GiB during the
+  rebuild.
+
+Giving it more threads makes it faster, at the cost of the rest of the machine.
 
 #### Upgrading from nomic-embed-text (offrig 1.1.x)
 

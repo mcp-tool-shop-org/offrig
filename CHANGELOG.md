@@ -29,6 +29,12 @@ All notable changes to offrig are documented here. The format is based on
   - It serves one name and answers 404 for any other, so no store can silently mix models.
   - It refuses to start when torch can see CUDA, and `/api/ps` reports `size_vram: 0`.
   - It encodes in sub-batches of 8.
+  - It's built for a shared machine, after an outside review:
+    - every thread pool (torch, OpenMP, MKL, OpenBLAS, the tokenizers) is capped before torch loads, by default to a quarter of the logical cores and at most 6 (`--threads`);
+    - it runs at below-normal priority, single-threaded, one request at a time;
+    - it bounds each request: 4 MiB, 256 texts, 12,000 characters a text, 2,048 tokens;
+    - it refuses browser requests, non-loopback hosts, chunked or non-JSON bodies and a bad `Content-Length`.
+  - Measured on a Core Ultra 9 285K with 6 threads on 6 efficiency cores: a 201-chunk rebuild took 163 s, the server used about 20% of the machine (never more than 22%), and peaked at 2.8 GiB. Its vectors match the benchmark's (cosine at least 0.9999999).
   - Python 3.12. `requirements.txt` pins every package exactly, with torch's CPU build.
   - Its tests use a stub encoder and run in CI's new `embed-serve` job, gated at 90% line
     coverage.
