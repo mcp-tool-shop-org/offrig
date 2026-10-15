@@ -226,22 +226,34 @@ def handler_for(state: State):
                 return self._send(200, {"status": "embed-serve is running", "model": MODEL_NAME})
             return self._send(404, {"error": "not found"})
 
+        def _refuse(self, code: int, message: str, length: int | None) -> None:
+            # A body of valid length is read and dropped before the refusal: closing with unread bytes makes
+            # Windows reset the connection, and the client can lose the reply. A body of no valid length is never read.
+            if length is not None and 0 < length <= MAX_BODY_BYTES and self.headers.get("Transfer-Encoding") is None:
+                try:
+                    self.rfile.read(length)
+                except OSError:
+                    pass
+            self._send(code, {"error": message})
+
         def do_POST(self) -> None:
-            refused = _refusal(self.headers)
-            if refused:
-                return self._send(refused[0], {"error": refused[1]})
-            if self.path != "/api/embed":
-                return self._send(404, {"error": "not found"})
-            if self.headers.get("Transfer-Encoding") is not None:
-                return self._send(411, {"error": "send a Content-Length, not a chunked body"})
-            if not (self.headers.get("Content-Type") or "").startswith("application/json"):
-                return self._send(415, {"error": "Content-Type must be application/json"})
             try:
                 length = int(self.headers.get("Content-Length") or "")
             except ValueError:
-                return self._send(411, {"error": "Content-Length is missing or not a number"})
+                length = None
+            refused = _refusal(self.headers)
+            if refused:
+                return self._refuse(refused[0], refused[1], length)
+            if self.path != "/api/embed":
+                return self._refuse(404, "not found", length)
+            if self.headers.get("Transfer-Encoding") is not None:
+                return self._refuse(411, "send a Content-Length, not a chunked body", None)
+            if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+                return self._refuse(415, "Content-Type must be application/json", length)
+            if length is None:
+                return self._refuse(411, "Content-Length is missing or not a number", None)
             if length <= 0 or length > MAX_BODY_BYTES:
-                return self._send(413, {"error": f"Content-Length must be 1 to {MAX_BODY_BYTES} bytes"})
+                return self._refuse(413, f"Content-Length must be 1 to {MAX_BODY_BYTES} bytes", None)
             try:
                 req = json.loads(self.rfile.read(length))
             except (json.JSONDecodeError, UnicodeDecodeError):
