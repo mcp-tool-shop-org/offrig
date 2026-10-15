@@ -253,10 +253,12 @@ records. Active records are chunks too, so memory search ranks them the same way
 
 Embeddings come from a dedicated, CPU-only Ollama, never the shared one on `11434` and never
 a GPU: loading an embedding model into the shared server can evict a GPU model mid-run, and
-a zero-GPU request can still open a CUDA context. Start it once, on its own port:
+a zero-GPU request can still open a CUDA context. Hiding CUDA is not enough on its own:
+Ollama 0.40 also reaches an NVIDIA card through Vulkan, so the server has to be told to
+skip every GPU path. Start it once, on its own port:
 
 ```bash
-OLLAMA_HOST=127.0.0.1:11490 CUDA_VISIBLE_DEVICES=-1 ollama serve
+OLLAMA_HOST=127.0.0.1:11490 CUDA_VISIBLE_DEVICES=-1 GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0 ollama serve
 OLLAMA_HOST=127.0.0.1:11490 ollama pull nomic-embed-text
 ```
 
@@ -264,11 +266,13 @@ In PowerShell, set the variables first, then run the same two commands, each in 
 window or job:
 
 ```powershell
-$env:OLLAMA_HOST = '127.0.0.1:11490'; $env:CUDA_VISIBLE_DEVICES = '-1'
+$env:OLLAMA_HOST = '127.0.0.1:11490'; $env:CUDA_VISIBLE_DEVICES = '-1'; $env:GGML_VK_VISIBLE_DEVICES = '-1'; $env:OLLAMA_VULKAN = '0'; $env:OLLAMA_IGPU_ENABLE = '0'
 ollama serve
 ```
 
-Check it with `nvidia-smi`: no process from this server should appear.
+The server's log should list `inference compute id=cpu library=cpu`, and `nvidia-smi` should
+show no process from it. offrig checks too: after each embedding call it reads the embed
+server's `/api/ps`, and if the model sits in GPU memory it refuses and shows the start line.
 
 offrig sends documents and queries to nomic-embed-text with the `search_document: ` and
 `search_query: ` prefixes the model was trained with; other models get none.

@@ -30,6 +30,15 @@ fn embed_reply(body: &str) -> (u16, String) {
     (200, json!({ "embeddings": rows }).to_string())
 }
 
+/// A mock that answers only the embedding route; anything else (such as the `/api/ps`
+/// check) gets a 404, which the CPU-only check treats as "no evidence".
+fn embed_only(r: &support::Req, _: usize) -> (u16, String) {
+    match r.route().as_str() {
+        "POST /api/embed" => embed_reply(&r.body),
+        _ => (404, "{}".into()),
+    }
+}
+
 fn record(s: &Store, kind: Kind, body: &str) -> i64 {
     s.record(NewRecord {
         kind: Some(kind),
@@ -136,7 +145,11 @@ fn embedding_batches_of_32_on_the_cpu() {
     let n = index::embed_pending(&s, &Ollama::new(&m.url), "nomic-embed-text").expect("embed");
     assert_eq!(n, 70);
     assert_eq!(m.count("POST /api/embed"), 3, "32 + 32 + 6");
-    for r in m.requests() {
+    for r in m
+        .requests()
+        .iter()
+        .filter(|r| r.route() == "POST /api/embed")
+    {
         let v: Value = serde_json::from_str(&r.body).expect("json");
         assert_eq!(v["options"]["num_gpu"], 0);
     }
@@ -221,13 +234,16 @@ fn a_missing_model_a_dead_server_and_a_resized_model_are_all_errors() {
         .expect_err("dead")
         .to_string();
     assert!(
-        e.contains("CUDA_VISIBLE_DEVICES=-1 ollama serve") && e.contains("OLLAMA_HOST="),
+        e.contains("CUDA_VISIBLE_DEVICES=-1")
+            && e.contains("OLLAMA_VULKAN=0")
+            && e.contains("ollama serve")
+            && e.contains("OLLAMA_HOST="),
         "{e}"
     );
     assert!(!e.contains("11434"), "{e}");
     assert!(!s.has_embeddings().expect("has"), "nothing half-written");
     // Embed once, then the server starts returning another size.
-    let ok = serve(|r, _| embed_reply(&r.body));
+    let ok = serve(embed_only);
     index::embed_pending(&s, &Ollama::new(&ok.url), "nomic-embed-text").expect("embed");
     let wide = serve(|r, _| {
         let n = serde_json::from_str::<Value>(&r.body).expect("json")["input"]
@@ -248,7 +264,7 @@ fn a_missing_model_a_dead_server_and_a_resized_model_are_all_errors() {
 
 #[test]
 fn rebuilding_re_embeds_every_chunk_with_the_new_model() {
-    let m = serve(|r, _| embed_reply(&r.body));
+    let m = serve(embed_only);
     let o = Ollama::new(&m.url);
     let s = Store::open_in_memory().expect("store");
     record(&s, Kind::Fact, "alpha");
@@ -260,4 +276,44 @@ fn rebuilding_re_embeds_every_chunk_with_the_new_model() {
         s.setting("embed_model").expect("setting").as_deref(),
         Some("model-b")
     );
+}
+
+#[test]
+fn an_embed_server_holding_the_model_in_gpu_memory_is_refused() {
+    let s = Store::open_in_memory().expect("store");
+    record(&s, Kind::Fact, "alpha");
+    // The server answers the embedding, but /api/ps shows the model in VRAM.
+    let gpu = serve(|r, _| {
+        match r.route().as_str() {
+        "POST /api/embed" => embed_reply(&r.body),
+        "GET /api/ps" => (
+            200,
+            json!({"models": [{"name": "nomic-embed-text:latest", "size": 300_000_000u64, "size_vram": 300_000_000u64}]})
+                .to_string(),
+        ),
+        _ => (404, "{}".into()),
+    }
+    });
+    let e = index::embed_pending(&s, &Ollama::new(&gpu.url), "nomic-embed-text")
+        .expect_err("a GPU-resident embed model is refused")
+        .to_string();
+    assert!(
+        e.contains("GPU memory") && e.contains("OLLAMA_VULKAN=0"),
+        "{e}"
+    );
+    assert!(!s.has_embeddings().expect("has"), "nothing written");
+    // The same server with the model on the CPU embeds.
+    let cpu = serve(|r, _| {
+        match r.route().as_str() {
+        "POST /api/embed" => embed_reply(&r.body),
+        "GET /api/ps" => (
+            200,
+            json!({"models": [{"name": "nomic-embed-text:latest", "size": 300_000_000u64, "size_vram": 0}]})
+                .to_string(),
+        ),
+        _ => (404, "{}".into()),
+    }
+    });
+    index::embed_pending(&s, &Ollama::new(&cpu.url), "nomic-embed-text").expect("CPU-only embeds");
+    assert!(s.has_embeddings().expect("has"));
 }

@@ -6,6 +6,12 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-15
+
+### Fixed
+
+- **The embed server cannot take the GPU without offrig refusing.** On Ollama 0.40 a server started with only `CUDA_VISIBLE_DEVICES=-1` still reaches an NVIDIA card through Vulkan, so the documented start line could load the embedding model onto it. The start line in the refusal message, the handbook and the design doc now also sets `GGML_VK_VISIBLE_DEVICES=-1 OLLAMA_VULKAN=0 OLLAMA_IGPU_ENABLE=0`. After each embedding call offrig reads the embed server's `/api/ps`; if the model sits in GPU memory it refuses, shows the start line and writes nothing. A server that does not answer `/api/ps` is not blocked.
+
 ## [1.1.2] - 2026-10-14
 
 - Build fake credentials at runtime in `trace.rs` unit tests so secret scanners do not flag test fixtures.
