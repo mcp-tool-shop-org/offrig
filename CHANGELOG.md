@@ -6,6 +6,36 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`offrig verify calibrate --jobs <N>` (1 to 8, default 1).** Keeps up to N claims in
+  flight at once against one local Ollama server while keeping all stateful bookkeeping on
+  a single coordinator thread:
+  - One coordinator thread dispatches claims to N worker threads that run only the model
+    calls (`verify_policy`, including any structured-schema retry). `store.save_verdict`,
+    `verdicts.jsonl`, `thinking.jsonl`, `attempts.json`, `TokenEstimator::observe`, the
+    `transport_run` and `overflow_run` breakers, `answered` and `done`, and progress lines
+    stay on the coordinator.
+  - Completed claims are buffered and committed strictly in file order. When a breaker
+    trips, the coordinator stops dispatching, lets in-flight claims finish, commits any
+    that form a contiguous prefix in file order, and leaves later finished claims
+    unrecorded so `--resume` asks them again.
+  - Each in-flight claim captures its own thinking rows (`ClaimThinking`) and writes them
+    when that claim is committed, so thinking rows never interleave across claims.
+  - With `--structured auto` not yet settled, the first pending claim runs alone before
+    workers fan out.
+  - Each session records `started_at`, `ended_at`, `elapsed_seconds` and `jobs` in
+    `manifest.json` (`sessions`, optional on older runs). When any session ran with
+    `jobs > 1`, the report prices GPU time from the sum of session elapsed wall seconds
+    and shows `jobs` per session, elapsed wall time and items/hr; runs that only ever used
+    `jobs = 1` keep the existing per-claim `wall_seconds` sum and report layout
+    byte-identically.
+  - `jobs` is not part of `Settings::record` or `OPTIONAL_SETTINGS` (provisional until the
+    5090 concurrency measurement runs), so `--resume` can change `--jobs` and existing
+    manifests resume unchanged.
+  - At `jobs > 1`, `note_offload` adds `note: server parallel slots multiply KV memory;
+    check OLLAMA_NUM_PARALLEL`.
+
 ## [1.2.0] - 2026-10-15
 
 ### Changed

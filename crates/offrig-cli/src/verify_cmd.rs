@@ -19,7 +19,8 @@ pub enum VerifyCmd {
     /// Run gold claims through a local Ollama model and score it for the default rule
     ///
     /// Oracle mode: the model sees each claim's own context as evidence, in file order
-    /// (--swap-evidence reverses it), one claim per call. Every outcome is appended to
+    /// (--swap-evidence reverses it), one claim per call (--jobs keeps up to N claims in
+    /// flight at once and still commits them in file order). Every outcome is appended to
     /// <out>/verdicts.jsonl and saved to the store as untrusted model output. A reply
     /// the model breaks (bad verdict, cut off, or a timeout, server error or dropped reply
     /// twice on a claim while the server still answers others) counts as unusable, against
@@ -95,6 +96,12 @@ pub struct CalibrateArgs {
     /// model pull time are not included.
     #[arg(long, default_value_t = 0.0)]
     gpu_cost_hr: f64,
+    /// Claims in flight at once against the server (1..=8). The server must allow at
+    /// least this many in parallel (`OLLAMA_NUM_PARALLEL`, which defaults to 1 in Ollama)
+    /// or extra requests queue there; required KV memory scales with parallel slots, and
+    /// concurrency may change verdicts until measured. Not part of the resume identity
+    #[arg(long, default_value_t = 1, conflicts_with = "report_only")]
+    jobs: usize,
     /// Output directory (default: <project>/.offrig/out/calibrate-<model>-<timestamp>)
     #[arg(long, conflicts_with_all = ["resume", "report_only"])]
     out: Option<PathBuf>,
@@ -128,16 +135,8 @@ fn say(msg: &str) {
     }
 }
 
-fn calibrate(a: CalibrateArgs) -> Result<()> {
-    if let Some(dir) = &a.report_only {
-        let report =
-            calibrate_run::report_dir(dir, (a.gpu_cost_hr > 0.0).then_some(a.gpu_cost_hr))?;
-        print!("{}", render_table(&report));
-        say("metrics.json rewritten");
-        return Ok(());
-    }
-    let model = a.model.clone().context("--model is required")?;
-    let mut s = Settings::new(&model, &a.url);
+fn build_settings(a: &CalibrateArgs, model: &str) -> Result<Settings> {
+    let mut s = Settings::new(model, &a.url);
     s.think = parse_think(&a.think)?;
     if let Some(spec) = &a.think_policy {
         s.think_policy = Some(ThinkPolicies::parse(spec, s.think)?);
@@ -156,6 +155,20 @@ fn calibrate(a: CalibrateArgs) -> Result<()> {
     s.num_ctx = fixed.unwrap_or(s.num_ctx);
     s.num_predict = a.num_predict.unwrap_or(s.num_predict);
     s.gpu_cost_hr = a.gpu_cost_hr;
+    s.jobs = calibrate_run::check_jobs(a.jobs)?;
+    Ok(s)
+}
+
+fn calibrate(a: CalibrateArgs) -> Result<()> {
+    if let Some(dir) = &a.report_only {
+        let report =
+            calibrate_run::report_dir(dir, (a.gpu_cost_hr > 0.0).then_some(a.gpu_cost_hr))?;
+        print!("{}", render_table(&report));
+        say("metrics.json rewritten");
+        return Ok(());
+    }
+    let model = a.model.clone().context("--model is required")?;
+    let s = build_settings(&a, &model)?;
     // Refuse before reading anything: no file is touched for a cloud model.
     calibrate_run::guard_local(&s.model, &s.url)?;
     let gold = a
@@ -200,4 +213,51 @@ fn calibrate(a: CalibrateArgs) -> Result<()> {
         out_dir.display()
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: VerifyCmd,
+    }
+
+    fn parse(args: &[&str]) -> std::result::Result<CalibrateArgs, clap::Error> {
+        let mut v = vec!["verify", "calibrate"];
+        v.extend(args);
+        match TestCli::try_parse_from(v)?.cmd {
+            VerifyCmd::Calibrate(a) => Ok(*a),
+        }
+    }
+
+    #[test]
+    fn jobs_defaults_to_one_and_is_bounded_to_eight() {
+        let a = parse(&["gold.jsonl", "--model", "gemma4:31b"]).expect("parses");
+        assert_eq!(a.jobs, 1);
+        let s = build_settings(&a, "gemma4:31b").expect("settings");
+        assert_eq!(s.jobs, 1);
+
+        let a4 = parse(&["gold.jsonl", "--model", "gemma4:31b", "--jobs", "4"]).expect("parses");
+        assert_eq!(build_settings(&a4, "gemma4:31b").expect("settings").jobs, 4);
+
+        let a0 = parse(&["gold.jsonl", "--model", "gemma4:31b", "--jobs", "0"]).expect("parses");
+        assert!(
+            build_settings(&a0, "gemma4:31b")
+                .expect_err("0 refused")
+                .to_string()
+                .contains("--jobs must be between 1 and 8")
+        );
+        let a9 = parse(&["gold.jsonl", "--model", "gemma4:31b", "--jobs", "9"]).expect("parses");
+        assert!(
+            build_settings(&a9, "gemma4:31b")
+                .expect_err("9 refused")
+                .to_string()
+                .contains("--jobs must be between 1 and 8")
+        );
+        assert!(parse(&["--report-only", "out", "--jobs", "2"]).is_err());
+    }
 }
