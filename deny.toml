@@ -40,6 +40,12 @@ ignore = [
     # the fonts bundled in the binary, never fonts from outside. Revisit when egui
     # moves to skrifa.
     { id = "RUSTSEC-2026-0192", reason = "egui-owned; parses only bundled fonts" },
+    # Unmaintained standalone crates merged into zbus 6.0.0; no patched release is
+    # reachable through eframe 0.36.2 -> accesskit_unix -> zbus 5.x, and offrig's
+    # GUI (offrig-app) is the only user.
+    { id = "RUSTSEC-2026-0370", reason = "eframe -> accesskit_unix -> zbus; offrig's GUI (offrig-app) is the only user" },
+    { id = "RUSTSEC-2026-0371", reason = "eframe -> accesskit_unix -> zbus; offrig's GUI (offrig-app) is the only user" },
+    { id = "RUSTSEC-2026-0372", reason = "eframe -> accesskit_unix -> zbus; offrig's GUI (offrig-app) is the only user" },
 ]
 
 [bans]
