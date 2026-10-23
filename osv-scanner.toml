@@ -3,3 +3,16 @@
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
 reason = "Unmaintained, not vulnerable. Reached only through egui/epaint, which parse the fonts bundled in the binary, never fonts from outside."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+reason = "Unmaintained, not vulnerable (merged into zbus 6.0.0); no patched release reachable through eframe -> accesskit_unix -> zbus, and offrig's GUI (offrig-app) is the only user."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+reason = "Unmaintained, not vulnerable (merged into zbus 6.0.0); no patched release reachable through eframe -> accesskit_unix -> zbus, and offrig's GUI (offrig-app) is the only user."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+reason = "Unmaintained, not vulnerable (merged into zbus 6.0.0); no patched release reachable through eframe -> accesskit_unix -> zbus, and offrig's GUI (offrig-app) is the only user."
+
