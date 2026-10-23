@@ -16,10 +16,11 @@
 //! `unusable` outcome with its error code; it is counted, never scored as a verdict.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -36,13 +37,28 @@ use crate::ollama::{ChatRequest, ChatResponse, Loaded, Ollama, Tag, ThinkLevel};
 use crate::store::Store;
 use crate::verify::{
     ChatBackend, CheckType, Claim, CtxMode, DEFAULT_MODEL_MAX_CTX, Label, Pins, ThinkPolicies,
-    Timing, TokenEstimator, Verdict, VerdictKind, VerifyConfig, build_request, ctx_margin,
-    estimate_claim_tokens, evidence_list, quote_found, round_ctx, verify_one, verify_policy,
+    ThinkPolicy, Timing, TokenEstimator, Verdict, VerdictKind, VerifyConfig, build_request,
+    ctx_margin, estimate_claim_tokens, evidence_list, quote_found, round_ctx, verify_one,
+    verify_policy,
 };
 
 /// Consecutive transport failures after which the run stops (and stays resumable)
 /// instead of recording a whole file of claims against a server that is down.
 const MAX_CONSECUTIVE_TRANSPORT: usize = 5;
+
+/// Maximum concurrent claim workers (`--jobs`).
+pub const MAX_JOBS: usize = 8;
+
+/// Validate `--jobs`: 1 to [`MAX_JOBS`] claims in flight.
+pub fn check_jobs(n: usize) -> Result<usize> {
+    if (1..=MAX_JOBS).contains(&n) {
+        Ok(n)
+    } else {
+        Err(Error::Refused(format!(
+            "--jobs must be between 1 and {MAX_JOBS}, not {n}"
+        )))
+    }
+}
 
 /// The note on a claim whose second timeout was recorded as its outcome.
 const TIMED_OUT_TWICE: &str = "timed out twice; long think or stuck server";
@@ -174,6 +190,9 @@ pub struct Settings {
     pub think_num_predict: Option<i32>,
     /// Treat a looping escalation reply as no answer (`--loop-stop`).
     pub loop_stop: bool,
+    /// Concurrent claim requests in flight (`--jobs`, 1..=8). Recorded per session in the
+    /// manifest, not in `settings`, so a resume may change `--jobs`.
+    pub jobs: usize,
 }
 
 impl Settings {
@@ -197,6 +216,7 @@ impl Settings {
             think_policy: None,
             think_num_predict: None,
             loop_stop: false,
+            jobs: 1,
         }
     }
 
@@ -419,6 +439,29 @@ pub struct GoldInfo {
     pub lines: usize,
 }
 
+/// One run or resume session in `manifest.json`: its start, end, elapsed wall time and `jobs`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    pub started_at: i64,
+    pub ended_at: i64,
+    /// High-resolution wall seconds for this session; falls back to `ended_at - started_at`
+    /// when omitted.
+    #[serde(default)]
+    pub elapsed_seconds: f64,
+    pub jobs: usize,
+}
+
+impl Session {
+    /// Elapsed wall time in seconds for this session.
+    pub fn span_seconds(&self) -> f64 {
+        if self.elapsed_seconds > 0.0 {
+            self.elapsed_seconds
+        } else {
+            (self.ended_at - self.started_at).max(0) as f64
+        }
+    }
+}
+
 /// `manifest.json`: what was run, written before the first call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -439,6 +482,10 @@ pub struct Manifest {
     /// resume identity (the chosen `num_ctx` in `settings` is). Absent in older runs.
     #[serde(default)]
     pub ctx: Option<CtxSizing>,
+    /// Each run or resume session (`started_at`, `ended_at`, `elapsed_seconds`, `jobs`).
+    /// Not part of the resume identity (a resume may change `--jobs`). Absent in older runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<Session>,
 }
 
 /// One line of `verdicts.jsonl`: one claim's outcome. `status` is `ok` (a verdict) or
@@ -1050,6 +1097,7 @@ fn too_big(
 fn note_offload(
     server: &dyn Server,
     model: &str,
+    jobs: usize,
     sizing: &mut CtxSizing,
     progress: &mut dyn FnMut(&str),
 ) -> bool {
@@ -1068,6 +1116,14 @@ fn note_offload(
             "warning: {model} is partly offloaded to the CPU ({:.0}% of it in VRAM); runs will be slow. Not blocking.",
             frac * 100.0
         ));
+        if jobs > 1 {
+            progress(
+                "warning: server parallel slots multiply KV memory; check OLLAMA_NUM_PARALLEL",
+            );
+            sizing
+                .notes
+                .push("server parallel slots multiply KV memory; check OLLAMA_NUM_PARALLEL".into());
+        }
     }
     true
 }
@@ -1091,9 +1147,9 @@ pub struct RunArgs<'a> {
 /// manifest, metrics and verdict files; copy it anywhere public only after a scan.
 pub const THINKING_FILE: &str = "thinking.jsonl";
 
-/// A chat backend that keeps the thinking text of every reply it passes through.
+/// A per-claim chat backend that keeps the thinking text of every reply for that claim.
 struct ThinkingRecorder<'a> {
-    inner: &'a dyn ChatBackend,
+    inner: &'a (dyn ChatBackend + Sync),
     seen: RefCell<Vec<String>>,
 }
 
@@ -1111,16 +1167,124 @@ impl ChatBackend for ThinkingRecorder<'_> {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+struct TestClock {
+    started_at: i64,
+    ended_at: i64,
+    claim_wall: f64,
+    session_elapsed: f64,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_CLOCK: std::cell::Cell<Option<TestClock>> = const { std::cell::Cell::new(None) };
+}
+
+/// One claim dispatched from the coordinator to a worker thread.
+struct ClaimJob {
+    /// Position in the pending claim list (`0..todo.len()`), used to commit in file order.
+    pos: usize,
+    /// Index in `picked` / `selected`.
+    index: usize,
+    claim: Claim,
+    raw_estimate: Option<u64>,
+    cfg: VerifyConfig,
+    policy: ThinkPolicy,
+    /// True when `--structured auto` has not yet settled on a mode.
+    auto_unsettled: bool,
+    #[cfg(test)]
+    test_claim_wall: Option<f64>,
+}
+
+/// What a worker returns to the coordinator for one claim.
+struct ClaimWorkDone {
+    pos: usize,
+    index: usize,
+    claim: Claim,
+    raw_estimate: Option<u64>,
+    result: Result<Verdict>,
+    wall: f64,
+    thinking: Vec<String>,
+    /// True when `--structured auto` broke its schema on this claim and retried in plain text.
+    schema_fell_back: bool,
+}
+
+struct WorkerQueue {
+    jobs: VecDeque<ClaimJob>,
+    closed: bool,
+}
+
+/// Execute only the model calls for one claim (`verify_policy`, plus the structured-auto
+/// schema fallback retry when unsettled). Each in-flight claim gets its own thinking
+/// capture so no two claims' thinking can interleave. All stateful work stays on the
+/// coordinator thread.
+fn run_claim_work(
+    chat: &(dyn ChatBackend + Sync),
+    mut job: ClaimJob,
+    keep_thinking: bool,
+) -> ClaimWorkDone {
+    let recorder = ThinkingRecorder {
+        inner: chat,
+        seen: RefCell::new(Vec::new()),
+    };
+    let backend: &dyn ChatBackend = if keep_thinking { &recorder } else { chat };
+    let started = Instant::now();
+    let mut result = verify_policy(backend, &job.cfg, &job.policy, &job.claim, &[]);
+    let mut schema_fell_back = false;
+    if job.auto_unsettled && job.cfg.structured && broke_its_schema(&result) {
+        schema_fell_back = true;
+        job.cfg.structured = false;
+        result = verify_policy(backend, &job.cfg, &job.policy, &job.claim, &[]);
+    }
+    let wall = {
+        #[cfg(test)]
+        {
+            job.test_claim_wall
+                .unwrap_or_else(|| started.elapsed().as_secs_f64())
+        }
+        #[cfg(not(test))]
+        {
+            started.elapsed().as_secs_f64()
+        }
+    };
+    let thinking = recorder.seen.into_inner();
+    ClaimWorkDone {
+        pos: job.pos,
+        index: job.index,
+        claim: job.claim,
+        raw_estimate: job.raw_estimate,
+        result,
+        wall,
+        thinking,
+        schema_fell_back,
+    }
+}
+
 /// Run (or resume) a calibration and return its report. `progress` gets one line per
 /// claim and per notable event.
 pub fn run(
     args: &RunArgs<'_>,
-    chat: &dyn ChatBackend,
+    chat: &(dyn ChatBackend + Sync),
     server: &dyn Server,
     progress: &mut dyn FnMut(&str),
 ) -> Result<Report> {
     let s = args.settings;
+    check_jobs(s.jobs)?;
     guard_local(&s.model, &s.url)?;
+    let session_started_at = {
+        #[cfg(test)]
+        {
+            TEST_CLOCK
+                .with(|c| c.get().map(|tc| tc.started_at))
+                .unwrap_or_else(now_unix)
+        }
+        #[cfg(not(test))]
+        {
+            now_unix()
+        }
+    };
+    let session_timer = Instant::now();
     let files: Vec<GoldInfo> = args
         .gold
         .iter()
@@ -1173,7 +1337,7 @@ pub fn run(
     let resolved = resolve_ctx(s, &picked, &cfg, chat, server, old.as_ref(), progress)?;
     let mut manifest = Manifest {
         offrig_version: env!("CARGO_PKG_VERSION").to_string(),
-        started_at: now_unix(),
+        started_at: session_started_at,
         resumes: vec![],
         model: s.model.clone(),
         model_digest: digest.clone(),
@@ -1184,11 +1348,12 @@ pub fn run(
         skipped_unlabelled: skipped,
         selected: selected.clone(),
         ctx: resolved.sizing,
+        sessions: vec![],
     };
     if let Some(old) = old {
         check_resume(&old, &manifest)?;
         manifest = Manifest {
-            resumes: [old.resumes.clone(), vec![now_unix()]].concat(),
+            resumes: [old.resumes.clone(), vec![session_started_at]].concat(),
             gpu_cost_hr: s.gpu_cost_hr,
             ..old
         };
@@ -1202,7 +1367,7 @@ pub fn run(
         if let Some(z) = manifest.ctx.as_mut()
             && !z.measured.is_empty()
         {
-            note_offload(server, &s.model, z, progress);
+            note_offload(server, &s.model, s.jobs, z, progress);
             offload_noted = true;
         }
     }
@@ -1223,8 +1388,10 @@ pub fn run(
     cfg.num_ctx = resolved.num_ctx;
     cfg.num_ctx_mode = s.ctx_mode;
     // Auto starts structured; a resume carries on in whatever mode the run settled on.
+    // While `--structured auto` is not yet settled, the coordinator dispatches the first
+    // pending claim alone and fans out up to `s.jobs` only once the mode is settled.
     let last_ok = prior.iter().rev().find_map(|l| l.pins.as_ref());
-    let mut settled = last_ok.is_some();
+    let mut settled = s.structured != Structured::Auto || last_ok.is_some();
     cfg.structured = match s.structured {
         Structured::Off => false,
         Structured::On => true,
@@ -1239,10 +1406,6 @@ pub fn run(
         ));
     }
 
-    let recorder = ThinkingRecorder {
-        inner: chat,
-        seen: RefCell::new(Vec::new()),
-    };
     let mut thinking_file = if args.keep_thinking {
         Some(
             OpenOptions::new()
@@ -1254,7 +1417,6 @@ pub fn run(
     } else {
         None
     };
-    let chat: &dyn ChatBackend = if args.keep_thinking { &recorder } else { chat };
 
     // Claims with a real answer, in run order: the health check for a repeated server error
     // asks the first of them again.
@@ -1282,180 +1444,317 @@ pub fn run(
     let mut transport_run = 0usize;
     let mut overflow_run = 0usize;
     let mut estimator = TokenEstimator::default();
-    for (i, entry) in picked.iter().enumerate() {
-        if done.contains(&entry.claim.id) {
-            continue;
-        }
-        let sel = &selected[i];
-        let mut claim = entry.claim.clone();
-        if s.swap_evidence {
-            claim.context.reverse();
-        }
-        let evidence = evidence_list(&claim, &[]);
-        // The conservative estimate, corrected by the worst real/estimated ratio seen so far.
-        let raw_estimate = estimate_claim_tokens(&cfg, &claim, &[]).ok();
-        if let Some(raw) = raw_estimate {
-            let need = estimator.correct(raw) + u64::try_from(s.max_predict()).unwrap_or(0);
-            if need + 16 >= u64::from(cfg.num_ctx) {
-                progress(&format!(
-                    "warning: {} may overflow num_ctx {} (estimated prompt {} + num_predict {})",
-                    sel.id,
-                    cfg.num_ctx,
-                    estimator.correct(raw),
-                    s.max_predict()
-                ));
-            }
-        }
-        let started = Instant::now();
-        recorder.seen.borrow_mut().clear();
-        let policy = policies.for_type(claim.check_type);
-        let mut result = verify_policy(chat, &cfg, &policy, &claim, &[]);
-        if s.structured == Structured::Auto
-            && cfg.structured
-            && !settled
-            && broke_its_schema(&result)
-        {
-            progress("structured output failed its schema; continuing in plain text");
-            cfg.structured = false;
-            result = verify_policy(chat, &cfg, &policy, &claim, &[]);
-        }
-        let wall = started.elapsed().as_secs_f64();
-        if let Some(f) = thinking_file.as_mut() {
-            // Every reply to this claim (a schema retry makes two), whatever its outcome,
-            // so a truncated or broken reply shows what the model was doing.
-            let calls = recorder.seen.borrow_mut().split_off(0);
-            if !calls.is_empty() {
-                let row = serde_json::json!({
-                    "claim_id": sel.id,
-                    "untrusted": true,
-                    "chars": calls.iter().map(|t| t.chars().count()).sum::<usize>(),
-                    "thinking": calls,
-                });
-                writeln!(f, "{row}").map_err(|e| Error::io("writing thinking.jsonl", e))?;
-            }
-        }
-        let mut transport_note: Option<&'static str> = None;
-        let line = match result {
-            Ok(v) => {
-                settled = !broke_its_schema(&Ok(v.clone()));
-                if let (Some(raw), 1) = (raw_estimate, v.timing.attempts) {
-                    estimator.observe(raw, v.timing.prompt_eval_count);
-                }
-                if !offload_noted {
-                    offload_noted = true;
-                    if let Some(z) = manifest.ctx.as_mut()
-                        && note_offload(server, &s.model, z, progress)
-                    {
-                        write_json(&dir.join("manifest.json"), &manifest)?;
+    let todo: Vec<usize> = (0..picked.len())
+        .filter(|&i| !done.contains(&picked[i].claim.id))
+        .collect();
+    let mut stop_err: Option<Error> = None;
+
+    if !todo.is_empty() {
+        let worker_count = s.jobs.min(todo.len());
+        let queue = Arc::new((
+            Mutex::new(WorkerQueue {
+                jobs: VecDeque::new(),
+                closed: false,
+            }),
+            Condvar::new(),
+        ));
+        let (done_tx, done_rx) = mpsc::channel::<ClaimWorkDone>();
+
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let q_ref = Arc::clone(&queue);
+                let tx = done_tx.clone();
+                let keep_thinking = args.keep_thinking;
+                scope.spawn(move || {
+                    loop {
+                        let job = {
+                            let (lock, cvar) = &*q_ref;
+                            let mut q = lock.lock().expect("worker queue lock");
+                            while q.jobs.is_empty() && !q.closed {
+                                q = cvar.wait(q).expect("worker queue wait");
+                            }
+                            if q.closed && q.jobs.is_empty() {
+                                break;
+                            }
+                            q.jobs.pop_front()
+                        };
+                        let Some(job) = job else {
+                            break;
+                        };
+                        let res = run_claim_work(chat, job, keep_thinking);
+                        let _ = tx.send(res);
                     }
-                }
-                answered.push(i);
-                args.store.save_verdict(&v)?;
-                let found = quote_found(&v.evidence_quote, &evidence);
-                Some(Line::from_verdict(sel, order, wall, &v, found))
-            }
-            Err(e) if is_transport(&e) => {
-                // Not an outcome: the server, not the model, failed. Nothing is
-                // recorded, so a resume tries the claim again.
-                // A 5xx, or a connection that drops mid-reply: Ollama can abort one
-                // generation with a 500 whose body never arrives, which the client sees as
-                // a network failure. Both are judged by the same repeat-and-health-check
-                // rule; a server that is down fails the check, so nothing is charged.
-                let server = !e.is_client_timeout();
-                transport_note = Some(if e.is_client_timeout() {
-                    "timeout"
-                } else if is_server_error(&e) {
-                    "server (5xx)"
-                } else {
-                    "network"
                 });
-                if e.is_client_timeout() || server {
-                    let a = attempts.entry(sel.id.clone()).or_default();
-                    let (count, note, code) = if server {
-                        // A repeat counts only while the server still answers a claim it
-                        // answered before; otherwise the server, not this reply, is failing.
-                        let healthy = a.server_errors >= 1
-                            && answered.first().is_some_and(|&j| server_answers(j, &cfg));
-                        if a.server_errors == 0 || healthy {
-                            a.server_errors += 1;
-                        } else {
+            }
+            drop(done_tx);
+
+            let mut next_dispatch = 0usize;
+            let mut next_commit = 0usize;
+            let mut in_flight = 0usize;
+            let mut ready: BTreeMap<usize, ClaimWorkDone> = BTreeMap::new();
+
+            while stop_err.is_none() && next_commit < todo.len() {
+                let limit = if settled { s.jobs } else { 1 };
+                while in_flight < limit && next_dispatch < todo.len() {
+                    let pos = next_dispatch;
+                    let i = todo[pos];
+                    next_dispatch += 1;
+                    in_flight += 1;
+                    let sel = &selected[i];
+                    let claim = shown(&picked[i], s.swap_evidence);
+                    // The conservative estimate, corrected by the worst real/estimated ratio
+                    // seen so far. At N > 1, `estimator` reflects only claims committed so far
+                    // and can lag by up to N - 1 in-flight claims; keep the + 16 margin.
+                    let raw_estimate = estimate_claim_tokens(&cfg, &claim, &[]).ok();
+                    if let Some(raw) = raw_estimate {
+                        let need =
+                            estimator.correct(raw) + u64::try_from(s.max_predict()).unwrap_or(0);
+                        if need + 16 >= u64::from(cfg.num_ctx) {
                             progress(&format!(
-                                "{}: a second server error, but the server failed its health check too; not recorded",
-                                sel.id
+                                "warning: {} may overflow num_ctx {} (estimated prompt {} + num_predict {})",
+                                sel.id,
+                                cfg.num_ctx,
+                                estimator.correct(raw),
+                                s.max_predict()
                             ));
                         }
-                        (a.server_errors, SERVER_ERROR_TWICE, "server_error")
-                    } else {
-                        a.timeouts += 1;
-                        (a.timeouts, TIMED_OUT_TWICE, "timeout")
+                    }
+                    let policy = policies.for_type(claim.check_type);
+                    let job = ClaimJob {
+                        pos,
+                        index: i,
+                        claim,
+                        raw_estimate,
+                        cfg: cfg.clone(),
+                        policy,
+                        auto_unsettled: !settled && s.structured == Structured::Auto,
+                        #[cfg(test)]
+                        test_claim_wall: TEST_CLOCK.with(|c| c.get().map(|tc| tc.claim_wall)),
                     };
-                    a.last_error = crate::error::chain(&e);
-                    let last = a.last_error.clone();
-                    write_json(&attempts_path, &attempts)?;
-                    (count >= 2).then(|| {
-                        let mut l = Line::from_error(sel, order, wall, &e);
-                        l.error_code = Some(code.to_string());
-                        l.error = Some(format!("{note} (last: {last})"));
-                        l
-                    })
-                } else {
-                    None
+                    let (lock, cvar) = &*queue;
+                    let mut q = lock.lock().expect("worker queue lock");
+                    q.jobs.push_back(job);
+                    cvar.notify_one();
+                }
+
+                if in_flight > 0 {
+                    let finished = done_rx.recv().expect("workers alive while in_flight > 0");
+                    in_flight -= 1;
+                    ready.insert(finished.pos, finished);
+                }
+
+                while let Some(work) = ready.remove(&next_commit) {
+                    next_commit += 1;
+                    let i = work.index;
+                    let sel = &selected[i];
+                    let evidence = evidence_list(&work.claim, &[]);
+                    let wall = work.wall;
+                    if work.schema_fell_back && cfg.structured {
+                        progress("structured output failed its schema; continuing in plain text");
+                        cfg.structured = false;
+                        settled = true;
+                    }
+                    if let Some(f) = thinking_file.as_mut() {
+                        // Every reply to this claim (a schema retry makes two), whatever its
+                        // outcome, so a truncated or broken reply shows what the model was doing.
+                        if !work.thinking.is_empty() {
+                            let row = serde_json::json!({
+                                "claim_id": sel.id,
+                                "untrusted": true,
+                                "chars": work.thinking.iter().map(|t| t.chars().count()).sum::<usize>(),
+                                "thinking": work.thinking,
+                            });
+                            if let Err(e) = writeln!(f, "{row}")
+                                .map_err(|e| Error::io("writing thinking.jsonl", e))
+                            {
+                                stop_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    let mut transport_note: Option<&'static str> = None;
+                    let line = match work.result {
+                        Ok(v) => {
+                            if !cfg.structured || !broke_its_schema(&Ok(v.clone())) {
+                                settled = true;
+                            }
+                            if let (Some(raw), 1) = (work.raw_estimate, v.timing.attempts) {
+                                estimator.observe(raw, v.timing.prompt_eval_count);
+                            }
+                            if !offload_noted {
+                                offload_noted = true;
+                                if let Some(z) = manifest.ctx.as_mut()
+                                    && note_offload(server, &s.model, s.jobs, z, progress)
+                                    && let Err(e) =
+                                        write_json(&dir.join("manifest.json"), &manifest)
+                                {
+                                    stop_err = Some(e);
+                                    break;
+                                }
+                            }
+                            answered.push(i);
+                            if let Err(e) = args.store.save_verdict(&v) {
+                                stop_err = Some(e);
+                                break;
+                            }
+                            let found = quote_found(&v.evidence_quote, &evidence);
+                            Some(Line::from_verdict(sel, order, wall, &v, found))
+                        }
+                        Err(e) if is_transport(&e) => {
+                            // Not an outcome: the server, not the model, failed. Nothing is
+                            // recorded, so a resume tries the claim again.
+                            // A 5xx, or a connection that drops mid-reply: Ollama can abort one
+                            // generation with a 500 whose body never arrives, which the client sees as
+                            // a network failure. Both are judged by the same repeat-and-health-check
+                            // rule; a server that is down fails the check, so nothing is charged.
+                            let server_fail = !e.is_client_timeout();
+                            transport_note = Some(if e.is_client_timeout() {
+                                "timeout"
+                            } else if is_server_error(&e) {
+                                "server (5xx)"
+                            } else {
+                                "network"
+                            });
+                            if e.is_client_timeout() || server_fail {
+                                let a = attempts.entry(sel.id.clone()).or_default();
+                                let (count, note, code) = if server_fail {
+                                    // A repeat counts only while the server still answers a claim it
+                                    // answered before; otherwise the server, not this reply, is failing.
+                                    let healthy = a.server_errors >= 1
+                                        && answered
+                                            .first()
+                                            .is_some_and(|&j| server_answers(j, &cfg));
+                                    if a.server_errors == 0 || healthy {
+                                        a.server_errors += 1;
+                                    } else {
+                                        progress(&format!(
+                                            "{}: a second server error, but the server failed its health check too; not recorded",
+                                            sel.id
+                                        ));
+                                    }
+                                    (a.server_errors, SERVER_ERROR_TWICE, "server_error")
+                                } else {
+                                    a.timeouts += 1;
+                                    (a.timeouts, TIMED_OUT_TWICE, "timeout")
+                                };
+                                a.last_error = crate::error::chain(&e);
+                                let last = a.last_error.clone();
+                                if let Err(err) = write_json(&attempts_path, &attempts) {
+                                    stop_err = Some(err);
+                                    break;
+                                }
+                                (count >= 2).then(|| {
+                                    let mut l = Line::from_error(sel, order, wall, &e);
+                                    l.error_code = Some(code.to_string());
+                                    l.error = Some(format!("{note} (last: {last})"));
+                                    l
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => Some(Line::from_error(sel, order, wall, &e)),
+                    };
+                    if line.is_some() {
+                        // A recorded outcome, even a repeated timeout or server error, is not a
+                        // transport failure: it does not count toward stopping the run.
+                        transport_note = None;
+                    }
+                    let shown = match (&line, transport_note) {
+                        (Some(l), _) => l.final_verdict.map_or_else(
+                            || format!("unusable:{}", l.error_code.as_deref().unwrap_or("?")),
+                            |v| v.as_str().to_string(),
+                        ),
+                        (None, n) => format!(
+                            "{} failure, not recorded; --resume retries it",
+                            n.unwrap_or("transport")
+                        ),
+                    };
+                    progress(&format!(
+                        "[{}/{}] {} gold={} -> {} ({:.1}s)",
+                        i + 1,
+                        picked.len(),
+                        sel.id,
+                        label_str(sel.label),
+                        shown,
+                        wall
+                    ));
+                    let overflowed = line.as_ref().is_some_and(is_overflow);
+                    if overflowed {
+                        overflow_run += 1;
+                        if overflow_run >= MAX_CONSECUTIVE_TRANSPORT {
+                            if let Some(l) = line.as_ref()
+                                && let Err(e) = append_line(&mut file, l)
+                            {
+                                stop_err = Some(e);
+                                break;
+                            }
+                            stop_err = Some(Error::ContextOverflow(format!(
+                                "{overflow_run} claims in a row overflowed num_ctx {}; stopped. Start a new run with a larger --num-ctx (or --num-ctx auto)",
+                                cfg.num_ctx
+                            )));
+                            break;
+                        }
+                    } else {
+                        overflow_run = 0;
+                    }
+                    if transport_note.is_some() {
+                        transport_run += 1;
+                        if transport_run >= MAX_CONSECUTIVE_TRANSPORT {
+                            stop_err = Some(Error::Ollama(format!(
+                                "{transport_run} transport or server (5xx) failures in a row: the server could not be reached or kept failing; stopped (resume with --resume)",
+                            )));
+                            break;
+                        }
+                    } else {
+                        transport_run = 0;
+                    }
+                    if let Some(l) = line
+                        && let Err(e) = append_line(&mut file, &l)
+                    {
+                        stop_err = Some(e);
+                        break;
+                    }
                 }
             }
-            Err(e) => Some(Line::from_error(sel, order, wall, &e)),
-        };
-        if line.is_some() {
-            // A recorded outcome, even a repeated timeout or server error, is not a
-            // transport failure: it does not count toward stopping the run.
-            transport_note = None;
-        }
-        let shown = match (&line, transport_note) {
-            (Some(l), _) => l.final_verdict.map_or_else(
-                || format!("unusable:{}", l.error_code.as_deref().unwrap_or("?")),
-                |v| v.as_str().to_string(),
-            ),
-            (None, n) => format!(
-                "{} failure, not recorded; --resume retries it",
-                n.unwrap_or("transport")
-            ),
-        };
-        progress(&format!(
-            "[{}/{}] {} gold={} -> {} ({:.1}s)",
-            i + 1,
-            picked.len(),
-            sel.id,
-            label_str(sel.label),
-            shown,
-            wall
-        ));
-        let overflowed = line.as_ref().is_some_and(is_overflow);
-        if overflowed {
-            overflow_run += 1;
-            if overflow_run >= MAX_CONSECUTIVE_TRANSPORT {
-                if let Some(l) = line.as_ref() {
-                    append_line(&mut file, l)?;
-                }
-                return Err(Error::ContextOverflow(format!(
-                    "{overflow_run} claims in a row overflowed num_ctx {}; stopped. Start a new run with a larger --num-ctx (or --num-ctx auto)",
-                    cfg.num_ctx
-                )));
+
+            {
+                let (lock, cvar) = &*queue;
+                let mut q = lock.lock().expect("worker queue lock");
+                q.jobs.clear();
+                q.closed = true;
+                cvar.notify_all();
             }
-        } else {
-            overflow_run = 0;
-        }
-        if transport_note.is_some() {
-            transport_run += 1;
-            if transport_run >= MAX_CONSECUTIVE_TRANSPORT {
-                return Err(Error::Ollama(format!(
-                    "{transport_run} transport or server (5xx) failures in a row: the server could not be reached or kept failing; stopped (resume with --resume)",
-                )));
+            // Any claim that finished out of order (buffered in `ready`) or finishes while
+            // draining in-flight workers after a breaker tripped could not be committed in
+            // file order: it is not recorded in `verdicts.jsonl` or `attempts.json`, so
+            // `--resume` asks it again.
+            while done_rx.recv().is_ok() {}
+        });
+    }
+
+    let (session_ended_at, session_elapsed) = {
+        #[cfg(test)]
+        {
+            match TEST_CLOCK.with(|c| c.get()) {
+                Some(tc) => (tc.ended_at, tc.session_elapsed),
+                None => (now_unix(), session_timer.elapsed().as_secs_f64()),
             }
-        } else {
-            transport_run = 0;
         }
-        if let Some(l) = line {
-            append_line(&mut file, &l)?;
+        #[cfg(not(test))]
+        {
+            (now_unix(), session_timer.elapsed().as_secs_f64())
         }
+    };
+    manifest.sessions.push(Session {
+        started_at: session_started_at,
+        ended_at: session_ended_at,
+        elapsed_seconds: session_elapsed,
+        jobs: s.jobs,
+    });
+    write_json(&dir.join("manifest.json"), &manifest)?;
+    if let Some(e) = stop_err {
+        return Err(e);
     }
     report_dir(dir, None)
 }
@@ -1619,6 +1918,16 @@ pub struct Report {
     pub context_overflow: usize,
     /// How the window was chosen (absent for runs made before it was recorded).
     pub ctx: Option<CtxSizing>,
+    /// Sessions recorded in the manifest (`started_at`, `ended_at`, `elapsed_seconds`, `jobs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<Session>,
+    /// Sum of session elapsed wall seconds, when sessions are recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_seconds: Option<f64>,
+    /// Attempted claims per elapsed hour (`claims_attempted * 3600 / elapsed_seconds`),
+    /// when `elapsed_seconds > 0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_per_hour: Option<f64>,
 }
 
 fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
@@ -1667,7 +1976,20 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         })
         .collect();
 
-    let wall: f64 = lines.iter().map(|l| l.wall_seconds).sum();
+    let claim_wall: f64 = lines.iter().map(|l| l.wall_seconds).sum();
+    let any_parallel = m.sessions.iter().any(|s| s.jobs > 1);
+    let elapsed_seconds: Option<f64> =
+        (!m.sessions.is_empty()).then(|| m.sessions.iter().map(Session::span_seconds).sum());
+    let items_per_hour = elapsed_seconds
+        .filter(|&e| e > 0.0 && !lines.is_empty())
+        .map(|e| lines.len() as f64 * 3600.0 / e);
+    // At N = 1 (no session ran with jobs > 1), keep the per-claim sum; when any session
+    // ran with jobs > 1, use the sum of session elapsed spans so parallel runs do not
+    // overstate cost by up to N×.
+    let wall = match (any_parallel, elapsed_seconds) {
+        (true, Some(e)) => e,
+        _ => claim_wall,
+    };
     let total = gpu_cost_hr * wall / 3600.0;
     let cost = Cost {
         gpu_cost_hr,
@@ -1744,6 +2066,9 @@ fn build_report(m: &Manifest, lines: &[Line], gpu_cost_hr: f64) -> Report {
         },
         context_overflow: overflow,
         ctx: m.ctx.clone(),
+        sessions: m.sessions.clone(),
+        elapsed_seconds,
+        items_per_hour,
         model: m.model.clone(),
         model_digest: m.model_digest.clone(),
         ollama_version: m.ollama_version.clone(),
@@ -1917,6 +2242,20 @@ pub fn render_table(r: &Report) -> String {
         c.per_claim_usd
             .map_or("n/a".to_string(), |v| format!("${v:.5}")),
     ));
+    if !r.sessions.is_empty() {
+        let jobs_list: Vec<String> = r
+            .sessions
+            .iter()
+            .map(|s| format!("jobs={}", s.jobs))
+            .collect();
+        out.push_str(&format!(
+            "throughput: {:.1}s elapsed ({}), {} items/hr\n",
+            r.elapsed_seconds.unwrap_or(0.0),
+            jobs_list.join(", "),
+            r.items_per_hour
+                .map_or("n/a".to_string(), |v| format!("{v:.1}")),
+        ));
+    }
     if let Some(z) = &r.ctx {
         out.push_str(&format!(
             "context window: num_ctx {} ({}, {}){}\n",
@@ -1931,6 +2270,11 @@ pub fn render_table(r: &Report) -> String {
                 "warning: the model was partly offloaded to the CPU ({:.0}% in VRAM)\n",
                 z.vram_fraction.unwrap_or(0.0) * 100.0
             ));
+            if r.sessions.iter().any(|s| s.jobs > 1) {
+                out.push_str(
+                    "warning: server parallel slots multiply KV memory; check OLLAMA_NUM_PARALLEL\n",
+                );
+            }
         }
     }
     if r.context_overflow > 0 {
@@ -2034,7 +2378,28 @@ mod tests {
     use super::*;
     use crate::ollama::{ChatRequest, ChatResponse};
     use serde_json::json;
-    use std::cell::RefCell;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Thread-safe interior mutability with `RefCell`'s `.borrow()` / `.borrow_mut()` shape,
+    /// so `Fake` and existing closures work across `--jobs N` worker threads.
+    struct SyncCell<T>(Mutex<T>);
+
+    impl<T> SyncCell<T> {
+        fn new(v: T) -> Self {
+            Self(Mutex::new(v))
+        }
+        fn borrow(&self) -> MutexGuard<'_, T> {
+            self.0.lock().expect("lock")
+        }
+        fn borrow_mut(&self) -> MutexGuard<'_, T> {
+            self.0.lock().expect("lock")
+        }
+        fn replace(&self, v: T) -> T {
+            std::mem::replace(&mut *self.0.lock().expect("lock"), v)
+        }
+    }
+
+    type RefCell<T> = SyncCell<T>;
 
     const GOLD: &str = include_str!("../tests/fixtures/calibrate-gold.jsonl");
 
@@ -2060,7 +2425,7 @@ mod tests {
         }
     }
 
-    type Answer = Box<dyn Fn(&str, &ChatRequest) -> Result<ChatResponse>>;
+    type Answer = Box<dyn Fn(&str, &ChatRequest) -> Result<ChatResponse> + Sync>;
 
     /// A model that answers from a function of the request and keeps every request.
     struct Fake {
@@ -2069,7 +2434,9 @@ mod tests {
     }
 
     impl Fake {
-        fn new(answer: impl Fn(&str, &ChatRequest) -> Result<ChatResponse> + 'static) -> Self {
+        fn new(
+            answer: impl Fn(&str, &ChatRequest) -> Result<ChatResponse> + Sync + 'static,
+        ) -> Self {
             Self {
                 seen: RefCell::new(vec![]),
                 answer: Box::new(answer),
@@ -3220,6 +3587,7 @@ mod tests {
             offrig_version: "x".into(),
             started_at: 0,
             resumes: vec![],
+            sessions: vec![],
             model: "m".into(),
             model_digest: None,
             ollama_version: "v".into(),
@@ -4239,5 +4607,552 @@ mod tests {
         assert_eq!(s.max_predict(), s.num_predict);
         s.think_policy = None;
         assert_eq!(s.max_predict(), s.num_predict);
+    }
+
+    fn strip_session_and_cost_wall(text: &str) -> String {
+        let mut v: Value = serde_json::from_str(text).expect("report json");
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("sessions");
+            obj.remove("elapsed_seconds");
+            obj.remove("items_per_hour");
+        }
+        v["cost"]["wall_seconds"] = json!(0.0);
+        serde_json::to_string_pretty(&v).expect("ser") + "\n"
+    }
+
+    fn normalize_manifest_json(text: &str) -> String {
+        let mut m: Manifest = serde_json::from_str(text).expect("manifest json");
+        m.sessions.clear();
+        serde_json::to_string_pretty(&m).expect("ser") + "\n"
+    }
+
+    #[test]
+    fn n1_matches_baseline_and_n4_matches_n1_apart_from_session_timing() {
+        for bad in [0usize, 9, 100] {
+            let e = check_jobs(bad).expect_err("out of range");
+            assert!(
+                e.to_string().contains("--jobs must be between 1 and 8"),
+                "{e}"
+            );
+            let mut s = settings();
+            s.jobs = bad;
+            let dir = tmp(&format!("bad-jobs-{bad}"));
+            let err = go(&s, &dir, false, &scripted(), &Srv::new()).expect_err("refused");
+            assert!(
+                err.to_string().contains("--jobs must be between 1 and 8"),
+                "{err}"
+            );
+            assert!(!dir.exists());
+        }
+
+        let make_chat = || {
+            Fake::new(|id, _| {
+                let body = match id {
+                    "g1" | "g2" | "g5" => reply("supported", QUOTE),
+                    "g3" => reply("unsupported", ""),
+                    "g4" => reply("cannot_tell", ""),
+                    "r1" => reply("supported", "this text is not in the diff at all"),
+                    "r2" => reply("unsupported", "+ for attempt in 0..3 { try_send() }"),
+                    _ => reply("unsupported", ""),
+                };
+                Ok(ChatResponse {
+                    thinking: format!("thinking for {id}"),
+                    ..resp(&body)
+                })
+            })
+        };
+
+        let dir1 = tmp("jobs-n1");
+        let dir4 = tmp("jobs-n4");
+        let files = gold();
+        let store1 = Store::open_in_memory().expect("store1");
+        let store4 = Store::open_in_memory().expect("store4");
+        let mut s1 = settings();
+        s1.jobs = 1;
+        let mut s4 = settings();
+        s4.jobs = 4;
+        let mut prog1 = Vec::new();
+        let mut prog4 = Vec::new();
+        TEST_CLOCK.with(|c| {
+            c.set(Some(TestClock {
+                started_at: 1_700_000_000,
+                ended_at: 1_700_000_007,
+                claim_wall: 1.0,
+                session_elapsed: 7.0,
+            }))
+        });
+        let rep1 = run(
+            &RunArgs {
+                settings: &s1,
+                gold: &files,
+                store: &store1,
+                out_dir: &dir1,
+                resume: false,
+                keep_thinking: true,
+            },
+            &make_chat(),
+            &Srv::new(),
+            &mut |m| prog1.push(m.to_string()),
+        )
+        .expect("n1");
+        TEST_CLOCK.with(|c| {
+            c.set(Some(TestClock {
+                started_at: 1_700_000_000,
+                ended_at: 1_700_000_002,
+                claim_wall: 1.0,
+                session_elapsed: 2.0,
+            }))
+        });
+        let rep4 = run(
+            &RunArgs {
+                settings: &s4,
+                gold: &files,
+                store: &store4,
+                out_dir: &dir4,
+                resume: false,
+                keep_thinking: true,
+            },
+            &make_chat(),
+            &Srv::new(),
+            &mut |m| prog4.push(m.to_string()),
+        )
+        .expect("n4");
+        TEST_CLOCK.with(|c| c.set(None));
+
+        // Progress lines, thinking.jsonl, and verdicts.jsonl are byte-identical with zero normalization.
+        assert_eq!(prog1, prog4);
+
+        let think1 = std::fs::read_to_string(dir1.join(THINKING_FILE)).expect("think1");
+        let think4 = std::fs::read_to_string(dir4.join(THINKING_FILE)).expect("think4");
+        assert_eq!(think1, think4);
+
+        let verd1 = std::fs::read_to_string(dir1.join("verdicts.jsonl")).expect("verd1");
+        let verd4 = std::fs::read_to_string(dir4.join("verdicts.jsonl")).expect("verd4");
+        assert_eq!(verd1, verd4);
+
+        // manifest.json and metrics.json are byte-identical apart from session timing fields.
+        let man1 = normalize_manifest_json(
+            &std::fs::read_to_string(dir1.join("manifest.json")).expect("man1"),
+        );
+        let man4 = normalize_manifest_json(
+            &std::fs::read_to_string(dir4.join("manifest.json")).expect("man4"),
+        );
+        assert_eq!(man1, man4);
+
+        let met1_raw = std::fs::read_to_string(dir1.join("metrics.json")).expect("met1");
+        let met4_raw = std::fs::read_to_string(dir4.join("metrics.json")).expect("met4");
+        assert_eq!(
+            strip_session_and_cost_wall(&met1_raw),
+            strip_session_and_cost_wall(&met4_raw)
+        );
+
+        // And a pre-jobs manifest (without `sessions`) rescored with `report_dir` produces
+        // the exact same byte-identical report (including `cost.wall_seconds`) as N = 1
+        // apart from the three new top-level session timing fields.
+        let mut rep1_base = rep1.clone();
+        rep1_base.sessions.clear();
+        rep1_base.elapsed_seconds = None;
+        rep1_base.items_per_hour = None;
+        let met1_base = serde_json::to_string_pretty(&rep1_base).expect("ser") + "\n";
+        let dir_pre = tmp("jobs-pre");
+        std::fs::create_dir_all(&dir_pre).expect("dir_pre");
+        std::fs::write(dir_pre.join("manifest.json"), &man1).expect("write man_pre");
+        std::fs::write(dir_pre.join("verdicts.jsonl"), &verd1).expect("write verd_pre");
+        report_dir(&dir_pre, None).expect("report_pre");
+        let met_pre_raw = std::fs::read_to_string(dir_pre.join("metrics.json")).expect("met_pre");
+        assert!(!met_pre_raw.contains("\"sessions\""));
+        assert!(!met_pre_raw.contains("\"elapsed_seconds\""));
+        assert!(!met_pre_raw.contains("\"items_per_hour\""));
+        assert_eq!(met_pre_raw, met1_base);
+        println!(
+            "byte-identity verified: verdicts.jsonl={}B (sha256={}), thinking.jsonl={}B (sha256={}), manifest_base={}B (sha256={}), metrics_base={}B (sha256={})",
+            verd1.len(),
+            sha256_hex(verd1.as_bytes()),
+            think1.len(),
+            sha256_hex(think1.as_bytes()),
+            man1.len(),
+            sha256_hex(man1.as_bytes()),
+            met1_base.len(),
+            sha256_hex(met1_base.as_bytes())
+        );
+
+        assert_eq!(rep1.sessions.len(), 1);
+        assert_eq!(rep1.sessions[0].jobs, 1);
+        assert_eq!(rep4.sessions.len(), 1);
+        assert_eq!(rep4.sessions[0].jobs, 4);
+
+        cleanup(&[&dir1, &dir4, &dir_pre]);
+    }
+
+    #[test]
+    fn out_of_order_worker_replies_still_commit_in_file_order() {
+        let dir = tmp("jobs-order");
+        let completed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let completed_cl = Arc::clone(&completed);
+        // Seeded delays so earlier claims finish after later claims in the 4-worker pool.
+        let chat = Fake::new(move |id, _| {
+            let delay_ms = match id {
+                "g1" => 45,
+                "g2" => 5,
+                "g3" => 35,
+                "g4" => 10,
+                "r1" => 30,
+                "r2" => 5,
+                _ => 15,
+            };
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            completed_cl.lock().expect("lock").push(id.to_string());
+            Ok(ChatResponse {
+                thinking: format!("think-{id}"),
+                ..resp(&reply("unsupported", ""))
+            })
+        });
+        let store = Store::open_in_memory().expect("store");
+        let mut s = settings();
+        s.jobs = 4;
+        let files = gold();
+        let mut progress_ids = Vec::new();
+        run(
+            &RunArgs {
+                settings: &s,
+                gold: &files,
+                store: &store,
+                out_dir: &dir,
+                resume: false,
+                keep_thinking: true,
+            },
+            &chat,
+            &Srv::new(),
+            &mut |m| {
+                if m.starts_with('[')
+                    && let Some(rest) = m.split("] ").nth(1)
+                    && let Some(id) = rest.split_whitespace().next()
+                {
+                    progress_ids.push(id.to_string());
+                }
+            },
+        )
+        .expect("run");
+
+        let expected = vec!["g1", "g2", "g3", "g4", "r1", "r2", "k1"];
+        let fin = completed.lock().expect("lock").clone();
+        assert_ne!(fin, expected, "workers must complete out of file order");
+
+        let line_ids: Vec<String> = read_lines(&dir, false)
+            .expect("lines")
+            .into_iter()
+            .map(|l| l.claim_id)
+            .collect();
+        assert_eq!(line_ids, expected);
+        assert_eq!(progress_ids, expected);
+
+        let think_ids: Vec<String> = std::fs::read_to_string(dir.join(THINKING_FILE))
+            .expect("thinking")
+            .lines()
+            .map(|l| {
+                let v: Value = serde_json::from_str(l).expect("json");
+                v["claim_id"].as_str().expect("id").to_string()
+            })
+            .collect();
+        assert_eq!(think_ids, expected);
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn five_hundred_on_every_call_at_n4_trips_breaker_at_same_count_as_n1_and_never_records_twice()
+    {
+        let dir1 = tmp("breaker-n1");
+        let dir4 = tmp("breaker-n4");
+        let fail_all = || Fake::new(|_, _| Err(Error::Ollama("chat: http 500: down".into())));
+
+        let mut s1 = settings();
+        s1.jobs = 1;
+        let e1 = go(&s1, &dir1, false, &fail_all(), &Srv::new()).expect_err("n1 breaker");
+
+        let mut s4 = settings();
+        s4.jobs = 4;
+        let e4 = go(&s4, &dir4, false, &fail_all(), &Srv::new()).expect_err("n4 breaker");
+
+        assert_eq!(e1.to_string(), e4.to_string());
+        assert!(
+            e4.to_string()
+                .contains("5 transport or server (5xx) failures in a row"),
+            "{e4}"
+        );
+        assert!(read_lines(&dir1, false).expect("lines1").is_empty());
+        assert!(read_lines(&dir4, false).expect("lines4").is_empty());
+
+        let att1: BTreeMap<String, Attempt> =
+            read_attempts(&dir1.join("attempts.json")).expect("att1");
+        let att4: BTreeMap<String, Attempt> =
+            read_attempts(&dir4.join("attempts.json")).expect("att4");
+        assert_eq!(att1, att4);
+        assert_eq!(att4.len(), MAX_CONSECUTIVE_TRANSPORT);
+
+        // Resume at N = 4 with a working server: every claim is recorded once and none twice.
+        let rep = go(&s4, &dir4, true, &scripted(), &Srv::new()).expect("resume ok");
+        assert_eq!(rep.status, "complete");
+        let lines = read_lines(&dir4, false).expect("lines");
+        assert_eq!(lines.len(), 7);
+        let unique: HashSet<String> = lines.iter().map(|l| l.claim_id.clone()).collect();
+        assert_eq!(unique.len(), 7);
+        cleanup(&[&dir1, &dir4]);
+    }
+
+    #[test]
+    fn resume_with_different_jobs_works_and_records_both_sessions() {
+        let dir = tmp("jobs-resume");
+        let chat = flaky(&["g2", "r1"], net_error);
+        let mut s2 = settings();
+        s2.jobs = 2;
+        let rep1 = go(&s2, &dir, false, &chat, &Srv::new()).expect("first session");
+        assert_eq!((rep1.status.as_str(), rep1.pending), ("incomplete", 2));
+        assert_eq!(rep1.sessions.len(), 1);
+        assert_eq!(rep1.sessions[0].jobs, 2);
+
+        let mut s4 = settings();
+        s4.jobs = 4;
+        let rep2 = go(&s4, &dir, true, &chat, &Srv::new()).expect("second session");
+        assert_eq!((rep2.status.as_str(), rep2.pending), ("complete", 0));
+        assert_eq!(rep2.sessions.len(), 2);
+        assert_eq!(rep2.sessions[0].jobs, 2);
+        assert_eq!(rep2.sessions[1].jobs, 4);
+
+        let man = read_manifest(&dir).expect("manifest");
+        assert_eq!(man.sessions.len(), 2);
+        assert_eq!(man.sessions[0].jobs, 2);
+        assert_eq!(man.sessions[1].jobs, 4);
+        assert!(man.settings.get("jobs").is_none());
+
+        let table = render_table(&rep2);
+        assert!(table.contains("jobs=2, jobs=4"), "{table}");
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn structured_auto_first_reply_breaking_schema_retries_once_then_fans_out_in_plain_text() {
+        let dir = tmp("jobs-auto-schema");
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_on_g1 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_after_g1 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let active_cl = Arc::clone(&active);
+        let max_g1_cl = Arc::clone(&max_on_g1);
+        let max_after_cl = Arc::clone(&max_after_g1);
+
+        let chat = Fake::new(move |id, req| {
+            let cur = active_cl.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if id == "g1" {
+                max_g1_cl.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                max_after_cl.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let res = if req.format.is_some() {
+                Ok(resp("not valid json at all"))
+            } else {
+                Ok(resp(&reply("unsupported", "")))
+            };
+            active_cl.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            res
+        });
+
+        let mut s = settings();
+        s.structured = Structured::Auto;
+        s.jobs = 4;
+        let mut notes = Vec::new();
+        let store = Store::open_in_memory().expect("store");
+        let files = gold();
+        let rep = run(
+            &RunArgs {
+                settings: &s,
+                gold: &files,
+                store: &store,
+                out_dir: &dir,
+                resume: false,
+                keep_thinking: false,
+            },
+            &chat,
+            &Srv::new(),
+            &mut |m| notes.push(m.to_string()),
+        )
+        .expect("run");
+
+        assert_eq!(rep.status, "complete");
+        // g1 ran alone while structured mode was unsettled: 2 structured attempts (1 + retry)
+        // failed schema, then 1 plain-text retry on g1, then 6 remaining claims in plain text.
+        assert_eq!(max_on_g1.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            max_after_g1.load(std::sync::atomic::Ordering::SeqCst) > 1,
+            "remaining claims must fan out after g1 settles plain text"
+        );
+        assert_eq!(chat.calls(), 2 + 1 + 6);
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|m| m.contains("continuing in plain text"))
+                .count(),
+            1
+        );
+        let lines = read_lines(&dir, false).expect("lines");
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.pins.as_ref().expect("pins").structured)
+        );
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn thinking_rows_at_n4_match_each_claim_with_none_missing_or_doubled() {
+        let dir = tmp("jobs-thinking-n4");
+        let first_g3 = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let first_g3_cl = Arc::clone(&first_g3);
+        let chat = Fake::new(move |id, _| {
+            let ms = match id {
+                "g1" => 30,
+                "g2" => 5,
+                "g3" => 20,
+                "g4" => 10,
+                _ => 15,
+            };
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            if id == "g3" && first_g3_cl.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Ok(ChatResponse {
+                    thinking: "think:g3:attempt1".into(),
+                    ..resp("broken schema on first try")
+                });
+            }
+            Ok(ChatResponse {
+                thinking: format!("think:{id}:ok"),
+                ..resp(&reply("unsupported", ""))
+            })
+        });
+        let store = Store::open_in_memory().expect("store");
+        let mut s = settings();
+        s.jobs = 4;
+        let files = gold();
+        run(
+            &RunArgs {
+                settings: &s,
+                gold: &files,
+                store: &store,
+                out_dir: &dir,
+                resume: false,
+                keep_thinking: true,
+            },
+            &chat,
+            &Srv::new(),
+            &mut |_| {},
+        )
+        .expect("run");
+
+        let rows: Vec<Value> = std::fs::read_to_string(dir.join(THINKING_FILE))
+            .expect("thinking")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("row"))
+            .collect();
+        assert_eq!(rows.len(), 7);
+        let expected = ["g1", "g2", "g3", "g4", "r1", "r2", "k1"];
+        for (row, &id) in rows.iter().zip(&expected) {
+            assert_eq!(row["claim_id"].as_str(), Some(id));
+            let arr = row["thinking"].as_array().expect("thinking array");
+            if id == "g3" {
+                assert_eq!(arr, &[json!("think:g3:attempt1"), json!("think:g3:ok")]);
+            } else {
+                assert_eq!(arr, &[json!(format!("think:{id}:ok"))]);
+            }
+        }
+        cleanup(&[&dir]);
+    }
+
+    #[test]
+    fn cost_with_n2_uses_elapsed_time_not_per_claim_sum_and_offload_warns_about_parallel_slots() {
+        let dir = tmp("jobs-cost-n2");
+        let chat = Fake::new(|_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            Ok(resp(&reply("unsupported", "")))
+        });
+        let mut srv = Srv::new();
+        srv.loaded = Some(Loaded {
+            name: "judge:latest".into(),
+            size_vram: 15_000,
+            size: 20_000,
+            context_length: Some(16_384),
+        });
+        let mut s = settings();
+        s.jobs = 2;
+        s.gpu_cost_hr = 3.6;
+        let mut warnings = Vec::new();
+        let store = Store::open_in_memory().expect("store");
+        let files = gold();
+        run(
+            &RunArgs {
+                settings: &s,
+                gold: &files,
+                store: &store,
+                out_dir: &dir,
+                resume: false,
+                keep_thinking: false,
+            },
+            &chat,
+            &srv,
+            &mut |m| warnings.push(m.to_string()),
+        )
+        .expect("run");
+        assert!(
+            warnings.iter().any(|w| w
+                .contains("server parallel slots multiply KV memory; check OLLAMA_NUM_PARALLEL")),
+            "{warnings:?}"
+        );
+
+        // Pin each line's wall_seconds to 10.0s (sum = 70.0s) and two recorded sessions
+        // totaling 35.0s elapsed (`100..120` at jobs=2 and `200..215` at jobs=2).
+        let lines: Vec<Line> = read_lines(&dir, false)
+            .expect("lines")
+            .into_iter()
+            .map(|mut l| {
+                l.wall_seconds = 10.0;
+                l
+            })
+            .collect();
+        let body: String = lines
+            .iter()
+            .map(|l| serde_json::to_string(l).expect("ser") + "\n")
+            .collect();
+        std::fs::write(dir.join("verdicts.jsonl"), body).expect("write verdicts");
+
+        let mut man = read_manifest(&dir).expect("manifest");
+        man.sessions = vec![
+            Session {
+                started_at: 100,
+                ended_at: 120,
+                elapsed_seconds: 20.0,
+                jobs: 2,
+            },
+            Session {
+                started_at: 200,
+                ended_at: 215,
+                elapsed_seconds: 0.0, // exercises fallback to ended_at - started_at = 15.0s
+                jobs: 2,
+            },
+        ];
+        write_json(&dir.join("manifest.json"), &man).expect("write manifest");
+
+        let rep = report_dir(&dir, Some(3.6)).expect("report");
+        // Elapsed is 20 + 15 = 35s, not the per-claim sum of 70s.
+        close(rep.elapsed_seconds.expect("elapsed"), 35.0);
+        close(rep.cost.wall_seconds, 35.0);
+        close(rep.cost.total_usd, 3.6 * 35.0 / 3600.0);
+        close(rep.items_per_hour.expect("iph"), 7.0 * 3600.0 / 35.0);
+        let table = render_table(&rep);
+        assert!(
+            table.contains("throughput: 35.0s elapsed (jobs=2, jobs=2), 720.0 items/hr"),
+            "{table}"
+        );
+        assert!(
+            table.contains("server parallel slots multiply KV memory; check OLLAMA_NUM_PARALLEL"),
+            "{table}"
+        );
+        cleanup(&[&dir]);
     }
 }

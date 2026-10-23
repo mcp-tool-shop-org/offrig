@@ -247,7 +247,11 @@ project has an index, `offrig_memory_search` defaults to hybrid (keyword plus me
 `offrig verify calibrate` scores a local loopback model as a verifier, one gold claim
 per call, with that claim's own evidence. A model name containing "cloud" is refused.
 `--num-ctx` defaults to `auto` and sizes one window for the run. `--keep-thinking`
-writes thinking text to `thinking.jsonl` in the run directory only. The
+writes thinking text to `thinking.jsonl` in the run directory only. `--jobs <N>`
+(1 to 8, default 1) keeps up to N claims in flight at once and still commits them in
+file order: the server must allow N in parallel (`OLLAMA_NUM_PARALLEL`, which defaults
+to 1 in Ollama) or extra requests queue there, required KV memory scales with parallel
+slots, and concurrency may change verdicts until measured. The
 [handbook reference](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)
 lists the flags.
 

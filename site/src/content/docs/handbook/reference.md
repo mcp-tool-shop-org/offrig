@@ -139,6 +139,13 @@ call's `supported`. `--think-num-predict` is the second call's reply limit.
 directory. It is not scored and not part of the resume identity. It can echo the
 evidence. Scan it before it goes anywhere public.
 
+`--jobs <N>` (1 to 8, default 1) keeps up to N claims in flight at once and commits
+results in file order. The server must allow at least N requests in parallel
+(`OLLAMA_NUM_PARALLEL`, which defaults to 1 in Ollama) or the extra requests queue at
+the server. Memory scales with parallel slots (`OLLAMA_NUM_PARALLEL * OLLAMA_CONTEXT_LENGTH`),
+and concurrency may change verdicts until measured. `jobs` is recorded per session in
+`manifest.json` and is not part of the resume identity.
+
 ## Verify a build
 
 ```text
