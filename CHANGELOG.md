@@ -40,7 +40,8 @@ All notable changes to offrig are documented here. The format is based on
 
 ### Security
 
-- **`cargo-deny` advisories cleared.** `rustls-webpki` moves 0.103.15 -> 0.103.16 and `webpki-roots` 1.0.9 -> 1.0.10 in `Cargo.lock`, which clears RUSTSEC-2026-0381 and RUSTSEC-2026-0382. RUSTSEC-2026-0370, 0371 and 0372 (unmaintained crates merged into `zbus`, reached only through the GUI's `eframe` -> `accesskit_unix` -> `zbus` chain, with no patched release reachable) are listed in `deny.toml` with a reason, and mirrored in `osv-scanner.toml`.
+- **`cargo-deny` advisories cleared.** `rustls-webpki` moves 0.103.15 -> 0.103.16 and `webpki-roots` 1.0.9 -> 1.0.10 in `Cargo.lock`; together these updates clear RUSTSEC-2026-0381 and RUSTSEC-2026-0382. RUSTSEC-2026-0370, 0371 and 0372 (unmaintained crates merged into `zbus`, reached only through the GUI's `eframe` -> `accesskit_unix` -> `zbus` chain, with no patched release reachable) are listed in `deny.toml` with a reason, and mirrored in `osv-scanner.toml`.
+- **`tokio` moves 1.53.1 -> 1.54.1** in `Cargo.lock`, which clears RUSTSEC-2026-0386 (`AsyncFd` constructors and I/O safety). `cargo deny check advisories` passes.
 
 ## [1.2.0] - 2026-10-15
 
