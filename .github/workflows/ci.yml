@@ -86,7 +86,7 @@ jobs:
             --lockfile=Cargo.lock
 
       - name: Atlas check
-        run: npx --yes @dogfood-lab/atlas@1.24.0 check
+        run: npx --yes @dogfood-lab/atlas@1.26.0 check
 
       # A switch that can skip the watchdog must never ship. The watchdog is what
       # stops pod billing when everything else is gone.

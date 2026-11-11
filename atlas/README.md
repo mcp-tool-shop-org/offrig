@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-10-15 from commit 8b7acf1 by Atlas 1.24.0.
+Mapped at 2026-11-11 from commit c45638d by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,20 +8,15 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 6 parts, mostly Rust (86 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-10-09 (d56f458)
+## What changed since 2026-10-15 (8b7acf1)
 
-- ci's push trigger now also names `tools/**`.
-- ci now also runs crates/offrig-core/src/account.rs, crates/offrig-core/tests/engine_ready.rs, crates/offrig-mcp/tests/engine_ready.rs and 2 more.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `parse`, before `default_for`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `default_for`, before `report`.
-- In crates/offrig-cli/src/main.rs, `main` gained a step, `report_json`, before `open`.
-- And 10 more changes to the order of work.
-- embed-serve is a new part, drawn from `tools/embed-serve/**`.
-- 8 files added and 61 changed content, across 5 parts.
+- ci now also runs crates/offrig-cli/src/.
+- ci no longer runs crates/offrig-cli/src/budget_menu.rs and crates/offrig-cli/src/main.rs.
+- 15 files changed content, across 4 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 10 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 74 more; checks crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and crates/offrig-mcp/src/main.rs.
+1. **ci.** On a pull request; on a push to main touching 10 paths; or by hand. Runs crates/offrig-app/build.rs, crates/offrig-app/src/app.rs, crates/offrig-app/src/app/ and 75 more; checks crates/offrig-core/examples/fake_ssh.rs, crates/offrig-core/src/lib.rs and crates/offrig-mcp/src/main.rs.
 2. **release.** When a tag matching `v*` is pushed; or by hand. Runs crates/offrig-app/build.rs; checks README.md, crates/offrig-app/src/main.rs, crates/offrig-cli/src/main.rs and 1 more.
 3. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 4. **offrig** (a command people run). Runs crates/offrig-cli/src/main.rs.
@@ -31,7 +26,7 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 ## What happens through ci
 
-1. The workflow runs tools/embed-serve/ in embed-serve, 5 files in offrig-app, 5 files in offrig-cli, 46 files in offrig-core, and 19 files in offrig-mcp; it checks crates/offrig-core/examples/fake_ssh.rs and crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
+1. The workflow runs tools/embed-serve/ in embed-serve, 5 files in offrig-app, 6 files in offrig-cli, 46 files in offrig-core, and 19 files in offrig-mcp; it checks crates/offrig-core/examples/fake_ssh.rs and crates/offrig-core/src/lib.rs in offrig-core and crates/offrig-mcp/src/main.rs in offrig-mcp.
 2. It uploads coverage to Codecov.
 
 ## Who reads the results
@@ -61,11 +56,11 @@ ci writes nothing this map can see.
 
 ## What tends to change together
 
-- **crates/offrig-cli/src/verify_cmd.rs** and **crates/offrig-core/src/calibrate_run.rs** changed together in 6 of 9 commits, and the offrig-cli part imports the offrig-core part.
+- **crates/offrig-cli/src/verify_cmd.rs** and **crates/offrig-core/src/calibrate_run.rs** changed together in 7 of 10 commits, and the offrig-cli part imports the offrig-core part.
 - **crates/offrig-core/src/runpod.rs** and **crates/offrig-core/src/stage.rs** changed together in 5 of 8 commits, inside the offrig-core part.
-- **crates/offrig-core/src/calibrate_run.rs** and **crates/offrig-core/src/verify.rs** changed together in 5 of 9 commits, inside the offrig-core part.
 - **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 12 of 22 commits, inside the offrig-core part.
-- **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/spec.rs** changed together in 12 of 23 commits, inside the offrig-core part.
+- **crates/offrig-core/src/config.rs** and **crates/offrig-core/src/spec.rs** changed together in 12 of 24 commits, inside the offrig-core part.
+- **crates/offrig-core/src/calibrate_run.rs** and **crates/offrig-core/src/verify.rs** changed together in 5 of 10 commits, inside the offrig-core part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
