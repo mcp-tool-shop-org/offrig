@@ -43,40 +43,23 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 15,
+      "changed": 3,
       "moved": 0,
-      "parts": 4,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci now also runs crates/offrig-cli/src/.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-cli/src/"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "ci no longer runs crates/offrig-cli/src/budget_menu.rs and crates/offrig-cli/src/main.rs.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-cli/src/budget_menu.rs",
-          "crates/offrig-cli/src/main.rs"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "15 files changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-11-11; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "8b7acf1b98bbc418aaee733ce5d7a917e8c30662",
-      "generatedAt": "2026-10-15T08:26:29.594Z"
+      "commit": "c45638d9a0c6345dbbced8661c4d0bef584e7160",
+      "generatedAt": "2026-11-11T22:26:33.712Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -160,7 +143,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "c45638d9a0c6345dbbced8661c4d0bef584e7160",
+  "commit": "bc5901991dc67099b29272085dc63c4ed5799e8b",
   "defaultBranch": "main",
   "derived": "6 parts, mostly Rust (86 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
@@ -524,7 +507,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-11T22:26:33.712Z",
+  "generatedAt": "2026-11-12T00:42:44.243Z",
   "limits": [
     "13 writes and 7 reads use paths built at run time and are not named here.",
     "11 writes and 13 reads go to a path their caller passes, not to this repository.",
