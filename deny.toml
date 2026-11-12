@@ -2,8 +2,13 @@
 # Permissive licences are allowed everywhere. Anything weaker is an exception
 # scoped to the one crate that carries it, so a new copyleft dependency fails CI.
 
+# Audit what we ship. offrig's release is Windows-only (offrig-<ver>-windows-x64.zip),
+# so cargo-deny checks the x86_64-pc-windows-msvc graph. Crates reached only on
+# Linux (accesskit's AT-SPI bridge over zbus) are not in it. If a Linux build is
+# ever shipped, add its triple here; its advisories are then fixed at the root.
 [graph]
 all-features = false
+targets = [{ triple = "x86_64-pc-windows-msvc" }]
 
 [licenses]
 confidence-threshold = 0.95
@@ -35,18 +40,6 @@ name = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
 [advisories]
-ignore = [
-    # Unmaintained, not vulnerable. Reached only through egui/epaint, which parse
-    # the fonts bundled in the binary, never fonts from outside. Revisit when egui
-    # moves to skrifa.
-    { id = "RUSTSEC-2026-0192", reason = "egui-owned; parses only bundled fonts" },
-    # Unmaintained standalone crates merged into zbus 6.0.0; no patched release is
-    # reachable through eframe 0.36.2 -> accesskit_unix -> zbus 5.x, and offrig's
-    # GUI (offrig-app) is the only user.
-    { id = "RUSTSEC-2026-0370", reason = "eframe -> accesskit_unix -> zbus; offrig's GUI (offrig-app) is the only user" },
-    { id = "RUSTSEC-2026-0371", reason = "eframe -> accesskit_unix -> zbus; offrig's GUI (offrig-app) is the only user" },
-    { id = "RUSTSEC-2026-0372", reason = "eframe -> accesskit_unix -> zbus; offrig's GUI (offrig-app) is the only user" },
-]
 
 [bans]
 multiple-versions = "allow"
