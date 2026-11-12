@@ -17,7 +17,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "embed-serve",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 1,
       "rebaseline": null
     },
     {
@@ -51,7 +51,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "offrig-cli",
-      "qualifyingSourceCommits": 25,
+      "qualifyingSourceCommits": 27,
       "rebaseline": null
     },
     {
@@ -67,12 +67,12 @@
           "offrig-mcp"
         ]
       },
-      "cohesion": 0.771252,
+      "cohesion": 0.756136,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "offrig-core",
-      "qualifyingSourceCommits": 57,
+      "qualifyingSourceCommits": 59,
       "rebaseline": null
     },
     {
@@ -122,8 +122,8 @@
         "path": ".gitattributes"
       },
       {
-        "commits": 4,
-        "lines": 112,
+        "commits": 6,
+        "lines": 142,
         "path": ".github/workflows/ci.yml"
       },
       {
@@ -137,23 +137,23 @@
         "path": ".github/workflows/release.yml"
       },
       {
-        "commits": 2,
-        "lines": 5,
+        "commits": 3,
+        "lines": 9,
         "path": ".gitignore"
       },
       {
-        "commits": 54,
-        "lines": 994,
+        "commits": 57,
+        "lines": 1083,
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 15,
-        "lines": 5459,
+        "commits": 18,
+        "lines": 5495,
         "path": "Cargo.lock"
       },
       {
-        "commits": 9,
-        "lines": 54,
+        "commits": 11,
+        "lines": 62,
         "path": "Cargo.toml"
       },
       {
@@ -187,8 +187,8 @@
         "path": "README.ja.md"
       },
       {
-        "commits": 35,
-        "lines": 1066,
+        "commits": 37,
+        "lines": 1080,
         "path": "README.md"
       },
       {
@@ -217,28 +217,28 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 30,
-        "lines": 869,
+        "commits": 32,
+        "lines": 945,
         "path": "atlas/README.md"
       },
       {
-        "commits": 4,
-        "lines": 25,
+        "commits": 5,
+        "lines": 29,
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 30,
-        "lines": 3737,
+        "commits": 32,
+        "lines": 4102,
         "path": "atlas/page.json"
       },
       {
-        "commits": 30,
-        "lines": 5051,
+        "commits": 32,
+        "lines": 5667,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 30,
-        "lines": 18006,
+        "commits": 32,
+        "lines": 20578,
         "path": "atlas/structure.json"
       },
       {
@@ -332,18 +332,18 @@
         "path": "crates/offrig-cli/src/budget_menu.rs"
       },
       {
-        "commits": 19,
-        "lines": 864,
+        "commits": 20,
+        "lines": 866,
         "path": "crates/offrig-cli/src/main.rs"
       },
       {
-        "commits": 7,
-        "lines": 237,
+        "commits": 8,
+        "lines": 319,
         "path": "crates/offrig-cli/src/verify_cmd.rs"
       },
       {
-        "commits": 8,
-        "lines": 1202,
+        "commits": 9,
+        "lines": 1204,
         "path": "crates/offrig-cli/tests/commands.rs"
       },
       {
@@ -427,8 +427,8 @@
         "path": "crates/offrig-core/src/calibrate.rs"
       },
       {
-        "commits": 8,
-        "lines": 4373,
+        "commits": 9,
+        "lines": 5650,
         "path": "crates/offrig-core/src/calibrate_run.rs"
       },
       {
@@ -437,8 +437,8 @@
         "path": "crates/offrig-core/src/checks.rs"
       },
       {
-        "commits": 24,
-        "lines": 1567,
+        "commits": 25,
+        "lines": 1569,
         "path": "crates/offrig-core/src/config.rs"
       },
       {
@@ -467,8 +467,8 @@
         "path": "crates/offrig-core/src/guard.rs"
       },
       {
-        "commits": 2,
-        "lines": 950,
+        "commits": 3,
+        "lines": 1026,
         "path": "crates/offrig-core/src/index.rs"
       },
       {
@@ -487,8 +487,8 @@
         "path": "crates/offrig-core/src/lib.rs"
       },
       {
-        "commits": 10,
-        "lines": 584,
+        "commits": 11,
+        "lines": 588,
         "path": "crates/offrig-core/src/ollama.rs"
       },
       {
@@ -597,8 +597,8 @@
         "path": "crates/offrig-core/tests/fixtures/calibrate-gold.jsonl"
       },
       {
-        "commits": 2,
-        "lines": 327,
+        "commits": 3,
+        "lines": 360,
         "path": "crates/offrig-core/tests/index_http.rs"
       },
       {
@@ -607,8 +607,8 @@
         "path": "crates/offrig-core/tests/lane_registry.rs"
       },
       {
-        "commits": 4,
-        "lines": 335,
+        "commits": 5,
+        "lines": 339,
         "path": "crates/offrig-core/tests/ollama_http.rs"
       },
       {
@@ -882,8 +882,8 @@
         "path": "crates/podbay-core/src/zed.rs"
       },
       {
-        "commits": 1,
-        "lines": 51,
+        "commits": 2,
+        "lines": 57,
         "path": "deny.toml"
       },
       {
@@ -1037,8 +1037,8 @@
         "path": "offrig-core}/src/zed.rs"
       },
       {
-        "commits": 1,
-        "lines": 5,
+        "commits": 2,
+        "lines": 18,
         "path": "osv-scanner.toml"
       },
       {
@@ -1112,8 +1112,8 @@
         "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
       },
       {
-        "commits": 5,
-        "lines": 156,
+        "commits": 7,
+        "lines": 165,
         "path": "site/src/content/docs/handbook/reference.md"
       },
       {
@@ -1122,13 +1122,13 @@
         "path": "site/src/content/docs/handbook/security.md"
       },
       {
-        "commits": 9,
-        "lines": 361,
+        "commits": 10,
+        "lines": 473,
         "path": "site/src/content/docs/handbook/side-car.md"
       },
       {
-        "commits": 4,
-        "lines": 94,
+        "commits": 5,
+        "lines": 96,
         "path": "site/src/content/docs/handbook/usage.md"
       },
       {
@@ -1155,6 +1155,26 @@
         "commits": 1,
         "lines": 5,
         "path": "site/tsconfig.json"
+      },
+      {
+        "commits": 1,
+        "lines": 67,
+        "path": "tools/embed-serve/README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 306,
+        "path": "tools/embed-serve/embed_serve.py"
+      },
+      {
+        "commits": 1,
+        "lines": 50,
+        "path": "tools/embed-serve/requirements.txt"
+      },
+      {
+        "commits": 1,
+        "lines": 352,
+        "path": "tools/embed-serve/test_embed_serve.py"
       }
     ]
   },
@@ -1162,87 +1182,87 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-10-15T08:26:29.594Z",
+  "generatedAt": "2026-11-12T00:42:44.243Z",
   "generatedFrom": {
-    "commit": "8b7acf1b98bbc418aaee733ce5d7a917e8c30662"
+    "commit": "bc5901991dc67099b29272085dc63c4ed5799e8b"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "README.md",
-      "either": 53,
-      "shared": 28,
-      "strength": 0.528302
+      "either": 56,
+      "shared": 30,
+      "strength": 0.535714
     },
     {
       "a": "Cargo.lock",
       "b": "Cargo.toml",
-      "either": 16,
-      "shared": 8,
-      "strength": 0.5
+      "either": 19,
+      "shared": 10,
+      "strength": 0.526316
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 28,
-      "shared": 28,
+      "either": 30,
+      "shared": 30,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 28,
-      "shared": 28,
+      "either": 30,
+      "shared": 30,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 28,
-      "shared": 28,
+      "either": 30,
+      "shared": 30,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 28,
-      "shared": 28,
+      "either": 30,
+      "shared": 30,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 28,
-      "shared": 28,
+      "either": 30,
+      "shared": 30,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 28,
-      "shared": 28,
+      "either": 30,
+      "shared": 30,
       "strength": 1
     },
     {
       "a": "crates/offrig-cli/src/verify_cmd.rs",
       "b": "crates/offrig-core/src/calibrate_run.rs",
-      "either": 9,
-      "shared": 6,
-      "strength": 0.666667
+      "either": 10,
+      "shared": 7,
+      "strength": 0.7
     },
     {
       "a": "crates/offrig-core/src/calibrate_run.rs",
       "b": "crates/offrig-core/src/verify.rs",
-      "either": 9,
+      "either": 10,
       "shared": 5,
-      "strength": 0.555556
+      "strength": 0.5
     },
     {
       "a": "crates/offrig-core/src/config.rs",
       "b": "crates/offrig-core/src/spec.rs",
-      "either": 23,
+      "either": 24,
       "shared": 12,
-      "strength": 0.521739
+      "strength": 0.5
     },
     {
       "a": "crates/offrig-core/src/lib.rs",
@@ -1264,6 +1284,13 @@
       "either": 8,
       "shared": 4,
       "strength": 0.5
+    },
+    {
+      "a": "site/src/content/docs/handbook/side-car.md",
+      "b": "site/src/content/docs/handbook/usage.md",
+      "either": 10,
+      "shared": 5,
+      "strength": 0.5
     }
   ],
   "parameters": {
@@ -1276,16 +1303,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-10-14T20:56:25-07:00",
+    "headDate": "2026-11-11T17:26:38-05:00",
     "inScopeFiles": 166,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 78,
+    "qualifyingCommits": 83,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-18T03:56:25.000Z",
+    "since": "2026-05-15T22:26:38.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

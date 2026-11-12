@@ -42,82 +42,30 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 8,
-      "changed": 61,
+      "added": 0,
+      "changed": 3,
       "moved": 0,
-      "parts": 5,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci's push trigger now also names `tools/**`.",
-        "subjects": [
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "ci now also runs crates/offrig-core/src/account.rs, crates/offrig-core/tests/engine_ready.rs, crates/offrig-mcp/tests/engine_ready.rs and 2 more.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-core/src/account.rs",
-          "crates/offrig-core/tests/engine_ready.rs",
-          "crates/offrig-mcp/tests/engine_ready.rs",
-          "crates/offrig-mcp/tests/tool_hints.rs",
-          "tools/embed-serve/"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-cli/src/main.rs, `main` gained a step, `parse`, before `default_for`.",
-        "subjects": [
-          "crates/offrig-cli/src/main.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-cli/src/main.rs, `main` gained a step, `default_for`, before `report`.",
-        "subjects": [
-          "crates/offrig-cli/src/main.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-cli/src/main.rs, `main` gained a step, `report_json`, before `open`.",
-        "subjects": [
-          "crates/offrig-cli/src/main.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "And 10 more changes to the order of work.",
-        "subjects": []
-      },
-      {
-        "kind": "part",
-        "sentence": "embed-serve is a new part, drawn from `tools/embed-serve/**`.",
-        "subjects": [
-          "embed-serve"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "8 files added and 61 changed content, across 5 parts.",
+        "sentence": "Nothing structural changed since 2026-11-11; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "d56f4584dad3c32fcebf10d609257e78d7ab78e3",
-      "generatedAt": "2026-10-09T17:02:11.957Z"
+      "commit": "c45638d9a0c6345dbbced8661c4d0bef584e7160",
+      "generatedAt": "2026-11-11T22:26:33.712Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
       "a": "crates/offrig-cli/src/verify_cmd.rs",
       "b": "crates/offrig-core/src/calibrate_run.rs",
-      "either": 9,
+      "either": 10,
       "partLabels": [
         "offrig-cli",
         "offrig-core"
@@ -127,27 +75,12 @@
         "offrig-core"
       ],
       "relation": "a-imports-b",
-      "shared": 6
+      "shared": 7
     },
     {
       "a": "crates/offrig-core/src/runpod.rs",
       "b": "crates/offrig-core/src/stage.rs",
       "either": 8,
-      "partLabels": [
-        "offrig-core",
-        "offrig-core"
-      ],
-      "parts": [
-        "offrig-core",
-        "offrig-core"
-      ],
-      "relation": "inside",
-      "shared": 5
-    },
-    {
-      "a": "crates/offrig-core/src/calibrate_run.rs",
-      "b": "crates/offrig-core/src/verify.rs",
-      "either": 9,
       "partLabels": [
         "offrig-core",
         "offrig-core"
@@ -177,7 +110,7 @@
     {
       "a": "crates/offrig-core/src/config.rs",
       "b": "crates/offrig-core/src/spec.rs",
-      "either": 23,
+      "either": 24,
       "partLabels": [
         "offrig-core",
         "offrig-core"
@@ -188,6 +121,21 @@
       ],
       "relation": "inside",
       "shared": 12
+    },
+    {
+      "a": "crates/offrig-core/src/calibrate_run.rs",
+      "b": "crates/offrig-core/src/verify.rs",
+      "either": 10,
+      "partLabels": [
+        "offrig-core",
+        "offrig-core"
+      ],
+      "parts": [
+        "offrig-core",
+        "offrig-core"
+      ],
+      "relation": "inside",
+      "shared": 5
     }
   ],
   "changesTogetherNote": [
@@ -195,7 +143,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "8b7acf1b98bbc418aaee733ce5d7a917e8c30662",
+  "commit": "bc5901991dc67099b29272085dc63c4ed5799e8b",
   "defaultBranch": "main",
   "derived": "6 parts, mostly Rust (86 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
@@ -245,8 +193,7 @@
         "crates/offrig-app/src/app/",
         "crates/offrig-app/src/main.rs",
         "crates/offrig-app/src/worker/",
-        "crates/offrig-cli/src/budget_menu.rs",
-        "crates/offrig-cli/src/main.rs",
+        "crates/offrig-cli/src/",
         "crates/offrig-cli/tests/commands.rs",
         "crates/offrig-cli/tests/contract.rs",
         "crates/offrig-cli/tests/verify_calibrate.rs",
@@ -317,8 +264,8 @@
         "crates/offrig-mcp/tests/tool_hints.rs",
         "tools/embed-serve/"
       ],
-      "runsCount": 76,
-      "runsMore": 74,
+      "runsCount": 75,
+      "runsMore": 75,
       "sends": [
         "uploads coverage to Codecov"
       ],
@@ -551,7 +498,7 @@
       "to": "offrig-core"
     }
   ],
-  "engine": "1.24.0",
+  "engine": "1.26.0",
   "generated": [
     {
       "place": "crates/offrig-app/assets/icon/offrig.ico",
@@ -560,7 +507,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-10-15T08:26:29.594Z",
+  "generatedAt": "2026-11-12T00:42:44.243Z",
   "limits": [
     "13 writes and 7 reads use paths built at run time and are not named here.",
     "11 writes and 13 reads go to a path their caller passes, not to this repository.",
@@ -589,14 +536,15 @@
   "startReason": "This path follows offrig (a command people run) from its entry, since ci runs only tests, scripts that import no code here and checks.",
   "summary": "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top.",
   "summaryFrom": "person",
-  "testFiles": 80,
+  "testFiles": 81,
   "testedBy": {
     "embed-serve": 1,
     "offrig-app": 4,
-    "offrig-cli": 5,
+    "offrig-cli": 6,
     "offrig-core": 67,
     "offrig-mcp": 19
   },
+  "testedCodeParts": 5,
   "testedInside": [
     "offrig-app",
     "offrig-cli",

@@ -9,53 +9,81 @@
       "externals": 0,
       "files": [
         {
-          "hash": "57fc8fa0467fb436a1e87d18fc43d759bc2fc272b8171e5bf7a422861948b9a8",
+          "hash": "2294e887f3431bfb228420a68de631ae027a7e496f8095ae788ad7dee6ac2e5d",
           "path": "tools/embed-serve/README.md"
         },
         {
           "exports": [
+            "default_threads",
             "handler_for",
             "load_encoder",
+            "lower_process_priority",
             "main",
             "make_server",
-            "refuse_if_cuda"
+            "refuse_if_cuda",
+            "thread_env"
           ],
           "failurePaths": [
             {
+              "in": "lower_process_priority",
+              "kind": "except",
+              "line": 85
+            },
+            {
               "in": "refuse_if_cuda",
               "kind": "raise",
-              "line": 50
+              "line": 99
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 61
+              "line": 110
             },
             {
               "in": "load_encoder",
               "kind": "raise",
-              "line": 96
+              "line": 135
+            },
+            {
+              "in": "load_encoder",
+              "kind": "raise",
+              "line": 154
+            },
+            {
+              "in": "_send",
+              "kind": "except",
+              "line": 205
+            },
+            {
+              "in": "_refuse",
+              "kind": "except",
+              "line": 235
             },
             {
               "in": "do_POST",
               "kind": "except",
-              "line": 152
+              "line": 242
+            },
+            {
+              "in": "do_POST",
+              "kind": "except",
+              "line": 259
             },
             {
               "in": "make_server",
               "kind": "raise",
-              "line": 176
+              "line": 283
             }
           ],
-          "hash": "5961916bf147c3547039ea0b156809265e081f238dc6399693ab00c2110885af",
+          "hash": "a9ef145e9ee31de10c4bc4634f3c46075bde1b77aa165ccd83501d0638b34b14",
           "path": "tools/embed-serve/embed_serve.py"
         },
         {
-          "hash": "d60c17ec4ae65d539750d6e35ca7c75292d3c131cb89212badbfba2b9c57a80d",
+          "hash": "551cd3c8977df6f592bbee230f70e6ba23d68cb844e2d71c424f0e6955edceae",
           "path": "tools/embed-serve/requirements.txt"
         },
         {
-          "hash": "c0caba4df0c6ee209bd625c159fac19f18c7800d590d24d89d50a88535feda60",
+          "hash": "b4d4e14bdc702fce3ec36cf5b8f24540704f1184a0534785a744920fdac9942d",
           "importsFiles": [
             "tools/embed-serve/embed_serve.py"
           ],
@@ -1555,7 +1583,7 @@
           "exports": [
             "run"
           ],
-          "hash": "ba94ed19440635a5ee683af5ae33b568d58692487f940e1195c3160cbff848c7",
+          "hash": "446d67dc638638a58060374dc5c51a5d1d63645523188ed7e440e12476d55423",
           "importOrder": [
             "crates/offrig-core/src/calibrate_run.rs",
             "crates/offrig-core/src/cost.rs",
@@ -1574,7 +1602,8 @@
             "crates/offrig-core/src/trace.rs",
             "crates/offrig-core/src/verify.rs"
           ],
-          "path": "crates/offrig-cli/src/verify_cmd.rs"
+          "path": "crates/offrig-cli/src/verify_cmd.rs",
+          "testsInside": true
         },
         {
           "hash": "425f2e485f9443e29ec17c70f16870afa51ed53efafde595d203c2bdd5f2a2f1",
@@ -1663,7 +1692,7 @@
       "testRunners": [
         "cargo test"
       ],
-      "testedBy": 5,
+      "testedBy": 6,
       "testedInside": true,
       "unresolvedSites": 0
     },
@@ -1678,7 +1707,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "9d6848a4abe86ecd2ded0f9bbf28556dd5bdf753ff7238566269c9f85ee355d6",
+          "hash": "07b901a94e5cdd2740bb16139587a445fd80d9fdacc40d9ff28d2157eb5b7410",
           "path": "crates/offrig-core/Cargo.toml"
         },
         {
@@ -1923,6 +1952,7 @@
         },
         {
           "exports": [
+            "check_jobs",
             "default_out_dir",
             "display_name",
             "guard_local",
@@ -1940,162 +1970,192 @@
           ],
           "failurePaths": [
             {
-              "in": "parse",
+              "in": "check_jobs",
               "kind": "err",
-              "line": 81
+              "line": 57
             },
             {
               "in": "parse",
               "kind": "err",
-              "line": 110
+              "line": 97
+            },
+            {
+              "in": "parse",
+              "kind": "err",
+              "line": 126
             },
             {
               "in": "parse_think",
               "kind": "err",
-              "line": 133
+              "line": 149
             },
             {
               "in": "guard_local",
               "kind": "err",
-              "line": 263
+              "line": 283
             },
             {
               "in": "guard_local",
               "kind": "err",
-              "line": 269
+              "line": 289
             },
             {
               "in": "select",
               "kind": "err",
-              "line": 357
+              "line": 377
             },
             {
               "in": "read_lines",
               "kind": "match-err",
-              "line": 570
+              "line": 617
             },
             {
               "in": "read_lines",
               "kind": "match-err",
-              "line": 571
+              "line": 618
             },
             {
               "in": "read_lines",
               "kind": "err",
-              "line": 571
+              "line": 618
             },
             {
               "in": "read_lines",
               "kind": "match-err",
-              "line": 578
+              "line": 625
             },
             {
               "in": "read_lines",
               "kind": "match-err",
-              "line": 585
+              "line": 632
             },
             {
               "in": "read_lines",
               "kind": "err",
-              "line": 586
+              "line": 633
             },
             {
               "in": "check_resume",
               "kind": "err",
-              "line": 611
+              "line": 658
             },
             {
               "in": "parse_num_ctx",
               "kind": "err",
-              "line": 701
+              "line": 748
             },
             {
               "in": "size_window",
               "kind": "err",
-              "line": 796
+              "line": 843
             },
             {
               "in": "resolve_ctx",
               "kind": "err",
-              "line": 857
+              "line": 904
             },
             {
               "in": "resolve_ctx",
               "kind": "match-err",
-              "line": 969
+              "line": 1016
             },
             {
               "in": "chat",
               "kind": "match-err",
-              "line": 1106
+              "line": 1162
             },
             {
               "in": "chat",
               "kind": "match-err",
-              "line": 1108
+              "line": 1164
             },
             {
               "in": "run",
               "kind": "err",
-              "line": 1135
+              "line": 1299
             },
             {
               "in": "run",
               "kind": "err",
-              "line": 1148
+              "line": 1312
             },
             {
               "in": "run",
               "kind": "err",
-              "line": 1159
+              "line": 1323
             },
             {
               "in": "run",
               "kind": "match-err",
-              "line": 1357
+              "line": 1567
             },
             {
               "in": "run",
               "kind": "match-err",
-              "line": 1405
+              "line": 1588
+            },
+            {
+              "in": "run",
+              "kind": "match-err",
+              "line": 1596
+            },
+            {
+              "in": "run",
+              "kind": "match-err",
+              "line": 1603
+            },
+            {
+              "in": "run",
+              "kind": "match-err",
+              "line": 1642
+            },
+            {
+              "in": "run",
+              "kind": "match-err",
+              "line": 1656
+            },
+            {
+              "in": "run",
+              "kind": "match-err",
+              "line": 1687
+            },
+            {
+              "in": "run",
+              "kind": "match-err",
+              "line": 1713
             },
             {
               "in": "run",
               "kind": "err",
-              "line": 1438
-            },
-            {
-              "in": "run",
-              "kind": "err",
-              "line": 1449
+              "line": 1757
             },
             {
               "in": "read_attempts",
               "kind": "match-err",
-              "line": 1477
+              "line": 1776
             },
             {
               "in": "read_attempts",
               "kind": "match-err",
-              "line": 1478
+              "line": 1777
             },
             {
               "in": "read_attempts",
               "kind": "err",
-              "line": 1478
+              "line": 1777
             },
             {
               "in": "broke_its_schema",
               "kind": "match-err",
-              "line": 1499
+              "line": 1798
             },
             {
               "in": "broke_its_schema",
               "kind": "match-err",
-              "line": 1504
+              "line": 1803
             }
           ],
-          "hash": "1f1cb291585a41c22cddc89f3f6f7f40712e501c464dbfe97147d9aee7f3749d",
+          "hash": "11c10c56bffb11179fd9e93160846ba4b9337ba0bfac16133dbe61268b17a177",
           "importOrder": [
             "crates/offrig-core/src/calibrate.rs",
             "crates/offrig-core/src/cost.rs",
@@ -5714,7 +5774,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "1d9614dca39c54c02216fb0e6a930fff451685220a211c8a890188ec80109d3b",
+          "hash": "7f68863714a8c9509ef6e5e3c464ce14b78f5bd479a67ce661545f6b46772989",
           "path": "crates/offrig-mcp/Cargo.toml"
         },
         {
@@ -7573,7 +7633,7 @@
           "path": ".gitattributes"
         },
         {
-          "hash": "b4a5355b7df2b01c434a1766a1cf855b0823084095df217110b42be194993f5f",
+          "hash": "f623c0c0823fd985b2c72533f4b199caf9f7e167b944758c5b244f8d4eb2b25c",
           "path": ".github/workflows/ci.yml"
         },
         {
@@ -7589,15 +7649,15 @@
           "path": ".gitignore"
         },
         {
-          "hash": "e03a8c82322b82afa137a0521671bf2c7e645130c55706fc9609c202e028a9f6",
+          "hash": "8ecf4a4e3cf164ea465e439b87dddd2ca29582990f7c9b805443863f23409b3a",
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "7460a5f1595b82cc70d13b1d7ac0c53e37491805f65485213f0d6de36ef11d22",
+          "hash": "21720107047a09a10b84d7c58fa5bae3f57dc971371acbbf6066861d68d5bf1e",
           "path": "Cargo.lock"
         },
         {
-          "hash": "e85e757daf7e63b45e7d701de56cf1e85aa8b753c688d943a0c01b6527971bea",
+          "hash": "a845f38315a86f0cb06f030a337a17d916bf050738ccd80683ef18bb006bdbd0",
           "path": "Cargo.toml"
         },
         {
@@ -7625,7 +7685,7 @@
           "path": "README.ja.md"
         },
         {
-          "hash": "8756aaf64362ebaf1420c07df829c123d73ae9015bbd7b8221786e1bcded9df6",
+          "hash": "320579cff6c79b28d7ba41d23f5d8552908b930f06e6226b039a806f0405593f",
           "path": "README.md"
         },
         {
@@ -7653,7 +7713,7 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "d3840ac764180a2988d8e3c8aecbf5f24a63bd1e11704513e379de0b82444a61",
+          "hash": "4765869576d807496e6d8d8f716455f881c9e13c10b6da416ffed5710ee8c59f",
           "path": "deny.toml"
         },
         {
@@ -7669,7 +7729,7 @@
           "path": "docs/verifier-serverless.md"
         },
         {
-          "hash": "6e971df47334b737acd603498a38b0cb2a6b01c294f3d4104a81a5ec184e9f69",
+          "hash": "879e65626de5b6098375814df09861080b4c1629b9e2e28ca97ed0b7ee51fcc5",
           "path": "osv-scanner.toml"
         },
         {
@@ -7923,18 +7983,12 @@
           "via": "cargo test"
         },
         {
+          "directory": true,
           "job": "rust",
           "matched": true,
-          "path": "crates/offrig-cli/src/budget_menu.rs",
+          "path": "crates/offrig-cli/src/",
           "runKind": "executes",
           "via": "cargo test"
-        },
-        {
-          "job": "rust",
-          "matched": true,
-          "path": "crates/offrig-cli/src/main.rs",
-          "runKind": "executes",
-          "via": "cargo build"
         },
         {
           "job": "rust",
@@ -8442,7 +8496,7 @@
           "via": "unittest"
         }
       ],
-      "runsCount": 79,
+      "runsCount": 78,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -8458,7 +8512,7 @@
       "tests": [
         {
           "coverage": true,
-          "files": 75,
+          "files": 76,
           "job": "rust",
           "runner": "cargo test",
           "step": "Test with coverage"
@@ -9100,9 +9154,9 @@
       "to": "offrig-core"
     }
   ],
-  "engine": "1.24.0",
+  "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "8b7acf1b98bbc418aaee733ce5d7a917e8c30662",
+    "commit": "bc5901991dc67099b29272085dc63c4ed5799e8b",
     "tracked": 161
   },
   "landings": [
@@ -9366,7 +9420,7 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 80,
+  "testFiles": 81,
   "unassigned": [
     {
       "hash": "dcbf41d0fdd670bfc18f0839c46cdb4f4eb14f2e432acd0ce80d9ccc098b9eef",
@@ -9418,7 +9472,7 @@
       "path": "site/src/content/docs/handbook/lanes-and-jobs.md"
     },
     {
-      "hash": "3d13961bfff4225144cb290845b4b8a561618a420461dd6cdacf727280a391bb",
+      "hash": "641546ec1bb6d939045769d3f6433746d9f9b52e3dc7e5b48c0b3cf813f1fd6b",
       "path": "site/src/content/docs/handbook/reference.md"
     },
     {
@@ -9426,7 +9480,7 @@
       "path": "site/src/content/docs/handbook/security.md"
     },
     {
-      "hash": "15422c58c79fab45d8b8420656f8fa20809071dfb2143741d541f71a382441a4",
+      "hash": "f3f6a751319cde259a62cffc5e47bc752663e81161aca0dfb185320656e3d628",
       "path": "site/src/content/docs/handbook/side-car.md"
     },
     {
