@@ -18,5 +18,5 @@ reason = "Unmaintained, not vulnerable (merged into zbus 6.0.0); no patched rele
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0543"
-reason = "2026-11-23: Unmaintained, not vulnerable. Reached only through offrig-mcp -> rmcp (direct and via schemars/chrono04); offrig does no date/time handling through chrono or rmcp."
+reason = "2026-11-23: Unmaintained, not vulnerable. Reached only through offrig-mcp -> rmcp -> schemars (chrono04); offrig does no date/time handling through chrono or rmcp."
 
