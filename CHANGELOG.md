@@ -6,6 +6,8 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- Dependency lockfile bump (`Cargo.lock`): `url` 2.5.8 -> 2.5.9 (with `form_urlencoded` 1.2.2 -> 1.2.3) for RUSTSEC-2026-0592, and `cookie` -> 0.18.3 for RUSTSEC-2026-0594.
+
 ## [1.3.0] - 2026-11-05
 
 ### Added

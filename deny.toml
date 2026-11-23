@@ -40,6 +40,14 @@ name = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
 [advisories]
+ignore = [
+    # 2026-11-23: Unmaintained, not vulnerable. Reached only through
+    # offrig-mcp -> rmcp -> schemars (chrono04 feature). rmcp's own chrono dependency
+    # applies only to wasm32-unknown-unknown, which offrig does not build.
+    # offrig does not use chrono or parse dates/times through rmcp; it formats Unix
+    # timestamps with offrig_core::cost::date_utc. Revisit when rmcp drops chrono.
+    { id = "RUSTSEC-2026-0543", reason = "2026-11-23: Unmaintained, not vulnerable. Reached only through offrig-mcp -> rmcp -> schemars (chrono04); offrig does no date/time handling through chrono or rmcp." },
+]
 
 [bans]
 multiple-versions = "allow"
