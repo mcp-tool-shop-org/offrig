@@ -1749,7 +1749,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "07b901a94e5cdd2740bb16139587a445fd80d9fdacc40d9ff28d2157eb5b7410",
+          "hash": "f29bee181c6ce1e2f7d3a3f9139048440aea0f59eb50b7d0fc1e38a51222d6c9",
           "path": "crates/offrig-core/Cargo.toml"
         },
         {
@@ -5220,27 +5220,22 @@
             {
               "in": "commit_completion_checked",
               "kind": "err",
-              "line": 2530
+              "line": 2535
             },
             {
               "in": "commit_completion_checked",
               "kind": "match-err",
-              "line": 2551
+              "line": 2556
             },
             {
               "in": "commit_completion_checked",
               "kind": "err",
-              "line": 2553
+              "line": 2558
             },
             {
               "in": "commit_completion_locked",
               "kind": "err",
-              "line": 2564
-            },
-            {
-              "in": "add_handoff",
-              "kind": "err",
-              "line": 2957
+              "line": 2569
             },
             {
               "in": "add_handoff",
@@ -5250,25 +5245,30 @@
             {
               "in": "add_handoff",
               "kind": "err",
-              "line": 2969
+              "line": 2967
             },
             {
               "in": "add_handoff",
               "kind": "err",
-              "line": 2976
+              "line": 2974
+            },
+            {
+              "in": "add_handoff",
+              "kind": "err",
+              "line": 2981
             },
             {
               "in": "transition",
               "kind": "err",
-              "line": 3067
+              "line": 3072
             },
             {
               "in": "transition",
               "kind": "err",
-              "line": 3080
+              "line": 3085
             }
           ],
-          "hash": "e39919ace543f5b658eb35f2353d6e3d75dbe45bb0ddd860a263179498d61de9",
+          "hash": "c783105df2b673f9b1b9f9f550f441d951cc5977495ca05e6132b1dfb1fc55c5",
           "importOrder": [
             "crates/offrig-core/src/account.rs",
             "crates/offrig-core/src/checks.rs",
@@ -6366,7 +6366,7 @@
           "path": "crates/offrig-mcp/Cargo.toml"
         },
         {
-          "hash": "07be6189bce7c786f09d6778f934f660275e0a6899188a879a7106e9fd8df791",
+          "hash": "56b2081b40c07beac9d1a76fee38511ef8016f41078db0fddc65ddabc75b54e0",
           "path": "crates/offrig-mcp/skills/offrig-session/SKILL.md"
         },
         {
@@ -6852,60 +6852,55 @@
             {
               "in": "call_tool",
               "kind": "match-err",
-              "line": 2687
+              "line": 2684
             },
             {
               "in": "get_task",
               "kind": "match-err",
-              "line": 2741
+              "line": 2738
             },
             {
               "in": "get_task",
               "kind": "err",
-              "line": 2742
+              "line": 2739
             },
             {
               "in": "update_task",
               "kind": "err",
-              "line": 2771
+              "line": 2768
             },
             {
               "in": "cancel_task",
               "kind": "match-err",
-              "line": 2787
-            },
-            {
-              "in": "cancel_task",
-              "kind": "err",
-              "line": 2787
-            },
-            {
-              "in": "cancel_task",
-              "kind": "match-err",
-              "line": 2792
+              "line": 2784
             },
             {
               "in": "cancel_task",
               "kind": "err",
-              "line": 2793
+              "line": 2784
+            },
+            {
+              "in": "cancel_task",
+              "kind": "err",
+              "line": 2794
             },
             {
               "in": "cancel_task",
               "kind": "match-err",
-              "line": 2823
+              "line": 2818
             },
             {
               "in": "run_watchdog",
               "kind": "match-err",
-              "line": 2981
+              "line": 2978
             },
             {
               "in": "run_watchdog",
               "kind": "match-err",
-              "line": 2995
+              "line": 2992
             }
           ],
-          "hash": "46a5693548318f43cac769cdefeff8a0712cc02bf594f8b64f8b6c40a47a0608",
+          "hash": "c75b0aa1f041d2b00802ae32bd994051e03686d36a49dd36559fa1803337d8e1",
           "importsFiles": [
             "crates/offrig-core/src/account.rs",
             "crates/offrig-core/src/balances.rs",
@@ -7102,7 +7097,7 @@
             {
               "calls": [
                 {
-                  "line": 2960,
+                  "line": 2957,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -7125,7 +7120,7 @@
             {
               "calls": [
                 {
-                  "line": 2966,
+                  "line": 2963,
                   "name": "open",
                   "receiver": "Store",
                   "target": {
@@ -7133,7 +7128,7 @@
                   }
                 },
                 {
-                  "line": 2976,
+                  "line": 2973,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -7141,7 +7136,7 @@
                   }
                 },
                 {
-                  "line": 2960,
+                  "line": 2957,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -7157,7 +7152,7 @@
                   "via": "when"
                 },
                 {
-                  "line": 2979,
+                  "line": 2976,
                   "name": "from_env",
                   "receiver": "RunPod",
                   "target": {
@@ -7165,28 +7160,28 @@
                   }
                 },
                 {
-                  "line": 2982,
+                  "line": 2979,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
                   }
                 },
                 {
-                  "line": 2983,
+                  "line": 2980,
                   "name": "record_error",
                   "target": {
                     "file": "crates/offrig-core/src/watchdog.rs"
                   }
                 },
                 {
-                  "line": 2988,
+                  "line": 2985,
                   "name": "step_with_config",
                   "target": {
                     "file": "crates/offrig-core/src/watchdog.rs"
                   }
                 },
                 {
-                  "line": 2998,
+                  "line": 2995,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -7201,7 +7196,7 @@
             {
               "calls": [
                 {
-                  "line": 3012,
+                  "line": 3009,
                   "name": "new",
                   "receiver": "LaneCtx",
                   "target": {
@@ -7209,21 +7204,21 @@
                   }
                 },
                 {
-                  "line": 3014,
+                  "line": 3011,
                   "name": "resolve",
                   "target": {
                     "file": "crates/offrig-core/src/sidecar_port.rs"
                   }
                 },
                 {
-                  "line": 3016,
+                  "line": 3013,
                   "name": "probe",
                   "target": {
                     "file": "crates/offrig-core/src/sidecar_port.rs"
                   }
                 },
                 {
-                  "line": 3016,
+                  "line": 3013,
                   "name": "taken_message",
                   "target": {
                     "file": "crates/offrig-core/src/sidecar_port.rs"
@@ -7239,7 +7234,7 @@
               "calls": [
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 2966,
+                  "line": 2963,
                   "name": "open",
                   "receiver": "Store",
                   "target": {
@@ -7249,7 +7244,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 2976,
+                  "line": 2973,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -7259,7 +7254,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 2960,
+                  "line": 2957,
                   "name": "now_unix",
                   "target": {
                     "file": "crates/offrig-core/src/cost.rs"
@@ -7277,7 +7272,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 2979,
+                  "line": 2976,
                   "name": "from_env",
                   "receiver": "RunPod",
                   "target": {
@@ -7287,7 +7282,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 2982,
+                  "line": 2979,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -7305,7 +7300,7 @@
                       }
                     }
                   ],
-                  "line": 2983,
+                  "line": 2980,
                   "name": "record_error",
                   "target": {
                     "file": "crates/offrig-core/src/watchdog.rs"
@@ -7339,7 +7334,7 @@
                       }
                     }
                   ],
-                  "line": 2988,
+                  "line": 2985,
                   "name": "step_with_config",
                   "target": {
                     "file": "crates/offrig-core/src/watchdog.rs"
@@ -7348,7 +7343,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = watchdog_plan()",
-                  "line": 2998,
+                  "line": 2995,
                   "name": "chain",
                   "target": {
                     "file": "crates/offrig-core/src/error.rs"
@@ -7356,7 +7351,7 @@
                   "via": "run_watchdog"
                 },
                 {
-                  "line": 3036,
+                  "line": 3033,
                   "name": "load",
                   "receiver": "Config",
                   "target": {
@@ -7364,7 +7359,7 @@
                   }
                 },
                 {
-                  "line": 3037,
+                  "line": 3034,
                   "name": "open_default",
                   "receiver": "Registry",
                   "target": {
@@ -7373,7 +7368,7 @@
                 },
                 {
                   "branch": "std::env::args().any(|a| a == \"--sidecar-port\")",
-                  "line": 3012,
+                  "line": 3009,
                   "name": "new",
                   "receiver": "LaneCtx",
                   "target": {
@@ -7411,7 +7406,7 @@
                       }
                     }
                   ],
-                  "line": 3014,
+                  "line": 3011,
                   "name": "resolve",
                   "target": {
                     "file": "crates/offrig-core/src/sidecar_port.rs"
@@ -7420,7 +7415,7 @@
                 },
                 {
                   "branch": "std::env::args().any(|a| a == \"--sidecar-port\")",
-                  "line": 3016,
+                  "line": 3013,
                   "name": "probe",
                   "target": {
                     "file": "crates/offrig-core/src/sidecar_port.rs"
@@ -7429,7 +7424,7 @@
                 },
                 {
                   "branch": "std::env::args().any(|a| a == \"--sidecar-port\")",
-                  "line": 3016,
+                  "line": 3013,
                   "name": "taken_message",
                   "target": {
                     "file": "crates/offrig-core/src/sidecar_port.rs"
@@ -7438,7 +7433,7 @@
                 },
                 {
                   "branch": "let Some(plan_id) = flag_plan(\"--runner\")",
-                  "line": 3043,
+                  "line": 3040,
                   "name": "new",
                   "receiver": "LaneCtx",
                   "target": {
@@ -7546,14 +7541,14 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 3045,
+                  "line": 3042,
                   "name": "run",
                   "target": {
                     "file": "crates/offrig-mcp/src/runner.rs"
                   }
                 },
                 {
-                  "line": 3048,
+                  "line": 3045,
                   "name": "new",
                   "receiver": "LaneCtx",
                   "target": {
@@ -8137,7 +8132,7 @@
               "line": 61
             }
           ],
-          "hash": "523a771f3541670114a273a26ed8a7f075280b58f09ed5e65660c963c35b9c3e",
+          "hash": "48d4e3e466367497d0a29136b91852ab6c5db6833862931afddebaaa54ed27b9",
           "path": "crates/offrig-mcp/src/skills.rs",
           "testsInside": true
         },
@@ -8146,10 +8141,12 @@
             "build_get_task_result",
             "create_or_load_launch_task",
             "display_ttl_ms",
+            "format_cancel_refusal_message",
             "load_active_task",
             "seed_task",
             "sweep_expired_tasks",
             "task_setting_key",
+            "terminal_status",
             "test_ttl_override_ms",
             "update_record"
           ],
@@ -8160,7 +8157,7 @@
               "line": 164
             }
           ],
-          "hash": "fcc55c5066a98b5cb6d8a0f20abc2219421051807f6b6186833106b7033fec77",
+          "hash": "ac7f93bfba8f7444cc1f4a928b4c1bba04b4c0e745c609ff54b256a05b1851d0",
           "importOrder": [
             "crates/offrig-core/src/cost.rs",
             "crates/offrig-core/src/store.rs",
@@ -8254,6 +8251,10 @@
             "crates/offrig-mcp/src/main.rs"
           ],
           "testsInside": true
+        },
+        {
+          "hash": "4d0202b11c6289eaf0a360a6f67798d5a2e0954caf55d706f6280432efd3e65a",
+          "path": "crates/offrig-mcp/tests/goldens/sync_launch_and_job_e640e3be.json"
         },
         {
           "hash": "5821af5bc0521625bbd5002577b851a4b1e44987971e0d8996bbebb0262c3fc2",
@@ -8549,7 +8550,7 @@
           "testsInside": true
         },
         {
-          "hash": "b9c297bd267fb6a5b38e4da65612bcafa8f9429f26dbb22094635783391da549",
+          "hash": "9cc94b22c8832bafcb25c6aedd2ec5c777f8f5ffeff558e542ba0983504bdd48",
           "importOrder": [
             "crates/offrig-mcp/tests/common/mod.rs",
             "crates/offrig-core/src/config.rs",
@@ -8643,11 +8644,11 @@
           "path": ".gitignore"
         },
         {
-          "hash": "b489aa0a2d9f5a6555e763e9ce204ff931b4229f22cf8f6ede4967281f7174a4",
+          "hash": "fc69025d7a3e039e5cdbba4a91e1593e86f2e3726e0f3678b08cc6fd23f3a9a9",
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "6e3ebf633dd914378fe80b34c47547c2e4847c438d92130cdbaf250307ac3aef",
+          "hash": "3240a592e27d8e390c5dc3f1d7a1cebb0c25c925c30a9ce4c14855083fb45cec",
           "path": "Cargo.lock"
         },
         {
@@ -10185,8 +10186,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "a39662ee05043b6f43cb320536e3829549c360db",
-    "tracked": 166
+    "commit": "d8bf0bd283f4dbf3607587f8cf304b79b0e4e48b",
+    "tracked": 167
   },
   "landings": [
     {
@@ -10437,6 +10438,18 @@
     {
       "readers": [
         {
+          "by": "crates/offrig-mcp/tests/tasks_skills.rs",
+          "call": "include_str",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "crates/offrig-mcp/tests/goldens/sync_launch_and_job_e640e3be.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
           "by": "site/astro.config.mjs",
           "call": "content-collection",
           "confidence": "ast"
@@ -10460,7 +10473,7 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 87,
+  "testFiles": 88,
   "unassigned": [
     {
       "hash": "dcbf41d0fdd670bfc18f0839c46cdb4f4eb14f2e432acd0ce80d9ccc098b9eef",
@@ -10520,7 +10533,7 @@
       "path": "site/src/content/docs/handbook/security.md"
     },
     {
-      "hash": "6fdbd67006d3fe329d210bd618afce7218d545bcc278c7d1d5ae6502a321437f",
+      "hash": "83ee1aa67978180059aa06fbb1f310d7c33903a70da1eedae323e503422149d5",
       "path": "site/src/content/docs/handbook/side-car.md"
     },
     {

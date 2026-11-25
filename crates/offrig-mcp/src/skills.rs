@@ -17,8 +17,8 @@ pub const SKILL_DESCRIPTION: &str =
     "Plan, launch, follow, run work on, and shut down rented GPU sessions through offrig-mcp.";
 pub const SKILL_MD: &str = include_str!("../skills/offrig-session/SKILL.md");
 pub const SKILL_DIGEST: &str =
-    "sha256:07be6189bce7c786f09d6778f934f660275e0a6899188a879a7106e9fd8df791";
-pub const SKILL_SIZE: u64 = 2914;
+    "sha256:56b2081b40c07beac9d1a76fee38511ef8016f41078db0fddc65ddabc75b54e0";
+pub const SKILL_SIZE: u64 = 3311;
 
 /// Construct the static skill entry for `skills/list` and `skills/get`.
 pub fn offrig_session_skill() -> Skill {

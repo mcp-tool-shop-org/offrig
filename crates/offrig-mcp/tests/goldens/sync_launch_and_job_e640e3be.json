@@ -1,0 +1,102 @@
+{
+  "launch": {
+    "is_error": false,
+    "structured_content": {
+      "job_id": 1,
+      "plan_id": 1,
+      "lane": "<LANE>",
+      "worst_case": 0.5,
+      "deadline": "<DEADLINE>",
+      "capacity_wait_minutes": 0,
+      "watchdog": "started",
+      "budget": {
+        "cap": 50.0,
+        "committed": 0.5,
+        "spent": 0.0,
+        "remaining": 49.5
+      },
+      "account_notes": [],
+      "next_action": "follow the launch with offrig_job {\"job_id\": 1} or {\"plan_id\": 1} every minute or two (job_id 1 is the launch's, not the plan's 1); nothing is ready until it says so",
+      "ok": true
+    }
+  },
+  "job_done": {
+    "is_error": false,
+    "structured_content": {
+      "project": "<PROJECT>",
+      "job_id": 1,
+      "plan_id": 1,
+      "state": "done",
+      "progress": {
+        "step": "ready",
+        "pod_id": "pod1",
+        "cost_per_hr": 0.5,
+        "rented": {
+          "gpu": "NVIDIA A100-SXM4-80GB",
+          "cuda_version": "13.0",
+          "cuda_source": "nvidia-smi",
+          "min_cuda": "13.0",
+          "cost_per_hr": 0.5,
+          "plan_max_price_hr": 0.5,
+          "warnings": [
+            "GPU COUNT MISMATCH: nvidia-smi lists no GPUs on pod pod1 and the plan asked for 1 (source measured). Nothing was shut down.",
+            "nvidia-smi on the pod counts 0 GPU(s) and the pod record says 1. Nothing was shut down."
+          ],
+          "notes": [],
+          "gpu_count": 1,
+          "gpus": "1x NVIDIA A100-SXM4-80GB",
+          "planned_gpu_count": 1,
+          "gpu_mismatch": true,
+          "gpu_mismatch_source": "measured",
+          "measured_gpu_count": 0
+        },
+        "self_stop": "offrig self-stop: armed fire_at=1999999999",
+        "ssh_alias": "<SSH_ALIAS>",
+        "lane": "<LANE>",
+        "job_dir": "/workspace/job",
+        "next": "offrig_put your files, then offrig_exec a command; offrig_get the results"
+      },
+      "rented": {
+        "gpu": "NVIDIA A100-SXM4-80GB",
+        "cuda_version": "13.0",
+        "cuda_source": "nvidia-smi",
+        "min_cuda": "13.0",
+        "cost_per_hr": 0.5,
+        "plan_max_price_hr": 0.5,
+        "warnings": [
+          "GPU COUNT MISMATCH: nvidia-smi lists no GPUs on pod pod1 and the plan asked for 1 (source measured). Nothing was shut down.",
+          "nvidia-smi on the pod counts 0 GPU(s) and the pod record says 1. Nothing was shut down."
+        ],
+        "notes": [],
+        "gpu_count": 1,
+        "gpus": "1x NVIDIA A100-SXM4-80GB",
+        "planned_gpu_count": 1,
+        "gpu_mismatch": true,
+        "gpu_mismatch_source": "measured",
+        "measured_gpu_count": 0
+      },
+      "gpu_count": 1,
+      "gpus": "1x NVIDIA A100-SXM4-80GB",
+      "planned_gpu_count": 1,
+      "gpu_mismatch": true,
+      "gpu_mismatch_source": "measured",
+      "measured_gpu_count": 0,
+      "warnings": [
+        "GPU COUNT MISMATCH: nvidia-smi lists no GPUs on pod pod1 and the plan asked for 1 (source measured). Nothing was shut down.",
+        "nvidia-smi on the pod counts 0 GPU(s) and the pod record says 1. Nothing was shut down."
+      ],
+      "error": null,
+      "code": null,
+      "retryable": null,
+      "pod_rented": null,
+      "failure": null,
+      "plan_state": "committed",
+      "watchdog_alive": false,
+      "watchdog_error": null,
+      "minutes_left": "<MINUTES_LEFT>",
+      "spent_so_far": "<SPENT_SO_FAR>",
+      "next_action": "WARNING, read before using this pod: GPU COUNT MISMATCH: nvidia-smi lists no GPUs on pod pod1 and the plan asked for 1 (source measured). Nothing was shut down. nvidia-smi on the pod counts 0 GPU(s) and the pod record says 1. Nothing was shut down. Then: the job pod is ready: offrig_put your files, offrig_exec the work, offrig_get the results, then offrig_shutdown",
+      "ok": true
+    }
+  }
+}

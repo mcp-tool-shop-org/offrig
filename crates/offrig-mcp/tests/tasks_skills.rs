@@ -50,8 +50,21 @@ fn stateful_runpod_with_create_status(
     pods: Pods,
     create_available: Arc<std::sync::atomic::AtomicBool>,
 ) -> impl Fn(&str, &str, usize) -> (u16, String) + Send + Sync + 'static {
+    stateful_runpod_with_gates(
+        pods,
+        create_available,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+}
+
+fn stateful_runpod_with_gates(
+    pods: Pods,
+    create_available: Arc<std::sync::atomic::AtomicBool>,
+    ssh_ready: Arc<std::sync::atomic::AtomicBool>,
+) -> impl Fn(&str, &str, usize) -> (u16, String) + Send + Sync + 'static {
     move |route, body, _| {
         let mut pods = pods.lock().expect("pods");
+        let ssh_up = ssh_ready.load(std::sync::atomic::Ordering::SeqCst);
         match route {
             "POST /graphql" if body.contains("myself") => (
                 200,
@@ -75,32 +88,45 @@ fn stateful_runpod_with_create_status(
                 }
                 let want: Value = serde_json::from_str(body).unwrap_or_default();
                 let id = format!("pod{}", pods.len() + 1);
-                let p = json!({
+                let mut p = json!({
                     "id": id,
                     "name": want["name"],
                     "status": "RUNNING",
                     "cost": 0.50,
-                    "ports": ["22/tcp"],
+                    "ports": if ssh_up { json!(["22/tcp"]) } else { json!([]) },
                     "env": want["env"],
-                    "ssh": {
-                        "direct": {
-                            "host": "203.0.113.9",
-                            "port": 40022
-                        }
-                    },
                     "gpu": {
                         "id": "NVIDIA A100-SXM4-80GB",
                         "count": 1
                     },
                     "cudaVersion": "13.0"
                 });
+                if ssh_up {
+                    p["ssh"] = json!({
+                        "direct": {
+                            "host": "203.0.113.9",
+                            "port": 40022
+                        }
+                    });
+                }
                 pods.push(p.clone());
                 (200, p.to_string())
             }
             r if r.starts_with("GET /pods/") => {
                 let id = &r["GET /pods/".len()..];
-                match pods.iter().find(|p| p["id"] == id) {
-                    Some(p) => (200, p.to_string()),
+                match pods.iter().find(|p| p["id"] == id).cloned() {
+                    Some(mut p) => {
+                        if ssh_up {
+                            p["ports"] = json!(["22/tcp"]);
+                            p["ssh"] = json!({
+                                "direct": {
+                                    "host": "203.0.113.9",
+                                    "port": 40022
+                                }
+                            });
+                        }
+                        (200, p.to_string())
+                    }
                     None => (404, r#"{"error":"not found"}"#.into()),
                 }
             }
@@ -339,40 +365,27 @@ async fn cancel_mid_launch_sets_flag_and_runs_shutdown_with_task_cancelled() {
     }
     assert_zero_live_pods(&pods);
 
-    // Part B: Shutdown refusal when handoffs are in flight is NOT bypassed silently;
-    // tasks/cancel surfaces the refusal on the task while the pod remains governed by explicit shutdown.
-    avail.store(true, std::sync::atomic::Ordering::SeqCst);
-    let plan2 = plan_job(&client, 1.0, 0).await;
-    let resp2 = client
-        .call_tool_once(
-            CallToolRequestParams::new("offrig_launch")
-                .with_arguments(json!({"plan_id": plan2}).as_object().cloned().expect("obj")),
-        )
-        .await
-        .expect("launch plan2");
-    let CallToolResponse::Task(created2) = resp2 else {
-        panic!("expected CreateTaskResult, got {resp2:?}");
-    };
-    let task2_id = created2.task.task_id.clone();
+    // Part B: Shutdown refusal when handoffs are in flight is NOT bypassed silently and NEVER
+    // pre-cancels the launch; the pod stays live in the fake, the task stays Working with a plain
+    // message naming offrig_shutdown + reason, and once SSH answers the uncancelled launch finishes.
+    client.cancel().await.ok();
+    let ssh_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (url_b, hits_b): (_, Hits) = mock(stateful_runpod_with_gates(
+        Arc::clone(&pods),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        Arc::clone(&ssh_ready),
+    ));
+    let client_b = connect_tasks_client(
+        &dir,
+        &url_b,
+        &bin,
+        &fake,
+        true,
+        &[("OFFRIG_TEST_POD_READY_MS", "60".to_string())],
+    )
+    .await;
 
-    let ready_deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let gt = client
-            .get_task(GetTaskParams::new(&task2_id))
-            .await
-            .expect("poll plan2");
-        if gt.task.status() == TaskStatus::Completed {
-            break;
-        }
-        assert!(
-            Instant::now() < ready_deadline,
-            "plan2 did not complete: {gt:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(80)).await;
-    }
-
-    // Queue a handoff so an in-flight handoff is present on the store.
-    let add_h = client
+    let add_h = client_b
         .call_tool(
             CallToolRequestParams::new("offrig_handoffs").with_arguments(
                 json!({
@@ -395,33 +408,181 @@ async fn cancel_mid_launch_sets_flag_and_runs_shutdown_with_task_cancelled() {
         .transition(hid, offrig_core::store::State::Dispatched, "start", None)
         .expect("dispatch handoff");
 
-    client
+    let plan2 = plan_job(&client_b, 1.0, 0).await;
+    let resp2 = client_b
+        .call_tool_once(
+            CallToolRequestParams::new("offrig_launch")
+                .with_arguments(json!({"plan_id": plan2}).as_object().cloned().expect("obj")),
+        )
+        .await
+        .expect("launch plan2");
+    let CallToolResponse::Task(created2) = resp2 else {
+        panic!("expected CreateTaskResult, got {resp2:?}");
+    };
+    let task2_id = created2.task.task_id.clone();
+
+    let pod_deadline = Instant::now() + Duration::from_secs(15);
+    while pods.lock().expect("pods").is_empty() {
+        assert!(Instant::now() < pod_deadline, "pod1 never created");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    client_b
         .cancel_task(CancelTaskParams::new(&task2_id))
         .await
         .expect("cancel_task ack even when shutdown refuses");
 
-    let refused_gt = client
+    let refused_gt = client_b
         .get_task(GetTaskParams::new(&task2_id))
         .await
         .expect("get_task after refused cancel");
-    assert_eq!(refused_gt.task.status(), TaskStatus::Completed);
+    assert_eq!(refused_gt.task.status(), TaskStatus::Working);
     let msg = refused_gt.task.task.status_message.as_deref().unwrap_or("");
-    assert!(msg.contains("cancel refused"), "status_message: {msg}");
-    let TaskPayload::Completed { ref result } = refused_gt.task.payload else {
-        panic!("expected Completed payload with refusal");
-    };
-    assert_eq!(result.get("isError").and_then(Value::as_bool), Some(true));
+    assert!(
+        msg.contains("the pod is still running")
+            && msg.contains("in flight")
+            && msg.contains("offrig_shutdown")
+            && msg.contains("reason"),
+        "expected plain running-pod + reason guidance, got: {msg}"
+    );
+    let j2 = Store::open(&db)
+        .expect("reopen")
+        .job_for_plan(plan2, "launch")
+        .expect("job2")
+        .expect("exists");
+    assert_eq!(
+        j2.state, "running",
+        "refused cancel must leave launch running, uncancelled"
+    );
     assert_eq!(
         pods.lock().expect("pods").len(),
         1,
         "pod stays live until valid shutdown"
     );
+    assert_eq!(count(&hits_b, "DELETE /pods/"), 0);
+
+    // Let SSH become ready: because the launch was NOT cancelled, it finishes cleanly to Completed.
+    ssh_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    let ready_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let gt = client_b
+            .get_task(GetTaskParams::new(&task2_id))
+            .await
+            .expect("poll plan2 to completion");
+        if gt.task.status() == TaskStatus::Completed {
+            let TaskPayload::Completed { ref result } = gt.task.payload else {
+                panic!("expected Completed payload");
+            };
+            assert_eq!(result.get("isError").and_then(Value::as_bool), Some(false));
+            break;
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "uncancelled plan2 did not complete after ssh became ready: {gt:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
 
     // Explicit shutdown with reason cleans up to zero live pods.
-    let shut = client
+    let shut = client_b
         .call_tool(
             CallToolRequestParams::new("offrig_shutdown").with_arguments(
                 json!({ "plan_id": plan2, "reason": "verified clean up" })
+                    .as_object()
+                    .cloned()
+                    .expect("obj"),
+            ),
+        )
+        .await
+        .expect("explicit shutdown");
+    assert_eq!(shut.is_error, Some(false), "{:?}", body(&shut));
+    assert_zero_live_pods(&pods);
+
+    client_b.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn cancel_on_completed_task_is_rejected_and_leaves_pod_and_result_untouched() {
+    let pods: Pods = Arc::default();
+    let avail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (url, hits): (_, Hits) = mock(stateful_runpod_with_create_status(
+        Arc::clone(&pods),
+        Arc::clone(&avail),
+    ));
+    let dir = temp("ts-cancel-done");
+    let _db = init_project(&dir);
+    let (bin, fake) = install_fake_tools(&dir);
+    setup_fake_ready_rules(&fake);
+
+    let client = connect_tasks_client(&dir, &url, &bin, &fake, true, &[]).await;
+    let plan_id = plan_job(&client, 1.0, 0).await;
+    let resp = client
+        .call_tool_once(
+            CallToolRequestParams::new("offrig_launch").with_arguments(
+                json!({"plan_id": plan_id})
+                    .as_object()
+                    .cloned()
+                    .expect("obj"),
+            ),
+        )
+        .await
+        .expect("launch");
+    let CallToolResponse::Task(created) = resp else {
+        panic!("expected CreateTaskResult, got {resp:?}");
+    };
+    let task_id = created.task.task_id.clone();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let before = loop {
+        let gt = client
+            .get_task(GetTaskParams::new(&task_id))
+            .await
+            .expect("poll");
+        if gt.task.status() == TaskStatus::Completed {
+            break gt;
+        }
+        assert!(Instant::now() < deadline, "did not complete: {gt:?}");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    };
+    assert_eq!(pods.lock().expect("pods").len(), 1);
+
+    let cancel_err = client
+        .cancel_task(CancelTaskParams::new(&task_id))
+        .await
+        .expect_err("cancel on terminal task must be rejected with -32602");
+    match cancel_err {
+        rmcp::ServiceError::McpError(ref e) => {
+            assert_eq!(e.code, ErrorCode::INVALID_PARAMS, "{e:?}");
+            assert!(
+                e.message.contains("offrig_shutdown"),
+                "rejection must direct caller to offrig_shutdown: {}",
+                e.message
+            );
+        }
+        other => panic!("expected McpError -32602, got {other:?}"),
+    }
+
+    assert_eq!(
+        pods.lock().expect("pods").len(),
+        1,
+        "rejected terminal cancel must leave pod running"
+    );
+    assert_eq!(count(&hits, "DELETE /pods/"), 0);
+    let after = client
+        .get_task(GetTaskParams::new(&task_id))
+        .await
+        .expect("get_task after rejected cancel");
+    assert_eq!(after.task.status(), TaskStatus::Completed);
+    assert_eq!(
+        after.task.payload, before.task.payload,
+        "terminal task result must never be rewritten"
+    );
+
+    let shut = client
+        .call_tool(
+            CallToolRequestParams::new("offrig_shutdown").with_arguments(
+                json!({ "plan_id": plan_id })
                     .as_object()
                     .cloned()
                     .expect("obj"),
@@ -695,6 +856,21 @@ async fn client_without_tasks_capability_gets_synchronous_result_byte_for_byte()
         "text content must match serialized JSON byte-for-byte"
     );
 
+    let golden: Value =
+        serde_json::from_str(include_str!("goldens/sync_launch_and_job_e640e3be.json"))
+            .expect("valid base golden JSON");
+    let mut masked_launch = lbody.clone();
+    masked_launch["deadline"] = json!("<DEADLINE>");
+    masked_launch["lane"] = json!("<LANE>");
+    assert_eq!(
+        json!({
+            "is_error": launch_res.is_error,
+            "structured_content": masked_launch,
+        }),
+        golden["launch"],
+        "sync offrig_launch drifted from base e640e3be golden snapshot"
+    );
+
     // Synchronous offrig_job polling still works with identical JSON key shape.
     let job_res = client
         .call_tool(
@@ -783,9 +959,10 @@ async fn client_without_tasks_capability_gets_synchronous_result_byte_for_byte()
         "per-request tasks capability should return CreateTaskResult: {per_req_resp:?}"
     );
 
-    // Wait for synchronous offrig_job polling to reach "done", then shut down so 0 live pods remain.
+    // Wait for synchronous offrig_job polling to reach "done", compare exact golden snapshot,
+    // then shut down so 0 live pods remain.
     let done_deadline = Instant::now() + Duration::from_secs(20);
-    loop {
+    let job_done_res = loop {
         let jr = client
             .call_tool(
                 CallToolRequestParams::new("offrig_job").with_arguments(
@@ -798,7 +975,7 @@ async fn client_without_tasks_capability_gets_synchronous_result_byte_for_byte()
             .await
             .expect("poll job");
         if body(&jr)["state"] == "done" {
-            break;
+            break jr;
         }
         assert!(
             Instant::now() < done_deadline,
@@ -806,7 +983,31 @@ async fn client_without_tasks_capability_gets_synchronous_result_byte_for_byte()
             body(&jr)
         );
         tokio::time::sleep(Duration::from_millis(60)).await;
+    };
+    let mut masked_done = body(&job_done_res);
+    assert_eq!(
+        job_done_res.content[0].as_text().expect("text").text,
+        masked_done.to_string(),
+        "offrig_job done text must match serialized JSON byte-for-byte"
+    );
+    masked_done["project"] = json!("<PROJECT>");
+    masked_done["minutes_left"] = json!("<MINUTES_LEFT>");
+    masked_done["spent_so_far"] = json!("<SPENT_SO_FAR>");
+    if let Some(p) = masked_done
+        .get_mut("progress")
+        .and_then(Value::as_object_mut)
+    {
+        p.insert("lane".into(), json!("<LANE>"));
+        p.insert("ssh_alias".into(), json!("<SSH_ALIAS>"));
     }
+    assert_eq!(
+        json!({
+            "is_error": job_done_res.is_error,
+            "structured_content": masked_done,
+        }),
+        golden["job_done"],
+        "sync offrig_job done output drifted from base e640e3be golden snapshot"
+    );
 
     let shut = client
         .call_tool(
@@ -980,7 +1181,9 @@ async fn unknown_or_guessed_task_id_and_tasks_update_are_refused() {
         assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
-    let _ = client
+    // Launch a second job/plan and assert both task IDs are independent of (job_id, plan_id)
+    // and share no job-derived pattern (rejecting e.g. `task-{job_id:032x}`).
+    let shut1 = client
         .call_tool(
             CallToolRequestParams::new("offrig_shutdown").with_arguments(
                 json!({"plan_id": plan_id})
@@ -990,7 +1193,77 @@ async fn unknown_or_guessed_task_id_and_tasks_update_are_refused() {
             ),
         )
         .await
-        .expect("shutdown");
+        .expect("shutdown plan1");
+    assert_eq!(shut1.is_error, Some(false));
+
+    let plan2_id = plan_job(&client, 1.0, 0).await;
+    let resp2 = client
+        .call_tool_once(
+            CallToolRequestParams::new("offrig_launch").with_arguments(
+                json!({"plan_id": plan2_id})
+                    .as_object()
+                    .cloned()
+                    .expect("obj"),
+            ),
+        )
+        .await
+        .expect("launch plan2");
+    let CallToolResponse::Task(created2) = resp2 else {
+        panic!("expected task2");
+    };
+    let task2_id = created2.task.task_id.clone();
+
+    for (idx, tid) in [(1u128, &real_task_id), (2u128, &task2_id)] {
+        let hex_part = tid
+            .strip_prefix("task-")
+            .unwrap_or_else(|| panic!("expected task- prefix, got {tid}"));
+        assert_eq!(hex_part.len(), 32, "expected 128-bit hex token: {tid}");
+        assert!(hex_part.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+        assert_ne!(tid, &format!("task-{idx:032x}"));
+        assert_ne!(
+            tid,
+            &format!("task-{idx:016x}{idx:016x}"),
+            "task id must not encode (job_id, plan_id)"
+        );
+        let distinct_hex: std::collections::HashSet<char> = hex_part.chars().collect();
+        assert!(
+            distinct_hex.len() >= 6,
+            "task id looks non-random / padded: {tid}"
+        );
+    }
+    let shared_prefix = real_task_id
+        .chars()
+        .zip(task2_id.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    assert!(
+        shared_prefix < 10,
+        "two task ids share suspiciously long prefix ({shared_prefix}): {real_task_id} vs {task2_id}"
+    );
+
+    let deadline2 = Instant::now() + Duration::from_secs(20);
+    loop {
+        let gt = client
+            .get_task(GetTaskParams::new(&task2_id))
+            .await
+            .expect("get task2");
+        if gt.task.status().is_terminal() {
+            break;
+        }
+        assert!(Instant::now() < deadline2);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("offrig_shutdown").with_arguments(
+                json!({"plan_id": plan2_id})
+                    .as_object()
+                    .cloned()
+                    .expect("obj"),
+            ),
+        )
+        .await
+        .expect("shutdown plan2");
     assert_zero_live_pods(&pods);
 
     client.cancel().await.ok();
@@ -1154,6 +1427,8 @@ async fn skills_list_and_get_match_file_digest_and_contain_no_secrets_or_paths()
     assert!(text.contains("offrig_plan"));
     assert!(text.contains("offrig_launch"));
     assert!(text.contains("offrig_shutdown"));
+    assert!(text.contains("engine_hung"));
+    assert!(text.contains("engine_unresponsive"));
     assert!(
         !dir.join(".offrig").exists(),
         "skills/resources calls alone must not create .offrig"

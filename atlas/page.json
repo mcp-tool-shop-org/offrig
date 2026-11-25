@@ -42,24 +42,32 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 1,
+      "added": 1,
+      "changed": 10,
       "moved": 0,
-      "parts": 1,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": "crates/offrig-mcp/tests/goldens/sync_launch_and_job_e640e3be.json is now read by crates/offrig-mcp/tests/tasks_skills.rs.",
+        "subjects": [
+          "crates/offrig-mcp/tests/goldens/sync_launch_and_job_e640e3be.json",
+          "crates/offrig-mcp/tests/tasks_skills.rs"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-25; 1 file changed content.",
+        "sentence": "1 file added and 10 changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "2bd768c979f982bf36bae9a4076b387e3858d070",
-      "generatedAt": "2026-11-25T05:48:01.099Z"
+      "commit": "a39662ee05043b6f43cb320536e3829549c360db",
+      "generatedAt": "2026-11-25T05:58:38.133Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -143,7 +151,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "a39662ee05043b6f43cb320536e3829549c360db",
+  "commit": "d8bf0bd283f4dbf3607587f8cf304b79b0e4e48b",
   "defaultBranch": "main",
   "derived": "6 parts, mostly Rust (90 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
@@ -512,7 +520,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-25T05:58:38.133Z",
+  "generatedAt": "2026-11-25T06:35:58.574Z",
   "limits": [
     "14 writes and 8 reads use paths built at run time and are not named here.",
     "11 writes and 13 reads go to a path their caller passes, not to this repository.",
@@ -541,7 +549,7 @@
   "startReason": "This path follows offrig (a command people run) from its entry, since ci runs only tests, scripts that import no code here and checks.",
   "summary": "Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they never run on the local GPU. A Rust core library with a CLI and an egui desktop app on top.",
   "summaryFrom": "person",
-  "testFiles": 87,
+  "testFiles": 88,
   "testedBy": {
     "embed-serve": 1,
     "offrig-app": 4,

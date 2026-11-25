@@ -27,7 +27,7 @@ Use `offrig-mcp` tools in this order to inspect project state, price a session, 
   - Check `warnings` for GPU count, host CUDA, or self-stop warnings.
   - To cancel mid-launch, call `tasks/cancel`. The server cancels the launch and routes through `offrig_shutdown` with reason `"task cancelled"`; if in-flight handoffs block shutdown, the task reports the refusal so you can checkpoint first or call `offrig_shutdown` with an explicit reason.
   - `ttlMs` on the task handle is metadata retention only; the plan deadline and watchdog govern the pod independently.
-- If the client did not declare the tasks extension, `offrig_launch` returns a synchronous `job_id` / `plan_id`; poll `offrig_job` until `state` is `done` (ready), `failed`, or `cancelled`.
+- If the client did not declare the tasks extension, `offrig_launch` returns a synchronous `job_id` / `plan_id`; poll `offrig_job` until `state` is `done` (ready), `failed`, or `cancelled`. If `state` stays `running` with `progress.step` equal to `engine_hung` (the engine finished startup without becoming healthy), inspect `progress.engine_log_tail` and call `offrig_shutdown`. If `progress.step` is `engine_unresponsive` (health is up but the smoke completion did not answer), either wait and poll again if a large model is still warming up or call `offrig_shutdown` to stop billing.
 
 ## 4. Work the Pod
 

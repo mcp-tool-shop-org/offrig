@@ -249,10 +249,15 @@ working beside task-aware sessions.
   for JSON-RPC protocol errors — and `cancelled` once stopped) alongside `progress`, `warnings`,
   `deadline`, `minutes_left`, and `spent_so_far`. Unknown, guessed, or expired task IDs are
   refused (`-32602`). `tasks/update` is not supported and is refused cleanly.
-- **Cancel semantics:** `tasks/cancel` sets the launch cancel flag and routes through
-  `offrig_shutdown` with the fixed reason `"task cancelled"`. It never bypasses the shutdown
-  path or silently overrides the in-flight-handoffs guard: if `offrig_shutdown` refuses
-  because handoffs are still active, the refusal is recorded and surfaced by `tasks/get`.
+- **Cancel semantics:** `tasks/cancel` is accepted only for non-terminal (`working`) tasks;
+  calling `tasks/cancel` on a task already in a terminal status (`completed`, `failed`, or
+  `cancelled`) is rejected with `-32602` (`INVALID_PARAMS`) pointing callers to `offrig_shutdown`
+  so an already-ready pod is never stopped by a late cancel or rewritten in its terminal payload.
+  For a live launch, `tasks/cancel` routes directly through `offrig_shutdown` with the fixed
+  reason `"task cancelled"`, which sets the launch cancel flag only after passing the
+  in-flight-handoffs check. If `offrig_shutdown` refuses because handoffs are still active, the
+  launch continues running uncancelled, the refusal is recorded, and `tasks/get` reports that
+  the pod is still running, why, and how to proceed (`offrig_shutdown` with a `reason`).
 - **`ttlMs` is display-only:** `ttlMs` controls only how long task handle metadata stays in
   the database (`plan.deadline()` plus a 10-minute buffer by default). Once `ttlMs` elapses,
   the task mapping is purged, while the pod remains governed solely by `plan.deadline()`, the

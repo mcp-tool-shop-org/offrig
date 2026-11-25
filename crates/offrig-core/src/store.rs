@@ -2263,11 +2263,16 @@ impl Store {
         Ok(())
     }
 
-    /// Generate 128 bits of non-guessable lowercase hex entropy via SQLite's CSPRNG.
+    /// Draw 128 bits directly from the operating system CSPRNG (`getrandom`) as lowercase hex.
     pub fn random_hex_128(&self) -> Result<String> {
-        self.conn
-            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
-            .map_err(db("generating random token"))
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|e| Error::Refused(format!("OS RNG failed: {e}")))?;
+        let mut out = String::with_capacity(32);
+        for b in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut out, "{b:02x}");
+        }
+        Ok(out)
     }
 
     /// Read all `(key, value)` pairs whose key begins with `prefix`.
@@ -4774,5 +4779,22 @@ mod tests {
             let u = plain_uri(Path::new("C:\\data\\x.db"));
             assert_eq!(u, "file:///C:/data/x.db");
         }
+    }
+
+    #[test]
+    fn random_hex_128_draws_distinct_128_bit_os_tokens() {
+        let dir = std::env::temp_dir().join(format!("offrig-core-rng-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let s = Store::open(&dir.join("offrig.db")).expect("open");
+        let a = s.random_hex_128().expect("rng a");
+        let b = s.random_hex_128().expect("rng b");
+        assert_eq!(a.len(), 32);
+        assert_eq!(b.len(), 32);
+        assert!(a.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+        assert!(b.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+        assert_ne!(a, b);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

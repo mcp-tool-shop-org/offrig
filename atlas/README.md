@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-11-25 from commit a39662e by Atlas 1.26.0.
+Mapped at 2026-11-25 from commit d8bf0bd by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,9 +8,10 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 6 parts, mostly Rust (90 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-11-25 (2bd768c)
+## What changed since 2026-11-25 (a39662e)
 
-Nothing structural changed since 2026-11-25; 1 file changed content.
+- crates/offrig-mcp/tests/goldens/sync_launch_and_job_e640e3be.json is now read by crates/offrig-mcp/tests/tasks_skills.rs.
+- 1 file added and 10 changed content, across 3 parts.
 
 ## What comes in
 

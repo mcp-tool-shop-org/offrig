@@ -239,16 +239,43 @@ fn snapshot_to_meta(
     if let Some(refusal) = cancel_refusal {
         map.insert("cancel_refused".to_string(), Value::Bool(true));
         map.insert("cancel_refusal".to_string(), refusal.clone());
+        map.insert(
+            "next_action".to_string(),
+            Value::String(format_cancel_refusal_message(refusal)),
+        );
     }
     map
 }
 
-fn enriched_snapshot(
-    snapshot: Value,
-    deadline: Option<&str>,
-    ok_flag: bool,
-    cancel_refusal: Option<&Value>,
-) -> Value {
+/// Format a plain cancel-refusal message stating that the pod is still running, why, and
+/// that `offrig_shutdown` with a `reason` is the way to stop it.
+pub fn format_cancel_refusal_message(refusal: &Value) -> String {
+    let why = refusal
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("shutdown was refused");
+    format!(
+        "cancel refused: the pod is still running ({why}); call offrig_shutdown with a reason to stop it"
+    )
+}
+
+/// Return the terminal `TaskStatus` if this launch task has already settled, or `None` while active.
+pub fn terminal_status(rec: &LaunchTaskRecord, job: Option<&store::Job>) -> Option<TaskStatus> {
+    let Some(job) = job else {
+        return Some(TaskStatus::Failed);
+    };
+    if rec.cancelled || job.state == "cancelled" {
+        return Some(TaskStatus::Cancelled);
+    }
+    let step = job.progress["step"].as_str().unwrap_or("");
+    let report_only = step == "engine_hung" || step == "engine_unresponsive";
+    if job.state == "done" || job.state == "failed" || report_only {
+        return Some(TaskStatus::Completed);
+    }
+    None
+}
+
+fn enriched_snapshot(snapshot: Value, deadline: Option<&str>, ok_flag: bool) -> Value {
     let mut out = match snapshot {
         Value::Object(m) => m,
         _ => serde_json::Map::new(),
@@ -256,19 +283,6 @@ fn enriched_snapshot(
     out.insert("ok".to_string(), Value::Bool(ok_flag));
     if let Some(d) = deadline {
         out.insert("deadline".to_string(), Value::String(d.to_string()));
-    }
-    if let Some(refusal) = cancel_refusal {
-        out.insert("cancel_refused".to_string(), Value::Bool(true));
-        out.insert("cancel_refusal".to_string(), refusal.clone());
-        if let Some(msg) = refusal.get("error").and_then(Value::as_str) {
-            out.insert("error".to_string(), Value::String(msg.to_string()));
-        }
-        if let Some(code) = refusal.get("code").and_then(Value::as_str) {
-            out.insert("code".to_string(), Value::String(code.to_string()));
-        }
-        if let Some(next) = refusal.get("next_action").and_then(Value::as_str) {
-            out.insert("next_action".to_string(), Value::String(next.to_string()));
-        }
     }
     Value::Object(out)
 }
@@ -311,80 +325,60 @@ pub fn build_get_task_result(
         .map(cost::iso_utc)
         .unwrap_or_else(|| rec.last_updated_at.clone());
 
-    let cancel_msg = rec.cancel_refusal.as_ref().and_then(|r| {
-        r.get("error")
-            .and_then(Value::as_str)
-            .map(|e| format!("cancel refused: {e}"))
-    });
-
-    let (status, status_message, payload) = if rec.cancel_refusal.is_some() {
-        if job.state == "running" && !report_only {
-            (
-                TaskStatus::Working,
-                cancel_msg.unwrap_or_else(|| "cancel refused".to_string()),
-                TaskPayload::Working,
-            )
-        } else {
-            let body = enriched_snapshot(snapshot, deadline, false, rec.cancel_refusal.as_ref());
+    let (status, status_message, payload) =
+        if rec.cancelled || job.state == "cancelled" || rec.cancel_requested {
+            if job.state == "running" && snapshot["plan_state"] == "committed" {
+                (
+                    TaskStatus::Working,
+                    "cancelling launch".to_string(),
+                    TaskPayload::Working,
+                )
+            } else {
+                (
+                    TaskStatus::Cancelled,
+                    "task cancelled".to_string(),
+                    TaskPayload::Cancelled,
+                )
+            }
+        } else if job.state == "running" && !report_only {
+            let msg = if let Some(refusal) = rec.cancel_refusal.as_ref() {
+                format_cancel_refusal_message(refusal)
+            } else if step.is_empty() {
+                "launching rented pod".to_string()
+            } else {
+                step.to_string()
+            };
+            (TaskStatus::Working, msg, TaskPayload::Working)
+        } else if job.state == "failed" {
+            // SEP-2663: tool-level launch errors (no_capacity, pod_not_ready, etc.) MUST report
+            // TaskStatus::Completed with result.isError = true; Failed is reserved for JSON-RPC errors.
+            let body = enriched_snapshot(snapshot, deadline, false);
+            let msg = body["error"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| "launch failed".to_string());
             let call_res = CallToolResult::structured_error(body);
             let obj = value_to_json_object(&serde_json::to_value(call_res).unwrap_or_default());
             (
                 TaskStatus::Completed,
-                cancel_msg.unwrap_or_else(|| "cancel refused".to_string()),
+                msg,
                 TaskPayload::Completed { result: obj },
             )
-        }
-    } else if rec.cancelled || job.state == "cancelled" || rec.cancel_requested {
-        if job.state == "running" && snapshot["plan_state"] == "committed" {
+        } else {
+            let body = enriched_snapshot(snapshot, deadline, true);
+            let msg = if report_only {
+                step.to_string()
+            } else {
+                "pod ready".to_string()
+            };
+            let call_res = CallToolResult::structured(body);
+            let obj = value_to_json_object(&serde_json::to_value(call_res).unwrap_or_default());
             (
-                TaskStatus::Working,
-                "cancelling launch".to_string(),
-                TaskPayload::Working,
+                TaskStatus::Completed,
+                msg,
+                TaskPayload::Completed { result: obj },
             )
-        } else {
-            (
-                TaskStatus::Cancelled,
-                "task cancelled".to_string(),
-                TaskPayload::Cancelled,
-            )
-        }
-    } else if job.state == "running" && !report_only {
-        let msg = if step.is_empty() {
-            "launching rented pod".to_string()
-        } else {
-            step.to_string()
         };
-        (TaskStatus::Working, msg, TaskPayload::Working)
-    } else if job.state == "failed" {
-        // SEP-2663: tool-level launch errors (no_capacity, pod_not_ready, etc.) MUST report
-        // TaskStatus::Completed with result.isError = true; Failed is reserved for JSON-RPC errors.
-        let body = enriched_snapshot(snapshot, deadline, false, None);
-        let msg = body["error"]
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| "launch failed".to_string());
-        let call_res = CallToolResult::structured_error(body);
-        let obj = value_to_json_object(&serde_json::to_value(call_res).unwrap_or_default());
-        (
-            TaskStatus::Completed,
-            msg,
-            TaskPayload::Completed { result: obj },
-        )
-    } else {
-        let body = enriched_snapshot(snapshot, deadline, true, None);
-        let msg = if report_only {
-            step.to_string()
-        } else {
-            "pod ready".to_string()
-        };
-        let call_res = CallToolResult::structured(body);
-        let obj = value_to_json_object(&serde_json::to_value(call_res).unwrap_or_default());
-        (
-            TaskStatus::Completed,
-            msg,
-            TaskPayload::Completed { result: obj },
-        )
-    };
 
     let mut task = Task::new(&rec.task_id, status, &rec.created_at, last_updated)
         .with_status_message(status_message)
@@ -493,7 +487,7 @@ mod tests {
     #[test]
     fn build_get_task_result_cancel_refusal_surfaces_while_running_and_done() {
         let mut rec = sample_record();
-        rec.cancel_requested = true;
+        rec.cancel_requested = false;
         rec.cancel_refusal = Some(json!({
             "error": "1 handoff still running",
             "code": "handoff_in_flight",
@@ -510,14 +504,16 @@ mod tests {
             "2023-11-14T22:14:10Z",
         );
         assert_eq!(res_running.task.task.status, TaskStatus::Working);
-        assert!(
-            res_running
-                .task
-                .task
-                .status_message
-                .as_deref()
-                .is_some_and(|m| m.contains("cancel refused: 1 handoff still running"))
-        );
+        let running_msg = res_running
+            .task
+            .task
+            .status_message
+            .as_deref()
+            .expect("status_message");
+        assert!(running_msg.contains("the pod is still running"));
+        assert!(running_msg.contains("1 handoff still running"));
+        assert!(running_msg.contains("offrig_shutdown"));
+        assert!(running_msg.contains("reason"));
 
         let done = sample_job("done", "ready");
         let res_done = build_get_task_result(
@@ -530,10 +526,67 @@ mod tests {
         assert_eq!(res_done.task.task.status, TaskStatus::Completed);
         match res_done.task.payload {
             TaskPayload::Completed { result } => {
-                assert_eq!(result.get("isError").and_then(Value::as_bool), Some(true));
+                assert_eq!(result.get("isError").and_then(Value::as_bool), Some(false));
             }
             other => panic!("expected TaskPayload::Completed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminal_status_covers_all_terminal_and_active_states() {
+        let mut rec = sample_record();
+        assert_eq!(terminal_status(&rec, None), Some(TaskStatus::Failed));
+        assert_eq!(
+            terminal_status(&rec, Some(&sample_job("running", "waiting_engine"))),
+            None
+        );
+        assert_eq!(
+            terminal_status(&rec, Some(&sample_job("done", "ready"))),
+            Some(TaskStatus::Completed)
+        );
+        assert_eq!(
+            terminal_status(&rec, Some(&sample_job("failed", "stopped"))),
+            Some(TaskStatus::Completed)
+        );
+        assert_eq!(
+            terminal_status(&rec, Some(&sample_job("running", "engine_hung"))),
+            Some(TaskStatus::Completed)
+        );
+        assert_eq!(
+            terminal_status(&rec, Some(&sample_job("cancelled", "stopped"))),
+            Some(TaskStatus::Cancelled)
+        );
+        rec.cancelled = true;
+        assert_eq!(
+            terminal_status(&rec, Some(&sample_job("running", "waiting_engine"))),
+            Some(TaskStatus::Cancelled)
+        );
+    }
+
+    #[test]
+    fn task_id_is_independent_of_job_and_plan_ids() {
+        let dir1 = std::env::temp_dir().join(format!("offrig-tasks-rng-a-{}", std::process::id()));
+        let dir2 = std::env::temp_dir().join(format!("offrig-tasks-rng-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir1);
+        let _ = std::fs::remove_dir_all(&dir2);
+        std::fs::create_dir_all(&dir1).expect("dir1");
+        std::fs::create_dir_all(&dir2).expect("dir2");
+        let s1 = Store::open(&dir1.join("offrig.db")).expect("s1");
+        let s2 = Store::open(&dir2.join("offrig.db")).expect("s2");
+        let now_ms = 1_700_000_000_000u64;
+        let a = create_or_load_launch_task(&s1, 1, 1, Some(1_700_000_120), now_ms).expect("a");
+        let b = create_or_load_launch_task(&s2, 1, 1, Some(1_700_000_120), now_ms).expect("b");
+        assert_ne!(a.task_id, b.task_id);
+        let ha = a.task_id.strip_prefix("task-").expect("prefix");
+        let hb = b.task_id.strip_prefix("task-").expect("prefix");
+        assert_ne!(ha, format!("{:032x}", 1u128));
+        assert_ne!(hb, format!("{:032x}", 1u128));
+        let unique_hex: std::collections::HashSet<char> = ha.chars().collect();
+        assert!(unique_hex.len() >= 6, "low entropy token: {ha}");
+        drop(s1);
+        drop(s2);
+        let _ = std::fs::remove_dir_all(&dir1);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]
