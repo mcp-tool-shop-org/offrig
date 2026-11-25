@@ -143,7 +143,7 @@ API 密钥在每个级别都会被删除。
 
 **某个作业工具作用于哪个作业计划。** `offrig_put`、`offrig_exec` 和 `offrig_get` 接受一个可选的 `plan_id`。当只有一个作业计划处于打开状态且没有 `plan_id` 时，它们会像以前一样使用它。当有多个作业计划处于打开状态且没有 `plan_id` 时，它们会拒绝并列出打开的计划（ID、配置文件、Pod 名称）：它们绝不会猜测。如果存在 `plan_id`，它们只会对该计划的 Pod 起作用，并且仅在检查 Pod 的名称与该计划所拥有的 Pod 匹配后才会进行操作（另一个通道的 Pod 会被拒绝，而不仅仅是另一个通道）。每个作业工具的回复，以及 `offrig_job`，都会说明它所作用的 `project` 和 `plan_id`（作业工具的回复还会说明 `lane`）；`offrig_status` 说明 `project` 并列出每个打开的计划及其 `plan_id`、通道和 Pod 名称。
 
-**任务与技能。** 支持 MCP Tasks 的客户端可以把 `offrig_launch` 作为任务运行：`tasks/get` 显示与 `offrig_job` 相同的状态，`tasks/cancel` 通过 `offrig_shutdown` 结束会话。何时停止 pod 仍由计划的期限和 watchdog 决定。服务器还发布一个流程技能 `offrig-session`。详情见 [side-car 手册](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks)。
+**任务与技能。** 支持 MCP Tasks 的客户端可以把 `offrig_launch` 作为任务运行：`tasks/get` 显示与 `offrig_job` 相同的状态，`tasks/cancel` 取消仍在进行中的启动（通过 `offrig_shutdown`）；要停止已就绪的会话，请调用 `offrig_shutdown`。何时停止 pod 仍由计划的期限和 watchdog 决定。服务器还发布一个流程技能 `offrig-session`。详情见 [side-car 手册](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks)。
 
 角色来自 Role OS（档案和启动包卡），以及在此处以 Role OS 格式提供的四个游戏角色：游戏设计师、系统设计师、叙事设计师、背景设定维护者。预算上限仅由人工设定：
 

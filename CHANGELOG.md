@@ -8,7 +8,7 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [1.4.0] - 2026-11-25
 
-**A pod offrig created is never left running unseen, and MCP clients can follow a launch as a task.** The watchdog now finds and terminates pods whose launching process died before the pod was recorded, a launch probes before it creates, pods carry an on-pod deadline timer, and the side-car serves `offrig_launch` as an MCP task and the `offrig-session` procedure as an MCP skill.
+**A pod offrig launches from a plan is never left running unseen, and MCP clients can follow a launch as a task.** For planned launches, the watchdog now finds pods whose launching process died before the pod was recorded and terminates them (or, when it cannot tell, flags them in `offrig_status` as `unknown_create_pods`), a launch probes before it creates, and the pod carries an on-pod deadline timer. Pods started by hand with `offrig up` or from the app are not covered. The side-car also serves `offrig_launch` as an MCP task and the `offrig-session` procedure as an MCP skill.
 
 - **MCP Tasks for `offrig_launch` (`io.modelcontextprotocol/tasks`) and static `offrig-session` skill (`io.modelcontextprotocol/skills`):**
   - Raised the `rmcp` dependency floor in `crates/offrig-mcp/Cargo.toml` from `3.5.0` to `3.9.0` (while keeping `Cargo.lock` at `3.9.0`) because `io.modelcontextprotocol/skills` (`skills/list` and `skills/get`) requires `rmcp 3.9.0`.
