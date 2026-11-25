@@ -183,7 +183,8 @@ impl Rig {
             fake.join("rules.json"),
             json!([
                 {"contains": "nvidia-smi", "stdout": CARD},
-                {"contains": "engine.log", "stdout": ENGINE_OUT}
+                {"contains": "engine.log", "stdout": ENGINE_OUT},
+                {"contains": "self-stop.status", "stdout": "offrig self-stop: armed fire_at=1900000120\n"}
             ])
             .to_string(),
         )
