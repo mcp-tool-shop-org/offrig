@@ -199,13 +199,7 @@ refused, not just another lane's). Every job-tool reply, and `offrig_job`, state
 `project` and `plan_id` it acted on (job-tool replies also the `lane`); `offrig_status`
 states the `project` and lists every open plan with its `plan_id`, lane and pod name.
 
-**Tasks and skills.** When a client declares `io.modelcontextprotocol/tasks`, `offrig_launch`
-returns a `CreateTaskResult` handle backed by the same launch job row (`tasks/get` mirrors
-`offrig_job`, `tasks/cancel` routes through `offrig_shutdown` with reason `"task cancelled"`,
-and `ttlMs` stays display-only while the plan deadline and watchdog govern the pod). The
-server also publishes one static, digest-verified `offrig-session` procedure skill via
-`skills/list` and `skills/get`; see the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks)
-for the details.
+**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` ends the session through `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).
 
 Roles come from Role OS (dossiers and starter-pack cards) plus four game roles shipped
 here in Role OS's formats: game-designer, systems-designer, narrative-designer,

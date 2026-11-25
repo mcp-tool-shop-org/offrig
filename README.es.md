@@ -164,6 +164,8 @@ por lo que una sesión sobrevive a la compactación o a un reinicio sin tener qu
 
 **¿A qué plan de trabajo aplica una herramienta de trabajo?** `offrig_put`, `offrig_exec` y `offrig_get` aceptan un `plan_id` opcional. Con exactamente un plan de trabajo abierto y sin `plan_id`, lo utilizan, como antes. Con más de un plan de trabajo abierto y sin `plan_id`, se niegan y enumeran los planes abiertos (ID, perfil, nombre del pod): nunca adivinan. Con un `plan_id`, solo actúan sobre el pod de ese plan y solo después de verificar que el nombre del pod es el que pertenece a ese plan (el otro pod de una "carril" se rechaza, no solo el de otro "carril"). Cada respuesta de la herramienta de trabajo, y `offrig_job`, indica el `project` y el `plan_id` en el que actuó (las respuestas de la herramienta de trabajo también indican el `lane`); `offrig_status` indica el `project` y enumera cada plan abierto con su `plan_id`, "carril" y nombre del pod.
 
+**Tareas y skills.** Un cliente compatible con MCP Tasks puede ejecutar `offrig_launch` como tarea: `tasks/get` muestra el mismo estado que `offrig_job`, y `tasks/cancel` termina la sesión mediante `offrig_shutdown`. El plazo del plan y el watchdog siguen decidiendo cuándo se detiene un pod. El servidor también publica una skill de procedimiento, `offrig-session`. Los detalles están en el [manual del side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).
+
 Los roles provienen de Role OS (archivos y tarjetas de inicio) más cuatro roles de juego incluidos aquí en los formatos de Role OS: diseñador de juegos, diseñador de sistemas, diseñador narrativo, guardián del "lore". El límite presupuestario lo establece solo un humano:
 
 ```text
