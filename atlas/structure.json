@@ -8549,7 +8549,7 @@
           "testsInside": true
         },
         {
-          "hash": "2d090a2ec00cc0b7dec2ca2c36c6d8bb83c9f6b11e0a53a667866a768c24304f",
+          "hash": "b9c297bd267fb6a5b38e4da65612bcafa8f9429f26dbb22094635783391da549",
           "importOrder": [
             "crates/offrig-mcp/tests/common/mod.rs",
             "crates/offrig-core/src/config.rs",
@@ -10185,7 +10185,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "2bd768c979f982bf36bae9a4076b387e3858d070",
+    "commit": "a39662ee05043b6f43cb320536e3829549c360db",
     "tracked": 166
   },
   "landings": [

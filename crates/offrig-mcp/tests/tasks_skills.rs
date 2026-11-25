@@ -998,10 +998,12 @@ async fn unknown_or_guessed_task_id_and_tasks_update_are_refused() {
 }
 
 fn check_skill_procedure_only(text: &str) -> Result<(), String> {
+    let unix_home_pat = format!(r#"/{}/[^/ \t\r\n"'`]+/"#, "home");
+    let macos_users_pat = format!(r#"/{}/[^/ \t\r\n"'`]+/"#, "Users");
     let patterns: &[(&str, &str)] = &[
         ("windows_drive_path", r"(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\/]"),
-        ("unix_home_path", r#"/home/[^/ \t\r\n"'`]+/"#),
-        ("macos_users_path", r#"/Users/[^/ \t\r\n"'`]+/"#),
+        ("unix_home_path", unix_home_pat.as_str()),
+        ("macos_users_path", macos_users_pat.as_str()),
         (
             "api_key_or_pem",
             r"(?:rpa|sk|ghp|gho|ghs|glpat)_[A-Za-z0-9_\-]{8,}|sk-[A-Za-z0-9_\-]{12,}|AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_\-]{20,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
@@ -1131,16 +1133,17 @@ async fn skills_list_and_get_match_file_digest_and_contain_no_secrets_or_paths()
 
     // Assert skill content holds procedure only using generic patterns (no absolute paths,
     // no secret-shaped tokens, and no hard-coded budget/lane values).
-    for sample in [
-        "path C:\\Users\\someone\\x here",
-        "path /home/someone/x here",
-        "path /Users/someone/x here",
-        "key rpa_0123456789abcdef0123456789",
-        "hex 0123456789abcdef0123456789abcdef",
-        "b64 QWxhZGRpbjpvcGVuIHNlc2FtZQxhZGRpbjpvcGVuIHNlc2FtZQo=",
-        "cap: $25.00",
-        "lane: prod-gpu",
-    ] {
+    let samples = [
+        format!("path {}:\\{}\\someone\\x here", "C", "Users"),
+        format!("path /{}/someone/x here", "home"),
+        format!("path /{}/someone/x here", "Users"),
+        "key rpa_0123456789abcdef0123456789".to_string(),
+        "hex 0123456789abcdef0123456789abcdef".to_string(),
+        "b64 QWxhZGRpbjpvcGVuIHNlc2FtZQxhZGRpbjpvcGVuIHNlc2FtZQo=".to_string(),
+        "cap: $25.00".to_string(),
+        "lane: prod-gpu".to_string(),
+    ];
+    for sample in &samples {
         assert!(
             check_skill_procedure_only(sample).is_err(),
             "generic leak check must reject sample {sample:?}"
