@@ -13,12 +13,25 @@ All notable changes to offrig are documented here. The format is based on
     `env` for every pod, never on the plain lane) exact lane pod name so a pod created
     just before a host crash is attached and terminated at the plan's deadline (`Unknown`
     lookups still never act).
+  - Non-committed plans can no longer adopt late pods: `Store::attach_pod` requires
+    `state = 'committed'` (journaling `attach_pod_conflict(plan_not_committed)` on closed,
+    cancelled, or planned plans), `create_when_free_while` re-checks committed state on every
+    capacity poll so cross-process `offrig_shutdown` stops before `POST /pods`,
+    `offrig_shutdown` on a pod-less plan warns when an in-flight `create_pod` has no outcome
+    (keeping the watchdog running and `offrig_status` preserving that open `create_pod` row)
+    until the arriving pod is terminated without attaching or the launcher is proven dead.
   - Concurrent side-cars in the same project can no longer create a second pod for one plan:
-    `offrig_launch` refuses relaunch while `create_pod` has no outcome unless the launching
-    PID is gone and its heartbeat is stale beyond `LAUNCH_HEARTBEAT_STALE_SECS`, re-reads
-    the plan after create and terminates+journals any duplicate pod, and `Store::attach_pod`
-    refuses (and journals `attach_pod_conflict`) rather than silently overwriting an
-    existing `pod_id`.
+    `Store::begin_launch_with_account` checks state, commits, and creates the launch job
+    atomically in one `BEGIN IMMEDIATE` transaction so simultaneous `planned` launches cannot
+    skip the relaunch guard; relaunches refuse while `create_pod` has no outcome unless the
+    launching process is dead (comparing OS process start time beside `pid` via
+    `pid_alive_at` and RFC-4180 CSV `tasklist` parsing) and its heartbeat is stale beyond
+    `LAUNCH_HEARTBEAT_STALE_SECS`; an in-process `LaunchJobGuard` drop guard marks early-exit
+    and panicked launches `failed` immediately.
+  - Duplicate-pod elimination retries failed deletes with exponential backoff, surfaces
+    unresolved duplicate deletes in `offrig_status` so the watchdog sweep can finish
+    terminating them, and retries transient non-conflict `attach_pod` errors instead of
+    deleting legitimate pods.
   - `offrig_launch` probes the lane before creating a pod and reuses only `RUNNING`,
     `PROVISIONING`, or `STARTING` pods belonging to the plan; `EXITED` or stopped pods are
     terminated and journalled instead of reused.
@@ -28,7 +41,8 @@ All notable changes to offrig are documented here. The format is based on
     studio/host API key is placed on the pod), writes `offrig self-stop: armed fire_at=<n>`
     or `offrig self-stop: UNAVAILABLE (<missing>)` to `/workspace/offrig/self-stop.status`
     and `bootstrap.log`, and reads that status over SSH into `offrig_job` and
-    `offrig_status` (with a loud warning when `UNAVAILABLE`).
+    `offrig_status` (warning loudly both on `UNAVAILABLE` and when status cannot be read,
+    recorded as `self-stop status unknown`).
   - Watchdog startup without `RUNPOD_API_KEY` now exits non-zero and records the failure
     in the project store so `offrig_status`, `offrig_job`, and the desktop app surface the
     unguarded plan loudly (instructing to shut down held pods), and `offrig_launch` refuses

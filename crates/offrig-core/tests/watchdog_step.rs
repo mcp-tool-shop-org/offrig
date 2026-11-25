@@ -348,6 +348,13 @@ fn env_plan_marker_in_another_lane_never_matches() {
             "cost": 3.0,
             "env": {"OFFRIG_PLAN": pid, "OFFRIG_LANE": "alpha"}
         }),
+        serde_json::json!({
+            "id": "p-exact-name-wrong-lane",
+            "name": "offrig-alpha-frontier",
+            "status": "RUNNING",
+            "cost": 3.0,
+            "env": {"OFFRIG_PLAN": pid, "OFFRIG_LANE": "beta"}
+        }),
     ];
     let parsed: Vec<offrig_core::runpod::Pod> = raw_pods
         .iter()
@@ -373,8 +380,96 @@ fn env_plan_marker_in_another_lane_never_matches() {
     assert_eq!(m.count("DELETE /pods/p-plain"), 0);
     assert_eq!(m.count("DELETE /pods/p-empty"), 0);
     assert_eq!(m.count("DELETE /pods/p-wrong-profile"), 0);
+    assert_eq!(m.count("DELETE /pods/p-exact-name-wrong-lane"), 0);
     let closed = store.plan(plan.id).expect("read").expect("plan");
     assert_eq!(closed.pod_id, None);
+}
+
+#[test]
+fn watchdog_stays_running_on_closed_plan_while_create_pod_is_unresolved() {
+    use std::sync::{Arc, Mutex};
+
+    let store = Store::open_in_memory().expect("store");
+    let plan = committed(&store, 1.0, None);
+    store.set_plan_lane(plan.id, "alpha").expect("lane");
+    let now = offrig_core::cost::now_unix();
+    let job_id = store
+        .create_launch_job(
+            plan.id,
+            std::process::id(),
+            offrig_core::proc::own_start_time().as_deref(),
+            now,
+        )
+        .expect("job");
+    let _jc = store
+        .journal(
+            "create_pod",
+            Some(plan.id),
+            &serde_json::json!({ "job_id": job_id }),
+        )
+        .expect("journal");
+    // Plan is closed while create_pod still has no outcome and launcher is alive.
+    store.close_plan(plan.id, 0.0).expect("close");
+    assert_eq!(
+        store
+            .plans_with_unfinished_create_after_close()
+            .expect("closing"),
+        vec![(plan.id, _jc)]
+    );
+
+    let pods: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let pods_srv = Arc::clone(&pods);
+    let m = serve(move |req, _| {
+        let mut list = pods_srv.lock().expect("pods");
+        let route = req.route();
+        if route == "GET /pods" {
+            (200, serde_json::Value::Array(list.clone()).to_string())
+        } else if let Some(id) = route.strip_prefix("DELETE /pods/") {
+            list.retain(|p| p["id"] != id);
+            (204, String::new())
+        } else {
+            (404, "{}".to_string())
+        }
+    });
+
+    // While create_pod has no outcome and no pod exists yet, watchdog stays Wait (does not exit).
+    assert_eq!(
+        watchdog::step(&store, &rp(&m), plan.id).expect("step 1"),
+        Verdict::Wait
+    );
+
+    // Once the pod appears on RunPod, watchdog terminates it and resolves the create_pod journal.
+    pods.lock().expect("pods").push(serde_json::json!({
+        "id": "p-late",
+        "name": "offrig-alpha-frontier",
+        "status": "RUNNING",
+        "cost": 3.0,
+        "env": { "OFFRIG_PLAN": plan.id.to_string(), "OFFRIG_LANE": "alpha" }
+    }));
+    let v2 = watchdog::step(&store, &rp(&m), plan.id).expect("step 2");
+    assert!(
+        matches!(&v2, Verdict::Terminate { reason } if reason.contains("p-late")),
+        "{v2:?}"
+    );
+    assert_eq!(m.count("DELETE /pods/p-late"), 1);
+    assert!(pods.lock().expect("pods").is_empty());
+    assert!(
+        store
+            .plans_with_unfinished_create_after_close()
+            .expect("cleared")
+            .is_empty()
+    );
+    assert_eq!(
+        store.plan(plan.id).expect("r").expect("p").pod_id,
+        None,
+        "pod must not attach to a closed plan"
+    );
+
+    // Next step exits cleanly.
+    assert_eq!(
+        watchdog::step(&store, &rp(&m), plan.id).expect("step 3"),
+        Verdict::Exit
+    );
 }
 
 #[test]

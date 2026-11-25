@@ -697,8 +697,25 @@ impl Sidecar {
                     && let Some(p) = s.plan(pid)?
                 {
                     if let Some(pod) = p.pod_id.as_deref() {
-                        s.journal_outcome(j.id, &format!("reconciled: plan records pod {pod}"))?;
-                    } else if p.state != "committed" {
+                        let can_reconcile = if j.action == "create_pod" {
+                            let creator_job = serde_json::from_str::<Value>(&j.intent)
+                                .ok()
+                                .and_then(|v| v["job_id"].as_i64())
+                                .and_then(|jid| s.job(jid).ok().flatten())
+                                .or_else(|| s.job_for_plan(pid, "launch").ok().flatten());
+                            creator_job.as_ref().is_some_and(|job| {
+                                offrig_core::proc::launch_job_proven_dead(job, now)
+                            })
+                        } else {
+                            true
+                        };
+                        if can_reconcile {
+                            s.journal_outcome(
+                                j.id,
+                                &format!("reconciled: plan records pod {pod}"),
+                            )?;
+                        }
+                    } else if p.state != "committed" && j.action != "create_pod" {
                         s.journal_outcome(j.id, "reconciled: plan closed without a pod")?;
                     }
                 }
@@ -777,6 +794,8 @@ impl Sidecar {
                 plans,
                 !s.active(Kind::Brief)?.is_empty(),
                 completions,
+                s.unresolved_duplicate_pods()?,
+                s.plans_with_unfinished_create_after_close()?,
             ))
         });
         let (
@@ -791,6 +810,8 @@ impl Sidecar {
             open_plans,
             has_brief,
             completions,
+            unresolved_dups,
+            closing_creates,
         ) = match local {
             Ok(v) => v,
             Err(e) => return fail_err(&e, "check the project database at .offrig/offrig.db"),
@@ -953,10 +974,44 @@ impl Sidecar {
             .collect();
         let next = if self_stop_warnings.is_empty() {
             next
-        } else {
+        } else if self_stop_warnings.iter().any(|w| w.contains("UNAVAILABLE")) {
             format!(
                 "WARNING, on-pod self-stop is unavailable: {}. Keep the host watchdog running until offrig_shutdown. Then: {next}",
                 self_stop_warnings.join("; ")
+            )
+        } else {
+            format!(
+                "WARNING, self-stop status unknown: {}. Keep the host watchdog running until offrig_shutdown. Then: {next}",
+                self_stop_warnings.join("; ")
+            )
+        };
+        let closing_launch_ids: Vec<String> = closing_creates
+            .iter()
+            .map(|(pid, jid)| format!("plan {pid} (journal {jid})"))
+            .collect();
+        let next = if closing_launch_ids.is_empty() {
+            next
+        } else {
+            format!(
+                "WARNING, shutdown closed plan(s) while create_pod was still in flight ({}); a launch may still create a pod, which will be terminated on arrival without attaching. Then: {next}",
+                closing_launch_ids.join(", ")
+            )
+        };
+        let unresolved_dup_list: Vec<String> = unresolved_dups
+            .iter()
+            .map(|d| {
+                format!(
+                    "plan {} duplicate pod {} ({})",
+                    d.plan_id, d.pod_id, d.outcome
+                )
+            })
+            .collect();
+        let next = if unresolved_dup_list.is_empty() {
+            next
+        } else {
+            format!(
+                "WARNING, duplicate pod delete failed and may still be billing: {}. Watchdog sweep will retry termination. Then: {next}",
+                unresolved_dup_list.join("; ")
             )
         };
         ok(json!({
@@ -1023,6 +1078,16 @@ impl Sidecar {
             "open_plans": open_plans,
             "watchdog_warnings": watchdog_warnings,
             "self_stop_warnings": self_stop_warnings,
+            "unresolved_duplicate_pods": unresolved_dups.iter().map(|d| json!({
+                "journal_id": d.journal_id,
+                "plan_id": d.plan_id,
+                "pod_id": d.pod_id,
+                "outcome": d.outcome,
+            })).collect::<Vec<_>>(),
+            "closing_launches": closing_creates.iter().map(|(pid, jid)| json!({
+                "plan_id": pid,
+                "journal_id": jid,
+            })).collect::<Vec<_>>(),
             "openrouter_completions": completions,
             "unfinished_side_effects": journal.len(),
             "next_action": next,
@@ -1753,68 +1818,60 @@ impl Sidecar {
             .await
             .unwrap_or_else(|e| balances::Balance::Unknown(e.to_string()));
         let guard = account::AccountGuard::new(scope, balance);
-        let newly_committed = plan.state != "committed";
         let now = cost::now_unix();
-        let (committed, job_id) = match self.with_store(|s| {
-            let _ = s.clear_setting(&watchdog::error_key(id));
-            if let Err(e) = ops::lane_busy(&self.ctx, s, &cfg, id, &lane_pods) {
-                return Ok(Err(e));
-            }
-            let current = s
-                .plan(id)?
-                .ok_or_else(|| offrig_core::Error::Refused(format!("no plan {id}")))?;
-            if let Some(existing_pod) = current.pod_id.as_deref() {
-                return Ok(Err(offrig_core::Error::Refused(format!(
-                    "plan {id} already holds pod {existing_pod}"
-                ))));
-            }
-            let p = if newly_committed {
-                s.commit_plan_with_account(id, &guard)?
-            } else {
-                if let Err(e) = ops::check_relaunch_allowed(s, id, now) {
-                    return Ok(Err(e));
-                }
-                if let Some(entry) = s.unfinished_create_pod(id)? {
-                    let _ = s.journal_outcome(
-                        entry.id,
-                        "abandoned: launching process died before recording outcome",
-                    );
-                }
-                if let Some(stale) = s.job_for_plan(id, "launch")?
-                    && stale.state == "running"
-                {
-                    let mut progress = stale.progress.clone();
-                    if let Some(obj) = progress.as_object_mut() {
-                        obj.insert("step".into(), json!("stopped"));
+        let own_start = offrig_core::proc::own_start_time();
+        let offrig_core::store::LaunchClaim {
+            plan: committed,
+            job_id,
+            newly_committed,
+        } = match self.with_store(|s| {
+            s.begin_launch_with_account(
+                id,
+                Some(&guard),
+                std::process::id(),
+                own_start.as_deref(),
+                now,
+                |s, _current, already_committed| {
+                    let _ = s.clear_setting(&watchdog::error_key(id));
+                    if already_committed {
+                        ops::check_relaunch_allowed(s, id, now)?;
                     }
-                    s.update_job(
-                        stale.id,
-                        "failed",
-                        &progress,
-                        Some("previous side-car exited before launch finished"),
-                    )?;
-                }
-                current
-            };
-            match s.create_launch_job(id, std::process::id(), now) {
-                Ok(job_id) => Ok(Ok((p, job_id))),
-                Err(e) => {
-                    if newly_committed {
-                        let _ = s.close_plan(id, 0.0);
+                    ops::lane_busy(&self.ctx, s, &cfg, id, &lane_pods)?;
+                    if already_committed {
+                        if let Some(entry) = s.unfinished_create_pod(id)? {
+                            let _ = s.journal_outcome(
+                                entry.id,
+                                "abandoned: launching process died before recording outcome",
+                            );
+                        }
+                        if let Some(stale) = s.job_for_plan(id, "launch")?
+                            && stale.state == "running"
+                        {
+                            let mut progress = stale.progress.clone();
+                            if let Some(obj) = progress.as_object_mut() {
+                                obj.insert("step".into(), json!("stopped"));
+                            }
+                            s.update_job(
+                                stale.id,
+                                "failed",
+                                &progress,
+                                Some("previous side-car exited before launch finished"),
+                            )?;
+                        }
                     }
-                    Err(e)
-                }
-            }
+                    Ok(())
+                },
+            )
         }) {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
+            Ok(claim) => claim,
+            Err(e @ offrig_core::Error::Budget(_)) => {
+                return fail_err(&e, "make a cheaper or shorter plan; nothing was spent");
+            }
+            Err(e) => {
                 return fail_err(
                     &e,
                     "shut that pod down first (or follow the running launch with offrig_job); nothing was spent",
                 );
-            }
-            Err(e) => {
-                return fail_err(&e, "make a cheaper or shorter plan; nothing was spent");
             }
         };
         let wd = self.with_store(|s| {
@@ -2277,9 +2334,28 @@ impl Sidecar {
         .await;
         match res {
             Ok(Ok(mut v)) => {
-                v["next_action"] = json!(
-                    "record the session's results in memory; plan again only when there is queued work"
-                );
+                if v["pending_create_in_flight"] == json!(true) {
+                    if !self
+                        .with_store(|s| {
+                            Ok(watchdog::alive(
+                                s,
+                                a.plan_id,
+                                cost::now_unix(),
+                                WATCHDOG_STALE_SECS,
+                            ))
+                        })
+                        .unwrap_or(false)
+                    {
+                        let _ = spawn_watchdog(&self.project, a.plan_id);
+                    }
+                    v["next_action"] = json!(
+                        "WARNING, a launch create_pod is still in flight in another process; if it creates a pod, offrig and the plan watchdog will terminate it on arrival without attaching. Then: record the session's results in memory; plan again only when there is queued work"
+                    );
+                } else {
+                    v["next_action"] = json!(
+                        "record the session's results in memory; plan again only when there is queued work"
+                    );
+                }
                 ok(v)
             }
             Ok(Err(e)) => fail_err(

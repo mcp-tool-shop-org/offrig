@@ -183,16 +183,29 @@ the session and the side-car are all gone.
   is unset), it checks the plan's `create_pod` journal, the lane's live pods matching
   `OFFRIG_PLAN` (strictly within the plan's lane), and (only when RunPod's listing omits
   `env` for all pods, and never on the plain lane) the plan's exact lane pod name, attaches
-  any matching pod, and terminates it at the deadline. A relaunch probes the lane first
-  (reusing only `RUNNING`, `PROVISIONING`, or `STARTING` pods, and terminating any `EXITED`
-  or stopped pod instead), refuses to launch a second pod while an active `create_pod` is
-  still live in another side-car, and terminates any duplicate pod if a race still occurs.
+  any matching pod, and terminates it at the deadline. `offrig_launch` claims the plan
+  atomically in one database transaction so two side-cars racing on a `planned` plan both
+  go through the relaunch guard, probes the lane first (reusing only `RUNNING`,
+  `PROVISIONING`, or `STARTING` pods, and terminating any `EXITED` or stopped pod instead),
+  refuses to launch a second pod while an active `create_pod` is still live in another
+  side-car (checking both OS process start time beside PID and heartbeat staleness, while a
+  drop guard marks panicked or early-exiting launches `failed` in-process), and re-checks
+  committed state on every capacity poll so cross-process `offrig_shutdown` cancels before
+  `POST /pods`.
+- Non-committed plans cannot adopt arriving pods: `Store::attach_pod` requires
+  `state = 'committed'`, terminating any late duplicate pod (retrying delete failures with
+  backoff, flagging unresolved failures in `offrig_status`, and sweeping them on watchdog
+  ticks) while retrying transient non-conflict attach errors without deleting a valid pod.
+  When `offrig_shutdown` closes a pod-less plan while a `create_pod` is still in flight, it
+  records a warning, preserves the open `create_pod` entry across `offrig_status`, and keeps
+  the watchdog alive until the arriving pod is terminated or the launcher is proven dead.
 - Every planned pod writes `offrig self-stop: armed fire_at=<n>` or
   `offrig self-stop: UNAVAILABLE (<missing>)` during bootstrap and starts the background
   on-pod deadline timer (`deadline + 120s`) using RunPod's preinstalled `runpodctl` and the
   container's pod-scoped `RUNPOD_POD_ID` / `RUNPOD_API_KEY` (no host API key is placed on
   the pod), as a backstop if the host watchdog is lost; launch reads this status over SSH
-  into `offrig_job` and `offrig_status` and warns loudly when `UNAVAILABLE`.
+  into `offrig_job` and `offrig_status` and warns loudly both when `UNAVAILABLE` and when
+  status cannot be read (`self-stop status unknown`).
 - Without `RUNPOD_API_KEY`, the watchdog exits non-zero and records the failure in the
   store (surfaced by `offrig_status`, `offrig_job`, and the desktop app), and
   `offrig_launch` refuses to start a paid pod if the key is missing or the watchdog fails

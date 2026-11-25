@@ -191,16 +191,23 @@ pub const SELF_STOP_MARGIN_SECS: i64 = 120;
 pub const SELF_STOP_STATUS_FILE: &str = "/workspace/offrig/self-stop.status";
 /// Line prefix written by bootstrap and read over SSH after pod boot.
 pub const SELF_STOP_PREFIX: &str = "offrig self-stop: ";
+/// Status recorded when bootstrap's self-stop status cannot be read over SSH.
+pub const SELF_STOP_UNKNOWN_PREFIX: &str = "self-stop status unknown";
 
 const SELF_STOP_START: &str = "# offrig-self-stop-begin\n";
 const SELF_STOP_END: &str = "# offrig-self-stop-end\n";
 
-/// Build a warning message when the pod's self-stop status line reports `UNAVAILABLE`.
+/// Build a warning message when the pod's self-stop status line reports `UNAVAILABLE`
+/// or could not be read (`self-stop status unknown`).
 pub fn self_stop_warning(status: Option<&str>) -> Option<String> {
     let line = status?.trim();
     if line.contains("UNAVAILABLE") {
         Some(format!(
             "{line}; on-pod backstop is not armed, so keep the host watchdog running until offrig_shutdown"
+        ))
+    } else if line.starts_with(SELF_STOP_UNKNOWN_PREFIX) {
+        Some(format!(
+            "{line}; on-pod backstop could not be verified, so keep the host watchdog running until offrig_shutdown"
         ))
     } else {
         None
@@ -927,5 +934,10 @@ mod tests {
         let warn = self_stop_warning(Some("offrig self-stop: UNAVAILABLE (runpodctl)"))
             .expect("must warn");
         assert!(warn.contains("UNAVAILABLE (runpodctl)"), "{warn}");
+        let unk = self_stop_warning(Some(
+            "self-stop status unknown: bootstrap wrote no self-stop status line",
+        ))
+        .expect("unknown must warn");
+        assert!(unk.contains(SELF_STOP_UNKNOWN_PREFIX), "{unk}");
     }
 }

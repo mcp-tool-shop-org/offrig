@@ -246,6 +246,205 @@ fn look(rp: &RunPod, pod_id: Option<&str>) -> PodSeen {
     }
 }
 
+fn sweep_unresolved_duplicates(
+    store: &Store,
+    base_cfg: &crate::config::Config,
+    rp: &RunPod,
+    plan: &Plan,
+) -> Result<bool> {
+    let dups = store.unresolved_duplicate_pods_for_plan(plan.id)?;
+    if dups.is_empty() {
+        return Ok(true);
+    }
+    let Ok(pods) = rp.list_pods() else {
+        return Ok(false);
+    };
+    let lane_tag = store.plan_lane(plan.id)?;
+    let cfg = cfg_in_plan_lane(base_cfg, lane_tag.as_deref());
+    let expected_name = expected_pod_name(cfg.lane_tag.as_deref(), &plan.profile);
+    let mut all_resolved = true;
+    for dup in dups {
+        if plan.pod_id.as_deref() == Some(dup.pod_id.as_str()) {
+            store.journal_outcome(dup.journal_id, "refused sweep: pod is attached to plan")?;
+            continue;
+        }
+        match pods.iter().find(|p| p.id == dup.pod_id) {
+            None => {
+                store.journal_outcome(
+                    dup.journal_id,
+                    &format!(
+                        "duplicate pod {} already gone on watchdog sweep",
+                        dup.pod_id
+                    ),
+                )?;
+            }
+            Some(p) if p.desired_status == "TERMINATED" => {
+                store.journal_outcome(
+                    dup.journal_id,
+                    &format!(
+                        "duplicate pod {} already terminated on watchdog sweep",
+                        dup.pod_id
+                    ),
+                )?;
+            }
+            Some(p) if !cfg.owns_pod(&p.name) || p.name != expected_name => {
+                store.journal_outcome(
+                    dup.journal_id,
+                    &format!(
+                        "refused sweep of {}: pod {} is not owned in plan lane",
+                        dup.pod_id, p.name
+                    ),
+                )?;
+            }
+            Some(_) => match rp.delete_pod(&dup.pod_id) {
+                Ok(()) | Err(crate::error::Error::Api { status: 404, .. }) => {
+                    let jw = store.journal(
+                        "watchdog_sweep_duplicate",
+                        Some(plan.id),
+                        &serde_json::json!({ "pod": dup.pod_id }),
+                    )?;
+                    let _ = store.journal_outcome(jw, "terminated");
+                    store.journal_outcome(
+                        dup.journal_id,
+                        &format!("terminated duplicate pod {} on watchdog sweep", dup.pod_id),
+                    )?;
+                }
+                Err(_) => {
+                    all_resolved = false;
+                }
+            },
+        }
+    }
+    Ok(all_resolved)
+}
+
+fn pod_already_terminated_in_journal(store: &Store, plan_id: i64, pod_id: &str) -> bool {
+    store
+        .journal_for_plan(plan_id)
+        .unwrap_or_default()
+        .into_iter()
+        .any(|(action, intent, outcome)| {
+            matches!(
+                action.as_str(),
+                "terminate_pod" | "watchdog_terminate" | "terminate_duplicate_pod"
+            ) && intent.contains(pod_id)
+                && outcome.as_deref().is_some_and(|o| {
+                    !o.starts_with("delete_failed:") && !o.starts_with("terminate failed")
+                })
+        })
+}
+
+fn unresolved_create_after_close(
+    store: &Store,
+    base_cfg: &crate::config::Config,
+    rp: &RunPod,
+    plan: &Plan,
+    now: i64,
+) -> Result<Verdict> {
+    if let Some(entry) = store.unfinished_create_pod(plan.id)? {
+        let Ok(pods) = rp.list_pods() else {
+            return Ok(Verdict::Wait);
+        };
+        let lane_tag = store.plan_lane(plan.id)?;
+        let cfg = cfg_in_plan_lane(base_cfg, lane_tag.as_deref());
+        let listing_omitted_env = pods.iter().all(|p| p.env.is_empty());
+        let owned: Vec<Pod> = pods.into_iter().filter(|p| cfg.owns_pod(&p.name)).collect();
+        let open = store.open_plans()?;
+        let taken: Vec<&str> = open
+            .iter()
+            .filter(|p| p.id != plan.id)
+            .filter_map(|p| p.pod_id.as_deref())
+            .collect();
+        if let Some((found, how)) =
+            match_plan_pod(plan, &cfg, None, &taken, &owned, listing_omitted_env)
+        {
+            let j = store.journal(
+                "watchdog_terminate",
+                Some(plan.id),
+                &serde_json::json!({
+                    "pod": found.id,
+                    "reason": format!("plan is {}; terminating pod from in-flight create_pod", plan.state)
+                }),
+            )?;
+            match rp.delete_pod(&found.id) {
+                Ok(()) | Err(crate::error::Error::Api { status: 404, .. }) => {
+                    store.journal_outcome(j, "terminated")?;
+                    store.journal_outcome(
+                        entry.id,
+                        &format!(
+                            "created pod {} (terminated by watchdog on closed plan via {})",
+                            found.id,
+                            how.as_str()
+                        ),
+                    )?;
+                    return Ok(Verdict::Terminate {
+                        reason: format!("plan is {}; terminated pod {}", plan.state, found.id),
+                    });
+                }
+                Err(e) => {
+                    store.journal_outcome(j, &format!("terminate failed: {e}"))?;
+                    return Ok(Verdict::Wait);
+                }
+            }
+        }
+        let creator_job = serde_json::from_str::<serde_json::Value>(&entry.intent)
+            .ok()
+            .and_then(|v| v["job_id"].as_i64())
+            .and_then(|jid| store.job(jid).ok().flatten())
+            .or_else(|| store.job_for_plan(plan.id, "launch").ok().flatten());
+        let proven_dead = creator_job
+            .as_ref()
+            .is_some_and(|j| crate::proc::launch_job_proven_dead(j, now));
+        if proven_dead {
+            store.journal_outcome(
+                entry.id,
+                "abandoned: launching process died after plan closed; no pod created",
+            )?;
+        } else {
+            return Ok(Verdict::Wait);
+        }
+    }
+    if plan.pod_id.is_none()
+        && let Some(jid) = store.journaled_pod_id(plan.id)?
+        && !pod_already_terminated_in_journal(store, plan.id, &jid)
+    {
+        let Ok(pods) = rp.list_pods() else {
+            return Ok(Verdict::Wait);
+        };
+        let lane_tag = store.plan_lane(plan.id)?;
+        let cfg = cfg_in_plan_lane(base_cfg, lane_tag.as_deref());
+        let expected_name = expected_pod_name(cfg.lane_tag.as_deref(), &plan.profile);
+        if let Some(p) = pods.iter().find(|p| {
+            p.id == jid
+                && p.desired_status != "TERMINATED"
+                && cfg.owns_pod(&p.name)
+                && p.name == expected_name
+        }) {
+            let j = store.journal(
+                "watchdog_terminate",
+                Some(plan.id),
+                &serde_json::json!({
+                    "pod": p.id,
+                    "reason": format!("plan is {}; terminating journaled pod", plan.state)
+                }),
+            )?;
+            match rp.delete_pod(&p.id) {
+                Ok(()) | Err(crate::error::Error::Api { status: 404, .. }) => {
+                    store.journal_outcome(j, "terminated")?;
+                    return Ok(Verdict::Terminate {
+                        reason: format!("plan is {}; terminated pod {}", plan.state, p.id),
+                    });
+                }
+                Err(e) => {
+                    store.journal_outcome(j, &format!("terminate failed: {e}"))?;
+                    return Ok(Verdict::Wait);
+                }
+            }
+        }
+    }
+    Ok(Verdict::Exit)
+}
+
 /// One watchdog step: look, decide, act, record. Returns what it decided.
 pub fn step(store: &Store, rp: &RunPod, plan_id: i64) -> Result<Verdict> {
     let base_cfg = crate::config::Config::load().unwrap_or_default();
@@ -265,8 +464,14 @@ pub fn step_with_config(
     let Some(mut plan) = store.plan(plan_id)? else {
         return Ok(Verdict::Exit);
     };
+    let sweep_clean = sweep_unresolved_duplicates(store, base_cfg, rp, &plan)?;
     if plan.state != "committed" {
-        return Ok(Verdict::Exit);
+        let v = unresolved_create_after_close(store, base_cfg, rp, &plan, now)?;
+        return Ok(match v {
+            Verdict::Exit if !sweep_clean => Verdict::Wait,
+            Verdict::Terminate { .. } if !sweep_clean => Verdict::Wait,
+            other => other,
+        });
     }
     let seen = if plan.pod_id.is_some() {
         look(rp, plan.pod_id.as_deref())
@@ -346,6 +551,9 @@ pub fn step_with_config(
             store.close_plan(plan_id, cost)?;
         }
         Verdict::Wait | Verdict::Exit => {}
+    }
+    if !sweep_clean {
+        return Ok(Verdict::Wait);
     }
     Ok(verdict)
 }

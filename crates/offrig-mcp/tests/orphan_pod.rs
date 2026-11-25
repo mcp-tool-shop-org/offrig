@@ -39,7 +39,9 @@ fn offers_json() -> String {
     json!({"gpus": types}).to_string()
 }
 
-fn stateful_runpod(pods: Pods) -> impl Fn(&str, &str, usize) -> (u16, String) + Send + 'static {
+fn stateful_runpod(
+    pods: Pods,
+) -> impl Fn(&str, &str, usize) -> (u16, String) + Send + Sync + 'static {
     move |route, body, _| {
         let mut pods = pods.lock().expect("pods");
         match route {
@@ -141,6 +143,7 @@ async fn connect_mcp_with_env(
         c.env("OFFRIG_TEST_HOME", dir.join("home"));
         c.env("OFFRIG_TEST_RUNPOD_BASE", url);
         c.env("OFFRIG_TEST_NO_WATCHDOG", "1");
+        c.env("OFFRIG_TEST_DELETE_BACKOFF_MS", "10");
         if let Some(ms) = poll_ms {
             c.env("OFFRIG_TEST_CAPACITY_POLL_MS", ms);
         }
@@ -821,13 +824,14 @@ async fn self_stop_armed_and_unavailable_lines_reach_offrig_job_and_status() {
         (
             "self-stop-armed",
             "offrig self-stop: armed fire_at=1900000120\n",
-            false,
+            "armed",
         ),
         (
             "self-stop-unavailable",
             "offrig self-stop: UNAVAILABLE (runpodctl, RUNPOD_POD_ID)\n",
-            true,
+            "unavailable",
         ),
+        ("self-stop-unreadable", "", "unknown"),
     ] {
         let pods: Pods = Arc::default();
         let (url, _hits): (_, Hits) = mock(stateful_runpod(Arc::clone(&pods)));
@@ -837,6 +841,19 @@ async fn self_stop_armed_and_unavailable_lines_reach_offrig_job_and_status() {
             s.set_budget_cap(50.0).expect("cap");
         }
         let (bin, fake) = install_fake_tools(&dir);
+        let ss_rule = if expect_unavailable == "unknown" {
+            json!({
+                "contains": "self-stop.status",
+                "stdout": "",
+                "stderr": "read failed",
+                "code": 1
+            })
+        } else {
+            json!({
+                "contains": "self-stop.status",
+                "stdout": ssh_line
+            })
+        };
         std::fs::write(
             fake.join("rules.json"),
             json!([
@@ -844,10 +861,7 @@ async fn self_stop_armed_and_unavailable_lines_reach_offrig_job_and_status() {
                     "contains": "nvidia-smi",
                     "stdout": "| NVIDIA-SMI 570.1 Driver Version: 570.1 CUDA Version: 13.0 |\n|   0  NVIDIA A100-SXM4-80GB  Off |\n"
                 },
-                {
-                    "contains": "self-stop.status",
-                    "stdout": ssh_line
-                }
+                ss_rule
             ])
             .to_string(),
         )
@@ -876,12 +890,11 @@ async fn self_stop_armed_and_unavailable_lines_reach_offrig_job_and_status() {
             tokio::time::sleep(Duration::from_millis(120)).await;
         };
 
-        let expected = ssh_line.trim();
-        assert_eq!(job["progress"]["self_stop"], expected, "{name}: {job}");
         let st = body(&call(&client, "offrig_status", json!({})).await);
-        assert_eq!(st["open_plans"][0]["self_stop"], expected, "{name}: {st}");
-
-        if expect_unavailable {
+        if expect_unavailable == "unavailable" {
+            let expected = ssh_line.trim();
+            assert_eq!(job["progress"]["self_stop"], expected, "{name}: {job}");
+            assert_eq!(st["open_plans"][0]["self_stop"], expected, "{name}: {st}");
             assert!(
                 job["warnings"].as_array().is_some_and(|w| w
                     .iter()
@@ -906,7 +919,39 @@ async fn self_stop_armed_and_unavailable_lines_reach_offrig_job_and_status() {
                     .is_some_and(|s| s.starts_with("WARNING, on-pod self-stop is unavailable:")),
                 "{name}: {st}"
             );
+        } else if expect_unavailable == "unknown" {
+            assert!(
+                job["progress"]["self_stop"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("self-stop status unknown")),
+                "{name}: {job}"
+            );
+            assert!(
+                job["warnings"]
+                    .as_array()
+                    .is_some_and(|w| w.iter().any(|v| v
+                        .as_str()
+                        .is_some_and(|s| s.contains("self-stop status unknown")))),
+                "{name}: {job}"
+            );
+            assert!(
+                st["self_stop_warnings"]
+                    .as_array()
+                    .is_some_and(|w| w.iter().any(|v| v
+                        .as_str()
+                        .is_some_and(|s| s.contains("self-stop status unknown")))),
+                "{name}: {st}"
+            );
+            assert!(
+                st["next_action"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("self-stop status unknown")),
+                "{name}: {st}"
+            );
         } else {
+            let expected = ssh_line.trim();
+            assert_eq!(job["progress"]["self_stop"], expected, "{name}: {job}");
+            assert_eq!(st["open_plans"][0]["self_stop"], expected, "{name}: {st}");
             assert_eq!(job["warnings"], json!([]), "{name}: {job}");
             assert_eq!(st["self_stop_warnings"], json!([]), "{name}: {st}");
         }
@@ -914,4 +959,740 @@ async fn self_stop_armed_and_unavailable_lines_reach_offrig_job_and_status() {
         client.cancel().await.ok();
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+fn mock_concurrent(
+    handler: impl Fn(&str, &str, usize) -> (u16, String) + Send + Sync + 'static,
+) -> (String, Hits) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let hits: Hits = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&hits);
+    let handler = Arc::new(handler);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().map_while(Result::ok) {
+            let log = Arc::clone(&log);
+            let handler = Arc::clone(&handler);
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    return;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts
+                    .next()
+                    .unwrap_or("")
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let route = format!("{method} {path}");
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let nth = {
+                    let mut l = log.lock().expect("hits");
+                    let n = l.iter().filter(|h| **h == route).count();
+                    l.push(route.clone());
+                    n
+                };
+                let (status, text) = handler(&route, &body, nth);
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = reader.get_mut().write_all(resp.as_bytes());
+            });
+        }
+    });
+    (url, hits)
+}
+
+#[tokio::test]
+async fn shutdown_while_create_in_flight_terminates_arriving_pod_and_keeps_plan_closed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let pods: Pods = Arc::default();
+    let post_entered = Arc::new(AtomicBool::new(false));
+    let allow_post = Arc::new(AtomicBool::new(false));
+    let entered_srv = Arc::clone(&post_entered);
+    let allow_srv = Arc::clone(&allow_post);
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock_concurrent(move |route, body, n| {
+        if route == "POST /pods" {
+            entered_srv.store(true, Ordering::SeqCst);
+            let started = Instant::now();
+            while !allow_srv.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(15) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("shutdown-in-flight-create");
+    let db = dir.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    let sidecar_a = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    let sidecar_b = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+
+    let plan_resp = call(
+        &sidecar_a,
+        "offrig_plan",
+        json!({"profile": "job", "max_hours": 1.0}),
+    )
+    .await;
+    let plan_id = body(&plan_resp)["plan_id"].as_i64().expect("plan_id");
+    let launch = call(&sidecar_a, "offrig_launch", json!({"plan_id": plan_id})).await;
+    let job_id = body(&launch)["job_id"].as_i64().expect("job_id");
+
+    // Wait until A is blocked inside `POST /pods` with unfinished `create_pod`.
+    let w = Instant::now();
+    while !post_entered.load(Ordering::SeqCst) {
+        assert!(
+            w.elapsed() < Duration::from_secs(15),
+            "POST /pods not entered"
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    // Side-car B shuts down the pod-less plan while A is still creating.
+    let shut = body(&call(&sidecar_b, "offrig_shutdown", json!({"plan_id": plan_id})).await);
+    assert_eq!(shut["pending_create_in_flight"], true, "{shut}");
+    let st_mid = body(&call(&sidecar_b, "offrig_status", json!({})).await);
+    assert!(
+        st_mid["closing_launches"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "{st_mid}"
+    );
+    assert!(
+        st_mid["next_action"]
+            .as_str()
+            .is_some_and(|s| s.contains("create_pod was still in flight")),
+        "{st_mid}"
+    );
+
+    // Unblock A's `POST /pods` response; A must see the closed state and terminate `pod1`.
+    allow_post.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&sidecar_a, "offrig_job", json!({"job_id": job_id})).await);
+        if j["state"] == "failed" {
+            assert!(
+                j["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("plan_not_committed") && e.contains("pod1")),
+                "{j}"
+            );
+            break;
+        }
+        assert_ne!(
+            j["state"], "done",
+            "arriving pod must not succeed on closed plan: {j}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+
+    assert_eq!(count(&hits, "POST /pods"), 1);
+    assert_eq!(count(&hits, "DELETE /pods/pod1"), 1);
+    assert!(pods.lock().expect("pods").is_empty());
+    let s = Store::open(&db).expect("reopen");
+    let p = s.plan(plan_id).expect("r").expect("p");
+    assert_eq!(p.state, "closed");
+    assert_eq!(p.pod_id, None, "no pod may ever attach to a closed plan");
+    assert!(
+        s.plans_with_unfinished_create_after_close()
+            .expect("c")
+            .is_empty()
+    );
+    drop(s);
+
+    sidecar_b.cancel().await.ok();
+    sidecar_a.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn shutdown_during_capacity_wait_stops_poll_before_creating_pod() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let pods: Pods = Arc::default();
+    let capacity_open = Arc::new(AtomicBool::new(true));
+    let cap_srv = Arc::clone(&capacity_open);
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock(move |route, body, _| {
+        if route == "GET /catalog/gpus" && !cap_srv.load(Ordering::SeqCst) {
+            let ids = Config::default()
+                .profile("job")
+                .expect("job")
+                .gpu_type_ids
+                .clone();
+            let types: Vec<Value> = ids
+                .iter()
+                .map(|id| {
+                    json!({
+                        "id": id, "name": id, "memory": 80, "secure": true,
+                        "price": {"secure": 0.50}, "maxCount": {"secure": 0}, "availability": "NONE"
+                    })
+                })
+                .collect();
+            return (200, json!({"gpus": types}).to_string());
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, 0)
+    });
+    let dir = temp("shutdown-capacity-poll");
+    let db = dir.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    let sidecar_a = connect_mcp_with_env(
+        &dir,
+        &url,
+        Some("test-key"),
+        Some(&bin),
+        Some(&fake),
+        Some("100"),
+    )
+    .await;
+    let sidecar_b = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+
+    let plan_resp = call(
+        &sidecar_a,
+        "offrig_plan",
+        json!({"profile": "job", "max_hours": 1.0, "wait_minutes": 5}),
+    )
+    .await;
+    assert_eq!(plan_resp.is_error, Some(false), "{:?}", body(&plan_resp));
+    let plan_id = body(&plan_resp)["plan_id"].as_i64().expect("plan_id");
+    capacity_open.store(false, Ordering::SeqCst);
+    let launch = call(&sidecar_a, "offrig_launch", json!({"plan_id": plan_id})).await;
+    let job_id = body(&launch)["job_id"].as_i64().expect("job_id");
+
+    let wait_started = Instant::now();
+    loop {
+        let j = body(&call(&sidecar_a, "offrig_job", json!({"job_id": job_id})).await);
+        if j["progress"]["capacity_wait"]["checks"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+            && Store::open(&db)
+                .expect("r")
+                .unfinished_create_pod(plan_id)
+                .expect("j")
+                .is_some()
+        {
+            break;
+        }
+        assert!(wait_started.elapsed() < Duration::from_secs(15), "{j}");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+
+    // Side-car B closes the plan while A is waiting.
+    let shut = call(&sidecar_b, "offrig_shutdown", json!({"plan_id": plan_id})).await;
+    assert_eq!(shut.is_error, Some(false), "{:?}", body(&shut));
+
+    // Even if market capacity opens right after shutdown, A must stop before calling POST /pods.
+    capacity_open.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&sidecar_a, "offrig_job", json!({"job_id": job_id})).await);
+        if j["state"] == "cancelled" {
+            break;
+        }
+        assert_ne!(
+            j["state"], "done",
+            "closed wait must never create a pod: {j}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(15), "{j}");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+
+    assert_eq!(count(&hits, "POST /pods"), 0, "must stop before creating");
+    assert!(pods.lock().expect("pods").is_empty());
+    let s = Store::open(&db).expect("reopen");
+    assert_eq!(s.plan(plan_id).expect("r").expect("p").pod_id, None);
+    assert!(s.unfinished_create_pod(plan_id).expect("r").is_none());
+    drop(s);
+
+    sidecar_b.cancel().await.ok();
+    sidecar_a.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn two_sidecars_launching_same_planned_plan_at_once_create_one_pod() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let pods: Pods = Arc::default();
+    let list_calls = Arc::new(AtomicUsize::new(0));
+    let calls_srv = Arc::clone(&list_calls);
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock_concurrent(move |route, body, n| {
+        if route == "GET /pods" {
+            let seq = calls_srv.fetch_add(1, Ordering::SeqCst);
+            if seq < 2 {
+                let waited = Instant::now();
+                while calls_srv.load(Ordering::SeqCst) < 2
+                    && waited.elapsed() < Duration::from_secs(10)
+                {
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+            }
+        }
+        if route == "POST /pods" {
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("planned-race");
+    let db = dir.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    let sidecar_a = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    let sidecar_b = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+
+    let plan_resp = call(
+        &sidecar_a,
+        "offrig_plan",
+        json!({"profile": "job", "max_hours": 1.0}),
+    )
+    .await;
+    let plan_id = body(&plan_resp)["plan_id"].as_i64().expect("plan_id");
+
+    // Launch both side-cars simultaneously against the same `planned` plan.
+    let (res_a, res_b) = tokio::join!(
+        call(&sidecar_a, "offrig_launch", json!({"plan_id": plan_id})),
+        call(&sidecar_b, "offrig_launch", json!({"plan_id": plan_id})),
+    );
+    let (winner, loser) = if res_a.is_error == Some(false) {
+        (body(&res_a), body(&res_b))
+    } else {
+        (body(&res_b), body(&res_a))
+    };
+    assert_ne!(
+        res_a.is_error, res_b.is_error,
+        "exactly one launch must succeed and the other refuse: a={res_a:?} b={res_b:?}"
+    );
+    assert_eq!(loser["code"], "refused", "{loser}");
+    let job_id = winner["job_id"].as_i64().expect("winner job_id");
+
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&sidecar_a, "offrig_job", json!({"job_id": job_id})).await);
+        if j["state"] == "done" {
+            break;
+        }
+        assert_eq!(j["state"], "running", "{j}");
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+
+    assert_eq!(count(&hits, "POST /pods"), 1);
+    assert_eq!(pods.lock().expect("pods").len(), 1);
+
+    sidecar_b.cancel().await.ok();
+    sidecar_a.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn duplicate_delete_retries_and_warns_until_watchdog_sweep_terminates_it() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Part A: first 2 DELETE attempts return 500, 3rd attempt succeeds (204).
+    let pods: Pods = Arc::default();
+    let fail_budget = Arc::new(AtomicUsize::new(2));
+    let fail_srv = Arc::clone(&fail_budget);
+    let dir = temp("dup-retry-sweep");
+    let db = dir.join(".offrig").join("offrig.db");
+    let hook_plan = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let plan_ref = Arc::clone(&hook_plan);
+    let db_hook = db.clone();
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock(move |route, body, n| {
+        if route == "POST /pods" {
+            let pid = plan_ref.load(Ordering::SeqCst);
+            if pid > 0 {
+                let s = Store::open(&db_hook).expect("hook db");
+                let _ = s.attach_pod(pid, "pod-winner");
+            }
+        }
+        if route.starts_with("DELETE /pods/") && fail_srv.load(Ordering::SeqCst) > 0 {
+            fail_srv.fetch_sub(1, Ordering::SeqCst);
+            return (500, r#"{"error":"transient delete failure"}"#.into());
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    let client = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+
+    let plan1 = body(
+        &call(
+            &client,
+            "offrig_plan",
+            json!({"profile": "job", "max_hours": 1.0}),
+        )
+        .await,
+    )["plan_id"]
+        .as_i64()
+        .expect("plan1");
+    hook_plan.store(plan1, Ordering::SeqCst);
+    let job1 = body(&call(&client, "offrig_launch", json!({"plan_id": plan1})).await)["job_id"]
+        .as_i64()
+        .expect("job1");
+
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job1})).await);
+        if j["state"] == "failed" {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(count(&hits, "DELETE /pods/pod1"), 3);
+    assert!(pods.lock().expect("pods").is_empty());
+
+    // Close plan1 before Part B.
+    hook_plan.store(0, Ordering::SeqCst);
+    let _ = Store::open(&db).expect("s").close_plan(plan1, 0.0);
+
+    // Part B: fail all 4 DELETE attempts so status surfaces loud warning and watchdog sweep cleans up.
+    fail_budget.store(4, Ordering::SeqCst);
+    let plan2 = body(
+        &call(
+            &client,
+            "offrig_plan",
+            json!({"profile": "job", "max_hours": 0.0005}),
+        )
+        .await,
+    )["plan_id"]
+        .as_i64()
+        .expect("plan2");
+    hook_plan.store(plan2, Ordering::SeqCst);
+    let job2 = body(&call(&client, "offrig_launch", json!({"plan_id": plan2})).await)["job_id"]
+        .as_i64()
+        .expect("job2");
+
+    let started2 = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job2})).await);
+        if j["state"] == "failed" {
+            break;
+        }
+        assert!(started2.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(count(&hits, "DELETE /pods/pod1"), 7);
+    assert_eq!(pods.lock().expect("pods").len(), 1);
+
+    let st_warn = body(&call(&client, "offrig_status", json!({})).await);
+    assert!(
+        st_warn["unresolved_duplicate_pods"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|d| d["pod_id"] == "pod1")),
+        "{st_warn}"
+    );
+    assert!(
+        st_warn["next_action"]
+            .as_str()
+            .is_some_and(|s| s.contains("WARNING, duplicate pod delete failed")),
+        "{st_warn}"
+    );
+
+    // Watchdog runs with DELETE succeeding now; sweep terminates pod1 and clears status warning.
+    let status = spawn_watchdog_and_wait(&dir, plan2, &url, Some("test-key"));
+    assert!(status.success(), "{status}");
+    assert!(pods.lock().expect("pods").is_empty());
+    let st_clean = body(&call(&client, "offrig_status", json!({})).await);
+    assert_eq!(
+        st_clean["unresolved_duplicate_pods"],
+        json!([]),
+        "{st_clean}"
+    );
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn transient_non_conflict_attach_error_retries_without_deleting_legitimate_pod() {
+    let pods: Pods = Arc::default();
+    let dir = temp("attach-retry");
+    let db = dir.join(".offrig").join("offrig.db");
+    let db_hook = db.clone();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let armed_srv = Arc::clone(&armed);
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock(move |route, body, n| {
+        if route == "POST /pods" && !armed_srv.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let s = Store::open(&db_hook).expect("open db");
+            // Simulate a transient SQLite failure (non-conflict) during first attach attempt, then lift it.
+            drop(s);
+            let conn = rusqlite::Connection::open(&db_hook).expect("sqlite");
+            conn.execute_batch(
+                "CREATE TRIGGER temp_attach_fail BEFORE UPDATE OF pod_id ON plans
+                 BEGIN SELECT RAISE(ABORT, 'simulated sqlite busy'); END;",
+            )
+            .expect("trigger");
+            let db_clear = db_hook.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(45));
+                if let Ok(c) = rusqlite::Connection::open(&db_clear) {
+                    let _ = c.execute_batch("DROP TRIGGER IF EXISTS temp_attach_fail;");
+                }
+            });
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    let client = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    let plan_id = body(
+        &call(
+            &client,
+            "offrig_plan",
+            json!({"profile": "job", "max_hours": 1.0}),
+        )
+        .await,
+    )["plan_id"]
+        .as_i64()
+        .expect("plan_id");
+    let job_id = body(&call(&client, "offrig_launch", json!({"plan_id": plan_id})).await)["job_id"]
+        .as_i64()
+        .expect("job_id");
+
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job_id})).await);
+        if j["state"] == "done" {
+            assert_eq!(j["progress"]["pod_id"], "pod1");
+            break;
+        }
+        assert_eq!(j["state"], "running", "{j}");
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+
+    assert_eq!(
+        count(&hits, "DELETE /pods/pod1"),
+        0,
+        "transient non-conflict attach error must retry and never delete the legitimate pod"
+    );
+    let s = Store::open(&db).expect("reopen");
+    assert_eq!(
+        s.plan(plan_id).expect("r").expect("p").pod_id.as_deref(),
+        Some("pod1")
+    );
+    drop(s);
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn same_sidecar_relaunch_after_failed_launch_succeeds() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let pods: Pods = Arc::default();
+    let fail_once = Arc::new(AtomicBool::new(true));
+    let fail_srv = Arc::clone(&fail_once);
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock(move |route, body, n| {
+        if route == "POST /pods" && fail_srv.swap(false, Ordering::SeqCst) {
+            return (500, r#"{"error":"simulated post failure"}"#.into());
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("same-sidecar-relaunch");
+    let db = dir.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    let client = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    let plan_id = body(
+        &call(
+            &client,
+            "offrig_plan",
+            json!({"profile": "job", "max_hours": 1.0}),
+        )
+        .await,
+    )["plan_id"]
+        .as_i64()
+        .expect("plan_id");
+
+    // 1st launch fails on 500 -> job marked failed.
+    let job1 = body(&call(&client, "offrig_launch", json!({"plan_id": plan_id})).await)["job_id"]
+        .as_i64()
+        .expect("job1");
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job1})).await);
+        if j["state"] == "failed" {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+
+    // Immediate relaunch on the same live side-car must succeed cleanly.
+    let l2 = call(&client, "offrig_launch", json!({"plan_id": plan_id})).await;
+    assert_eq!(l2.is_error, Some(false), "{:?}", body(&l2));
+    let job2 = body(&l2)["job_id"].as_i64().expect("job2");
+    let started2 = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job2})).await);
+        if j["state"] == "done" {
+            assert_eq!(j["progress"]["pod_id"], "pod1");
+            break;
+        }
+        assert_eq!(j["state"], "running", "{j}");
+        assert!(started2.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(count(&hits, "POST /pods"), 2);
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn heartbeat_staleness_and_pid_start_time_mismatch_govern_relaunch() {
+    let pods: Pods = Arc::default();
+    let (url, hits): (_, Hits) = mock(stateful_runpod(Arc::clone(&pods)));
+    let dir = temp("hb-and-start-time");
+    let cfg_dir = dir.join("cfg");
+    let lane = Registry::at(&cfg_dir)
+        .lane_for_project(&dir, &Config::default())
+        .expect("lane");
+    let tag = lane.tag.clone().expect("tag");
+    let db = dir.join(".offrig").join("offrig.db");
+    let (bin, fake) = install_fake_tools(&dir);
+
+    #[cfg(windows)]
+    let mut child = std::process::Command::new("cmd")
+        .args(["/c", "exit", "0"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn");
+    #[cfg(unix)]
+    let mut child = std::process::Command::new("true")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let dead_pid = child.id();
+    let _ = child.wait();
+
+    let (plan_id, job_id, jc) = {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan");
+        s.set_plan_lane(p.id, &tag).expect("lane");
+        s.commit_plan(p.id).expect("commit");
+        let now = offrig_core::cost::now_unix();
+        // Dead pid, but heartbeat is still fresh -> must refuse relaunch.
+        let j = s
+            .create_launch_job(p.id, dead_pid, None, now - 5)
+            .expect("job");
+        let jc = s
+            .journal(
+                "create_pod",
+                Some(p.id),
+                &json!({ "job_id": j, "pid": dead_pid }),
+            )
+            .expect("journal");
+        (p.id, j, jc)
+    };
+
+    let client = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    let refused = call(&client, "offrig_launch", json!({"plan_id": plan_id})).await;
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "fresh heartbeat with dead pid must still refuse relaunch: {:?}",
+        body(&refused)
+    );
+    assert_eq!(count(&hits, "POST /pods"), 0);
+
+    // Live PID (our own) with mismatched start time ("0") + stale heartbeat -> treated as dead -> relaunch allowed.
+    {
+        let s = Store::open(&db).expect("reopen");
+        let now = offrig_core::cost::now_unix();
+        let stale = now - offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS - 10;
+        s.update_job(
+            job_id,
+            "running",
+            &json!({
+                "pid": std::process::id(),
+                "pid_started_at": "0",
+                "heartbeat_at": stale
+            }),
+            None,
+        )
+        .expect("update stale+mismatched start");
+    }
+
+    let ok_launch = call(&client, "offrig_launch", json!({"plan_id": plan_id})).await;
+    assert_eq!(ok_launch.is_error, Some(false), "{:?}", body(&ok_launch));
+    let job2 = body(&ok_launch)["job_id"].as_i64().expect("job2");
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job2})).await);
+        if j["state"] == "done" {
+            assert_eq!(j["progress"]["pod_id"], "pod1");
+            break;
+        }
+        assert_eq!(j["state"], "running", "{j}");
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(count(&hits, "POST /pods"), 1);
+    let _ = jc;
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
 }

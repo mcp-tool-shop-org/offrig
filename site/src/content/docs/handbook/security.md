@@ -35,11 +35,16 @@ sidebar:
   anything is rented, a launch takes only a plan id, and a watchdog ends every side-car pod
   at its deadline (including pods created just before a crash, matched via the journal,
   `OFFRIG_PLAN` in the plan's lane, or lane pod name when `env` is omitted for all pods and
-  never on the plain lane; relaunches refuse concurrent live `create_pod` entries and
-  terminate any duplicate pod rather than overwriting `pod_id`). Every planned pod also
-  checks prerequisites during bootstrap, writes `offrig self-stop: armed fire_at=<n>` or
+  never on the plain lane; relaunches claim the plan atomically in one transaction, refuse
+  concurrent live `create_pod` entries using PID plus OS start time, stop capacity polling on
+  cross-process shutdown, refuse attaching to non-committed plans, retry duplicate-pod
+  deletes with backoff while watchdog sweeps any remainder, and terminate any duplicate pod
+  on conflict while retrying transient attach errors). If `offrig_shutdown` closes a pod-less
+  plan while `create_pod` is still in flight, the watchdog stays running until that create
+  resolves or is proven dead and terminates any arriving pod without attaching. Every planned
+  pod also checks prerequisites during bootstrap, writes `offrig self-stop: armed fire_at=<n>` or
   `offrig self-stop: UNAVAILABLE (<missing>)` (surfaced over SSH into `offrig_job` and
-  `offrig_status`), and starts the on-pod deadline timer (`deadline + 120s`) using RunPod's
+  `offrig_status`, warning on both `UNAVAILABLE` and `self-stop status unknown`), and starts the on-pod deadline timer (`deadline + 120s`) using RunPod's
   preinstalled `runpodctl` and pod-scoped credentials (never the host's `RUNPOD_API_KEY`). If `RUNPOD_API_KEY` is missing or the
   watchdog cannot start, `offrig_launch` refuses to rent a paid pod and any unguarded
   plan is flagged in `offrig_status` and the desktop app. A recipe that hangs after startup, or that cannot answer one
