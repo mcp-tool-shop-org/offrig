@@ -8,30 +8,40 @@ All notable changes to offrig are documented here. The format is based on
 
 - **Orphan-pod recovery and on-pod deadline backstop:**
   - Before closing a pod-less committed plan (and on each step while `pod_id` is unset),
-    the watchdog now checks the plan's journal (`created pod <id>`), `OFFRIG_PLAN` marker
-    (strictly within the plan's own lane via `owns_pod`), and (when RunPod's listing omitted
-    `env` for every pod, never on the plain lane) exact lane pod name so a pod created
-    just before a host crash is attached and terminated at the plan's deadline (`Unknown`
-    lookups still never act).
+    the watchdog checks the plan's journal (`created pod <id>`), `OFFRIG_PLAN` marker
+    (strictly within the plan's own lane via `owns_pod`), and on open plans when RunPod's
+    listing omits `env` for every pod (never on the plain lane) exact lane pod name; after
+    a plan is closed, `unresolved_create_after_close` matches strictly by the plan's
+    journaled pod ID or `OFFRIG_PLAN` marker (never by name alone), and `lane_busy`
+    refuses new launches in a lane while any closed plan in that lane still has an
+    unresolved `create_pod`.
+  - When a closed plan's launching process is proven dead without a matched pod, the
+    watchdog never writes `"no pod created"`: it inspects live owned lane pods created at
+    or after `committed_at` not held by any open plan, terminates any carrying this plan's
+    `OFFRIG_PLAN` or journaled pod ID, and otherwise records
+    `"abandoned: ... whether a pod exists is unknown"` while keeping a loud
+    `unknown_create_pods` warning visible in `offrig_status` until the candidate pods are
+    shut down.
   - Non-committed plans can no longer adopt late pods: `Store::attach_pod` requires
     `state = 'committed'` (journaling `attach_pod_conflict(plan_not_committed)` on closed,
-    cancelled, or planned plans), `create_when_free_while` re-checks committed state on every
-    capacity poll so cross-process `offrig_shutdown` stops before `POST /pods`,
-    `offrig_shutdown` on a pod-less plan warns when an in-flight `create_pod` has no outcome
-    (keeping the watchdog running and `offrig_status` preserving that open `create_pod` row)
-    until the arriving pod is terminated without attaching or the launcher is proven dead.
+    cancelled, or planned plans), `claim_or_terminate_with` still falls through to
+    `terminate_unclaimed_pod` even if re-reading the plan fails after a refusal,
+    `create_when_free_while` re-checks committed state on every capacity poll so
+    cross-process `offrig_shutdown` stops before `POST /pods`, and `offrig_shutdown`
+    always warns (`"a pod may exist"`) and spawns or keeps the plan watchdog whenever
+    `unfinished_create_pod` is `Some` (even if the launcher is already proven dead).
   - Concurrent side-cars in the same project can no longer create a second pod for one plan:
     `Store::begin_launch_with_account` checks state, commits, and creates the launch job
-    atomically in one `BEGIN IMMEDIATE` transaction so simultaneous `planned` launches cannot
-    skip the relaunch guard; relaunches refuse while `create_pod` has no outcome unless the
-    launching process is dead (comparing OS process start time beside `pid` via
-    `pid_alive_at` and RFC-4180 CSV `tasklist` parsing) and its heartbeat is stale beyond
-    `LAUNCH_HEARTBEAT_STALE_SECS`; an in-process `LaunchJobGuard` drop guard marks early-exit
-    and panicked launches `failed` immediately.
-  - Duplicate-pod elimination retries failed deletes with exponential backoff, surfaces
-    unresolved duplicate deletes in `offrig_status` so the watchdog sweep can finish
-    terminating them, and retries transient non-conflict `attach_pod` errors instead of
-    deleting legitimate pods.
+    atomically in one `BEGIN IMMEDIATE` transaction (running OS liveness probes into a
+    `LivenessSnapshot` before `BEGIN IMMEDIATE` so process spawns never hold the SQLite
+    write lock); `LaunchJobGuard` drop on an unsettled panic/abort leaves `create_pod`
+    unresolved and marks the job `failed` with `step = "failed_create_unknown"`, blocking
+    relaunch until a `list_pods` check confirms no pod carries `OFFRIG_PLAN` for the plan
+    (or adopting a live matching pod through the normal claim path).
+  - Duplicate-pod elimination retries failed deletes with exponential backoff, skips any
+    pod ID held by an open plan during `sweep_unresolved_duplicates`, surfaces unresolved
+    duplicate deletes in `offrig_status` so the watchdog sweep can finish terminating them,
+    and retries transient non-conflict `attach_pod` errors instead of deleting legitimate pods.
   - `offrig_launch` probes the lane before creating a pod and reuses only `RUNNING`,
     `PROVISIONING`, or `STARTING` pods belonging to the plan; `EXITED` or stopped pods are
     terminated and journalled instead of reused.

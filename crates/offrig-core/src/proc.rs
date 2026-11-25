@@ -127,6 +127,23 @@ pub fn process_start_time(pid: u32) -> ProcessProbe {
     if pid == 0 {
         return ProcessProbe::Dead;
     }
+    #[cfg(debug_assertions)]
+    if pid != std::process::id()
+        && let Some(ms) = std::env::var("OFFRIG_TEST_PROBE_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    {
+        if let Ok(entered) = std::env::var("OFFRIG_TEST_PROBE_ENTERED_FILE")
+            && let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(entered)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{pid}");
+        }
+        std::thread::sleep(Duration::from_millis(ms));
+    }
     #[cfg(target_os = "linux")]
     {
         let proc_dir = format!("/proc/{pid}");
@@ -269,21 +286,84 @@ pub fn pid_alive(pid: u32) -> bool {
     pid_alive_at(pid, None)
 }
 
+/// Pre-probed process liveness cache taken outside any SQLite write lock so
+/// launch transactions never spawn `tasklist` or PowerShell while holding `BEGIN IMMEDIATE`.
+#[derive(Debug, Clone, Default)]
+pub struct LivenessSnapshot {
+    probed: std::collections::BTreeMap<(u32, Option<String>), bool>,
+}
+
+impl LivenessSnapshot {
+    /// Probe every unique `(pid, recorded_start)` pair upfront (with no DB locks held).
+    pub fn probe(targets: &[(u32, Option<String>)]) -> Self {
+        let mut probed = std::collections::BTreeMap::new();
+        for (pid, start) in targets {
+            let key = (*pid, start.clone());
+            probed
+                .entry(key)
+                .or_insert_with(|| pid_alive_at(*pid, start.as_deref()));
+        }
+        Self { probed }
+    }
+
+    /// Look up whether `(pid, recorded_start)` was already probed, handling `pid == 0`
+    /// and the current process in-memory without spawning any subprocesses.
+    pub fn is_alive(&self, pid: u32, recorded_start: Option<&str>) -> Option<bool> {
+        if pid == 0 {
+            return Some(false);
+        }
+        if pid == std::process::id() {
+            return Some(match (recorded_start, own_start_time().as_deref()) {
+                (Some(rec), Some(cur)) => rec == cur,
+                _ => true,
+            });
+        }
+        self.probed
+            .get(&(pid, recorded_start.map(str::to_string)))
+            .copied()
+    }
+}
+
+/// Extract `(pid, pid_started_at)` recorded in a launch job's progress JSON.
+pub fn job_pid_target(job: &crate::store::Job) -> Option<(u32, Option<String>)> {
+    let pid = job.progress["pid"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())?;
+    let started_at = job.progress["pid_started_at"].as_str().map(str::to_string);
+    Some((pid, started_at))
+}
+
+/// Check launch job liveness against `snap` without spawning OS processes. Returns
+/// `Err((pid, pid_started_at))` when heartbeat is stale and the PID was not in `snap`,
+/// so callers can drop any SQLite transaction, probe outside the lock, and retry.
+pub fn launch_job_proven_dead_with_snapshot(
+    job: &crate::store::Job,
+    now: i64,
+    snap: &LivenessSnapshot,
+) -> std::result::Result<bool, (u32, Option<String>)> {
+    let Some((pid, started_at)) = job_pid_target(job) else {
+        return Ok(false);
+    };
+    let Some(hb) = job.progress["heartbeat_at"].as_i64() else {
+        return Ok(false);
+    };
+    if now.saturating_sub(hb) <= LAUNCH_HEARTBEAT_STALE_SECS {
+        return Ok(false);
+    }
+    match snap.is_alive(pid, started_at.as_deref()) {
+        Some(alive) => Ok(!alive),
+        None => Err((pid, started_at)),
+    }
+}
+
 /// True only when `job` recorded a launching `pid` + `heartbeat_at` AND that process
 /// is no longer alive (including PID reuse with a different start time) AND its
 /// heartbeat is older than [`LAUNCH_HEARTBEAT_STALE_SECS`].
 pub fn launch_job_proven_dead(job: &crate::store::Job, now: i64) -> bool {
-    let Some(pid) = job.progress["pid"]
-        .as_u64()
-        .and_then(|v| u32::try_from(v).ok())
-    else {
-        return false;
-    };
-    let Some(hb) = job.progress["heartbeat_at"].as_i64() else {
-        return false;
-    };
-    let started_at = job.progress["pid_started_at"].as_str();
-    !pid_alive_at(pid, started_at) && now.saturating_sub(hb) > LAUNCH_HEARTBEAT_STALE_SECS
+    match launch_job_proven_dead_with_snapshot(job, now, &LivenessSnapshot::default()) {
+        Ok(dead) => dead,
+        Err((pid, started_at)) => !pid_alive_at(pid, started_at.as_deref()),
+    }
 }
 
 #[cfg(test)]

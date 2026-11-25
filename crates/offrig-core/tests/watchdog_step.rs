@@ -540,6 +540,58 @@ fn plain_lane_plan_and_env_present_listing_never_adopt_by_name_alone() {
 }
 
 #[test]
+fn duplicate_sweep_skips_pod_held_by_another_open_plan() {
+    let store = Store::open_in_memory().expect("store");
+    let closed_plan = committed(&store, 1.0, None);
+    store.set_plan_lane(closed_plan.id, "alpha").expect("lane");
+    let jd = store
+        .journal(
+            "terminate_duplicate_pod",
+            Some(closed_plan.id),
+            &serde_json::json!({ "pod": "p-shared", "reason": "duplicate" }),
+        )
+        .expect("dup journal");
+    store
+        .journal_outcome(jd, "delete_failed: simulated 500")
+        .expect("fail outcome");
+    store.close_plan(closed_plan.id, 0.0).expect("close");
+
+    let other_open = committed(&store, 1.0, None);
+    store.set_plan_lane(other_open.id, "beta").expect("lane");
+    store
+        .attach_pod(other_open.id, "p-shared")
+        .expect("attach shared pod to other open plan");
+
+    let list_json = serde_json::Value::Array(vec![serde_json::json!({
+        "id": "p-shared",
+        "name": "offrig-alpha-frontier",
+        "status": "RUNNING",
+        "cost": 3.0
+    })])
+    .to_string();
+    let m = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => (200, list_json.clone()),
+        _ => (404, "{}".to_string()),
+    });
+
+    assert_eq!(
+        watchdog::step(&store, &rp(&m), closed_plan.id).expect("step"),
+        Verdict::Exit
+    );
+    assert_eq!(
+        m.count("DELETE /pods/p-shared"),
+        0,
+        "sweep must never delete a pod held by another open plan"
+    );
+    assert!(
+        store
+            .unresolved_duplicate_pods_for_plan(closed_plan.id)
+            .expect("dups")
+            .is_empty()
+    );
+}
+
+#[test]
 fn an_unknown_plan_ends_the_watchdog() {
     let m = serve(|_, _| (404, "{}".to_string()));
     let store = Store::open_in_memory().expect("store");

@@ -2262,6 +2262,22 @@ impl Store {
         Ok(())
     }
 
+    /// Read all `(key, value)` pairs whose key begins with `prefix`.
+    pub fn settings_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT key, value FROM settings WHERE key LIKE ?1 ORDER BY key")
+            .map_err(db("preparing prefixed settings read"))?;
+        let rows = st
+            .query_map(params![format!("{prefix}%")], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(db("reading prefixed settings"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading prefixed settings"))?;
+        Ok(rows)
+    }
+
     // ---- lanes (which project lane a plan's pod lives in)
 
     /// The lane a plan recorded (`offrig_plan` or the launch writes it). `None` is the
@@ -2885,6 +2901,45 @@ impl Store {
             .map_err(db("reading closing creates"))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(db("reading closing creates"))
+    }
+
+    /// Non-committed plans whose latest `create_pod` journal outcome is an abandoned
+    /// unknown-state record (`abandoned:...unknown...`), meaning a pod created near the
+    /// crash may still exist unmarked on RunPod until shut down.
+    pub fn closed_plans_with_unknown_create(&self) -> Result<Vec<(Plan, i64, String)>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT j.plan_id, j.id, j.outcome FROM journal j
+                 JOIN plans p ON p.id = j.plan_id
+                 WHERE j.action = 'create_pod'
+                   AND p.state != 'committed'
+                   AND j.outcome LIKE 'abandoned:%unknown%'
+                   AND j.id = (
+                       SELECT MAX(j2.id) FROM journal j2
+                       WHERE j2.plan_id = j.plan_id AND j2.action = 'create_pod'
+                   )
+                 ORDER BY j.id",
+            )
+            .map_err(db("preparing unknown creates read"))?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(db("reading unknown creates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading unknown creates"))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (pid, jid, outcome) in rows {
+            if let Some(plan) = self.plan(pid)? {
+                out.push((plan, jid, outcome));
+            }
+        }
+        Ok(out)
     }
 
     // ---- handoffs

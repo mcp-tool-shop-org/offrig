@@ -124,14 +124,19 @@ fn spawn_watchdog_and_wait(
     }
 }
 
-async fn connect_mcp_with_env(
+async fn connect_mcp_extra(
     dir: &std::path::Path,
     url: &str,
     api_key: Option<&str>,
     bin: Option<&std::path::Path>,
     fake: Option<&std::path::Path>,
-    poll_ms: Option<&str>,
+    no_watchdog: bool,
+    extra_env: &[(&str, String)],
 ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let extra = extra_env
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect::<Vec<_>>();
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_offrig-mcp")).configure(|c| {
         c.kill_on_drop(true);
         c.arg("--project").arg(dir);
@@ -142,21 +147,38 @@ async fn connect_mcp_with_env(
         c.env("OFFRIG_CONFIG_DIR", dir.join("cfg"));
         c.env("OFFRIG_TEST_HOME", dir.join("home"));
         c.env("OFFRIG_TEST_RUNPOD_BASE", url);
-        c.env("OFFRIG_TEST_NO_WATCHDOG", "1");
-        c.env("OFFRIG_TEST_DELETE_BACKOFF_MS", "10");
-        if let Some(ms) = poll_ms {
-            c.env("OFFRIG_TEST_CAPACITY_POLL_MS", ms);
+        if no_watchdog {
+            c.env("OFFRIG_TEST_NO_WATCHDOG", "1");
         }
+        c.env("OFFRIG_TEST_DELETE_BACKOFF_MS", "10");
         if let Some(f) = fake {
             c.env("FAKE_SSH_DIR", f);
         }
         if let Some(b) = bin {
             c.env("PATH", path_with(b));
         }
+        for (k, v) in &extra {
+            c.env(k, v);
+        }
     });
     ().serve(TokioChildProcess::new(cmd).expect("spawn"))
         .await
         .expect("connect")
+}
+
+async fn connect_mcp_with_env(
+    dir: &std::path::Path,
+    url: &str,
+    api_key: Option<&str>,
+    bin: Option<&std::path::Path>,
+    fake: Option<&std::path::Path>,
+    poll_ms: Option<&str>,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let extra: Vec<(&str, String)> = poll_ms
+        .into_iter()
+        .map(|ms| ("OFFRIG_TEST_CAPACITY_POLL_MS", ms.to_string()))
+        .collect();
+    connect_mcp_extra(dir, url, api_key, bin, fake, true, &extra).await
 }
 
 async fn connect_mcp(
@@ -1694,5 +1716,651 @@ async fn heartbeat_staleness_and_pid_start_time_mismatch_govern_relaunch() {
     let _ = jc;
 
     client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn closed_plan_unresolved_create_blocks_lane_busy_and_watchdog_never_deletes_unmarked_pod_by_name()
+ {
+    let pods: Pods = Arc::default();
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock(move |route, body, n| {
+        if route == "GET /pods" {
+            // Strip `env` from every pod to exercise `listing_omitted_env == true`.
+            let list: Vec<Value> = pods_srv
+                .lock()
+                .expect("pods")
+                .iter()
+                .map(|p| {
+                    let mut c = p.clone();
+                    if let Some(obj) = c.as_object_mut() {
+                        obj.remove("env");
+                    }
+                    c
+                })
+                .collect();
+            return (200, Value::Array(list).to_string());
+        }
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("closed-unmarked-name");
+    let db = dir.join(".offrig").join("offrig.db");
+    let cfg_dir = dir.join("cfg");
+    let lane = Registry::at(&cfg_dir)
+        .lane_for_project(&dir, &Config::default())
+        .expect("lane");
+    let tag = lane.tag.clone().expect("tag");
+    let (plan_a, plan_b) = {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let a = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan a");
+        s.set_plan_lane(a.id, &tag).expect("lane a");
+        s.commit_plan(a.id).expect("commit a");
+        let now = offrig_core::cost::now_unix();
+        let ja = s
+            .create_launch_job(
+                a.id,
+                std::process::id(),
+                offrig_core::proc::own_start_time().as_deref(),
+                now,
+            )
+            .expect("job a");
+        s.journal("create_pod", Some(a.id), &json!({ "job_id": ja }))
+            .expect("create_pod a");
+        s.close_plan(a.id, 0.0).expect("close a");
+
+        let b = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan b");
+        s.set_plan_lane(b.id, &tag).expect("lane b");
+        (a.id, b.id)
+    };
+
+    let (bin, fake) = install_fake_tools(&dir);
+    let client = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    // Plan B in the same lane and profile must be refused by `lane_busy` while closed plan A has unresolved create_pod.
+    let res_b = call(&client, "offrig_launch", json!({"plan_id": plan_b})).await;
+    assert_eq!(res_b.is_error, Some(true), "{:?}", body(&res_b));
+    let msg_b = body(&res_b)["error"].as_str().unwrap_or("").to_string();
+    assert!(
+        msg_b.contains(&format!("closed plan {plan_a}")) && msg_b.contains("wait for"),
+        "{msg_b}"
+    );
+
+    // Place a live pod carrying only Plan B's lane pod name (env omitted from GET /pods).
+    let lane_cfg = Config::default().in_lane(&lane).expect("lane cfg");
+    let shared_name = lane_cfg.pod_name(lane_cfg.profile("job").expect("job"));
+    pods.lock().expect("pods").push(json!({
+        "id": "pod-b",
+        "name": shared_name,
+        "status": "RUNNING",
+        "cost": 0.50,
+        "createdAt": offrig_core::cost::iso_utc(offrig_core::cost::now_unix() + 10)
+    }));
+
+    // Closed plan A's watchdog must NOT delete `pod-b` by name alone.
+    let s = Store::open(&db).expect("reopen");
+    let rp = offrig_core::runpod::RunPod::new("test-key", &url, &format!("{url}/graphql"));
+    let v =
+        offrig_core::watchdog::step_with_config(&s, &lane_cfg, &rp, plan_a).expect("watchdog step");
+    assert_eq!(v, offrig_core::watchdog::Verdict::Wait);
+    assert_eq!(count(&hits, "DELETE /pods/pod-b"), 0);
+    assert_eq!(pods.lock().expect("pods").len(), 1);
+    drop(s);
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dead_launcher_closed_plan_terminates_marked_pod_warns_on_unmarked_and_never_writes_no_pod_created()
+ {
+    let pods: Pods = Arc::default();
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock_concurrent(move |route, body, n| {
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("dead-closed-unknown");
+    let db = dir.join(".offrig").join("offrig.db");
+    let cfg_dir = dir.join("cfg");
+    let lane = Registry::at(&cfg_dir)
+        .lane_for_project(&dir, &Config::default())
+        .expect("lane");
+    let tag = lane.tag.clone().expect("tag");
+    let lane_cfg = Config::default().in_lane(&lane).expect("lane cfg");
+    let pod_name = lane_cfg.pod_name(lane_cfg.profile("job").expect("job"));
+
+    // Part A: dead launcher + closed plan + arriving pod carrying OFFRIG_PLAN -> terminated; never writes "no pod created".
+    let now = offrig_core::cost::now_unix();
+    let stale_hb = now - offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS - 30;
+    let plan1 = {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan1");
+        s.set_plan_lane(p.id, &tag).expect("lane1");
+        s.commit_plan(p.id).expect("commit1");
+        let j = s
+            .create_launch_job(p.id, 999_999, None, stale_hb)
+            .expect("j1");
+        s.journal("create_pod", Some(p.id), &json!({ "job_id": j }))
+            .expect("jc1");
+        s.close_plan(p.id, 0.0).expect("close1");
+        p.id
+    };
+    pods.lock().expect("pods").push(json!({
+        "id": "pod-marked",
+        "name": pod_name,
+        "status": "RUNNING",
+        "cost": 0.50,
+        "createdAt": offrig_core::cost::iso_utc(now),
+        "env": { "OFFRIG_PLAN": plan1.to_string(), "OFFRIG_LANE": tag }
+    }));
+    let st1 = spawn_watchdog_and_wait(&dir, plan1, &url, Some("test-key"));
+    assert!(st1.success(), "watchdog1 exited cleanly");
+    assert_eq!(count(&hits, "DELETE /pods/pod-marked"), 1);
+    assert!(pods.lock().expect("pods").is_empty());
+    {
+        let s = Store::open(&db).expect("reopen1");
+        let journal = s.journal_for_plan(plan1).expect("j1");
+        assert!(
+            !journal
+                .iter()
+                .any(|(_, _, o)| o.as_deref().is_some_and(|t| t.contains("no pod created"))),
+            "{journal:?}"
+        );
+    }
+
+    // Part B: dead launcher + closed plan + unmarked pod arriving -> NOT deleted; unknown outcome & loud status warning until shut.
+    let plan2 = {
+        let s = Store::open(&db).expect("store2");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan2");
+        s.set_plan_lane(p.id, &tag).expect("lane2");
+        s.commit_plan(p.id).expect("commit2");
+        let j = s
+            .create_launch_job(p.id, 999_999, None, stale_hb)
+            .expect("j2");
+        s.journal("create_pod", Some(p.id), &json!({ "job_id": j }))
+            .expect("jc2");
+        s.close_plan(p.id, 0.0).expect("close2");
+        p.id
+    };
+    let now2 = offrig_core::cost::now_unix();
+    pods.lock().expect("pods").push(json!({
+        "id": "pod-unmarked",
+        "name": pod_name,
+        "status": "RUNNING",
+        "cost": 0.50,
+        "createdAt": offrig_core::cost::iso_utc(now2)
+    }));
+    let st2 = spawn_watchdog_and_wait(&dir, plan2, &url, Some("test-key"));
+    assert!(
+        st2.success(),
+        "watchdog2 exited after recording unknown candidates"
+    );
+    assert_eq!(count(&hits, "DELETE /pods/pod-unmarked"), 0);
+    assert_eq!(pods.lock().expect("pods").len(), 1);
+    {
+        let s = Store::open(&db).expect("reopen2");
+        let journal = s.journal_for_plan(plan2).expect("j2");
+        assert!(
+            !journal
+                .iter()
+                .any(|(_, _, o)| o.as_deref().is_some_and(|t| t.contains("no pod created"))),
+            "{journal:?}"
+        );
+        assert!(
+            journal.iter().any(|(a, _, o)| a == "create_pod"
+                && o.as_deref()
+                    .is_some_and(|t| t.contains("whether a pod exists is unknown"))),
+            "{journal:?}"
+        );
+    }
+
+    let (bin, fake) = install_fake_tools(&dir);
+    let client = connect_mcp(&dir, &url, Some("test-key"), Some(&bin), Some(&fake)).await;
+    let st_warn = body(&call(&client, "offrig_status", json!({})).await);
+    assert!(
+        st_warn["unknown_create_pods"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+            && st_warn["unknown_create_pods"]
+                .to_string()
+                .contains("pod-unmarked"),
+        "{st_warn}"
+    );
+    assert!(
+        st_warn["next_action"]
+            .as_str()
+            .is_some_and(|n| n.contains("abandoned create_pod") && n.contains("pod-unmarked")),
+        "{st_warn}"
+    );
+
+    // Once the candidate pod is shut down externally, offrig_status clears the warning.
+    pods.lock().expect("pods").clear();
+    let st_clean = body(&call(&client, "offrig_status", json!({})).await);
+    assert!(
+        st_clean["unknown_create_pods"]
+            .as_array()
+            .is_some_and(|a| a.is_empty()),
+        "{st_clean}"
+    );
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn panic_after_post_marks_failed_create_unknown_blocks_until_searched_and_adopts_existing() {
+    let pods: Pods = Arc::default();
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) =
+        mock(move |route, body, n| stateful_runpod(Arc::clone(&pods_srv))(route, body, n));
+    let dir = temp("panic-after-post");
+    let db = dir.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    std::fs::write(
+        fake.join("rules.json"),
+        json!([
+            {"contains": "nvidia-smi", "stdout": "NVIDIA A100-SXM4-80GB, 13.0\n"},
+            {"contains": "self-stop.status", "stdout": "offrig self-stop: armed fire_at=1900000120\n"}
+        ])
+        .to_string(),
+    )
+    .expect("rules");
+    let panic_file = dir.join("panic_once.flag");
+    std::fs::write(&panic_file, "arm").expect("flag");
+
+    let client = connect_mcp_extra(
+        &dir,
+        &url,
+        Some("test-key"),
+        Some(&bin),
+        Some(&fake),
+        true,
+        &[(
+            "OFFRIG_TEST_PANIC_AFTER_POST_FILE",
+            panic_file.display().to_string(),
+        )],
+    )
+    .await;
+
+    // Plan 1: panics right after POST /pods before create_pod journal_outcome.
+    let plan1 = body(
+        &call(
+            &client,
+            "offrig_plan",
+            json!({"profile": "job", "max_hours": 1.0}),
+        )
+        .await,
+    )["plan_id"]
+        .as_i64()
+        .expect("plan1");
+    let launch1 = body(&call(&client, "offrig_launch", json!({"plan_id": plan1})).await);
+    let job1 = launch1["job_id"].as_i64().expect("job1");
+
+    let started = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job1})).await);
+        if j["state"] == "failed" {
+            assert_eq!(j["progress"]["step"], "failed_create_unknown", "{j}");
+            assert_eq!(j["failure"]["code"], "failed_create_unknown", "{j}");
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(count(&hits, "POST /pods"), 1);
+    assert_eq!(pods.lock().expect("pods").len(), 1);
+
+    // Direct relaunch check must refuse without a list_pods search AND while pod1 carries plan1's OFFRIG_PLAN.
+    {
+        let s = Store::open(&db).expect("reopen");
+        let now = offrig_core::cost::now_unix();
+        assert!(s.unfinished_create_pod(plan1).expect("u").is_some());
+        assert!(
+            offrig_core::watchdog::check_relaunch_allowed(&s, plan1, now, None).is_err(),
+            "must refuse while failed_create_unknown stands with no list_pods search"
+        );
+        let snap_pods: Vec<offrig_core::runpod::Pod> = pods
+            .lock()
+            .expect("pods")
+            .iter()
+            .map(|v| serde_json::from_value(v.clone()).expect("pod"))
+            .collect();
+        assert!(
+            offrig_core::watchdog::check_relaunch_allowed(&s, plan1, now, Some(&snap_pods))
+                .is_err(),
+            "must refuse creating a second pod while pod with OFFRIG_PLAN exists"
+        );
+    }
+
+    // Normal relaunch via MCP searches list_pods and adopts existing `pod1` instead of creating a second pod.
+    let relaunch1 = body(&call(&client, "offrig_launch", json!({"plan_id": plan1})).await);
+    let job1b = relaunch1["job_id"].as_i64().expect("job1b");
+    let started2 = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job1b})).await);
+        if j["state"] == "done" {
+            assert_eq!(j["progress"]["pod_id"], "pod1");
+            break;
+        }
+        assert_eq!(j["state"], "running", "{j}");
+        assert!(started2.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(
+        count(&hits, "POST /pods"),
+        1,
+        "adoption must not call POST /pods again"
+    );
+    {
+        let s = Store::open(&db).expect("reopen");
+        assert!(s.unfinished_create_pod(plan1).expect("u").is_none());
+        assert_eq!(
+            s.plan(plan1).expect("r").expect("p").pod_id.as_deref(),
+            Some("pod1")
+        );
+    }
+
+    // Close plan1 and test Part B: failed_create_unknown when pod disappears before relaunch -> search finds none -> relaunch allowed.
+    let _ = call(&client, "offrig_shutdown", json!({"plan_id": plan1})).await;
+    std::fs::write(&panic_file, "arm2").expect("flag2");
+    let plan2 = body(
+        &call(
+            &client,
+            "offrig_plan",
+            json!({"profile": "job", "max_hours": 1.0}),
+        )
+        .await,
+    )["plan_id"]
+        .as_i64()
+        .expect("plan2");
+    let job2 = body(&call(&client, "offrig_launch", json!({"plan_id": plan2})).await)["job_id"]
+        .as_i64()
+        .expect("job2");
+    let started3 = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job2})).await);
+        if j["state"] == "failed" {
+            assert_eq!(j["progress"]["step"], "failed_create_unknown", "{j}");
+            break;
+        }
+        assert!(started3.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    pods.lock().expect("pods").clear();
+    {
+        let s = Store::open(&db).expect("reopen2");
+        offrig_core::watchdog::check_relaunch_allowed(
+            &s,
+            plan2,
+            offrig_core::cost::now_unix(),
+            Some(&[]),
+        )
+        .expect("empty list_pods search must unblock failed_create_unknown");
+    }
+    let relaunch2 = body(&call(&client, "offrig_launch", json!({"plan_id": plan2})).await);
+    let job2b = relaunch2["job_id"].as_i64().expect("job2b");
+    let started4 = Instant::now();
+    loop {
+        let j = body(&call(&client, "offrig_job", json!({"job_id": job2b})).await);
+        if j["state"] == "done" {
+            break;
+        }
+        assert_eq!(j["state"], "running", "{j}");
+        assert!(started4.elapsed() < Duration::from_secs(30), "{j}");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(count(&hits, "POST /pods"), 3);
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn shutdown_with_dead_launcher_and_unresolved_create_spawns_watchdog() {
+    let pods: Pods = Arc::default();
+    let pods_srv = Arc::clone(&pods);
+    let (url, hits): (_, Hits) = mock_concurrent(move |route, body, n| {
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("shutdown-dead-spawns-wd");
+    let db = dir.join(".offrig").join("offrig.db");
+    let cfg_dir = dir.join("cfg");
+    let lane = Registry::at(&cfg_dir)
+        .lane_for_project(&dir, &Config::default())
+        .expect("lane");
+    let tag = lane.tag.clone().expect("tag");
+    let lane_cfg = Config::default().in_lane(&lane).expect("lane cfg");
+    let pod_name = lane_cfg.pod_name(lane_cfg.profile("job").expect("job"));
+
+    let now = offrig_core::cost::now_unix();
+    let stale_hb = now - offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS - 30;
+    let plan_id = {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan");
+        s.set_plan_lane(p.id, &tag).expect("lane");
+        s.commit_plan(p.id).expect("commit");
+        let j = s
+            .create_launch_job(p.id, 999_999, None, stale_hb)
+            .expect("j");
+        s.journal("create_pod", Some(p.id), &json!({ "job_id": j }))
+            .expect("jc");
+        p.id
+    };
+    pods.lock().expect("pods").push(json!({
+        "id": "pod-dead-wd",
+        "name": pod_name,
+        "status": "RUNNING",
+        "cost": 0.50,
+        "env": { "OFFRIG_PLAN": plan_id.to_string(), "OFFRIG_LANE": tag }
+    }));
+
+    let (bin, fake) = install_fake_tools(&dir);
+    // Do NOT set OFFRIG_TEST_NO_WATCHDOG so offrig_shutdown actually spawns the watchdog.
+    let client = connect_mcp_extra(
+        &dir,
+        &url,
+        Some("test-key"),
+        Some(&bin),
+        Some(&fake),
+        false,
+        &[("OFFRIG_TEST_WATCHDOG_POLL_SECS", "1".to_string())],
+    )
+    .await;
+
+    let shut = body(&call(&client, "offrig_shutdown", json!({"plan_id": plan_id})).await);
+    assert_eq!(shut["pending_create_in_flight"], true, "{shut}");
+    assert!(
+        shut["next_action"]
+            .as_str()
+            .is_some_and(|n| n.contains("a pod may exist")),
+        "{shut}"
+    );
+    assert!(
+        shut["pending_create_warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("a pod may exist")),
+        "{shut}"
+    );
+
+    let wd_log = dir.join(".offrig").join(format!("watchdog-{plan_id}.log"));
+    let started = Instant::now();
+    loop {
+        let pod_gone = pods.lock().expect("pods").is_empty();
+        let resolved = Store::open(&db)
+            .ok()
+            .and_then(|s| s.unfinished_create_pod(plan_id).ok())
+            .is_some_and(|u| u.is_none());
+        if pod_gone && resolved && wd_log.is_file() {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "spawned watchdog did not terminate pod-dead-wd: log_exists={} pods={:?}",
+            wd_log.is_file(),
+            pods.lock().expect("pods")
+        );
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+    assert_eq!(count(&hits, "DELETE /pods/pod-dead-wd"), 1);
+
+    client.cancel().await.ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn slow_ten_second_liveness_probe_does_not_hold_sqlite_write_lock() {
+    let pods: Pods = Arc::default();
+    let pods_srv = Arc::clone(&pods);
+    let (url, _hits): (_, Hits) = mock_concurrent(move |route, body, n| {
+        stateful_runpod(Arc::clone(&pods_srv))(route, body, n)
+    });
+    let dir = temp("probe-no-write-lock");
+    let db = dir.join(".offrig").join("offrig.db");
+    let cfg_dir = dir.join("cfg");
+    let lane = Registry::at(&cfg_dir)
+        .lane_for_project(&dir, &Config::default())
+        .expect("lane");
+    let tag = lane.tag.clone().expect("tag");
+
+    let now = offrig_core::cost::now_unix();
+    let stale_hb = now - offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS - 30;
+    let (plan_id, jc) = {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 1.0,
+                max_price_hr: 0.50,
+                note: None,
+            })
+            .expect("plan");
+        s.set_plan_lane(p.id, &tag).expect("lane");
+        s.commit_plan(p.id).expect("commit");
+        let j = s
+            .create_launch_job(p.id, 999_999, None, stale_hb)
+            .expect("j");
+        let jc = s
+            .journal("create_pod", Some(p.id), &json!({ "job_id": j }))
+            .expect("jc");
+        (p.id, jc)
+    };
+
+    let (bin, fake) = install_fake_tools(&dir);
+    let entered_file = dir.join("probe-entered.marker");
+    let client = Arc::new(
+        connect_mcp_extra(
+            &dir,
+            &url,
+            Some("test-key"),
+            Some(&bin),
+            Some(&fake),
+            true,
+            &[
+                ("OFFRIG_TEST_PROBE_DELAY_MS", "10000".to_string()),
+                (
+                    "OFFRIG_TEST_PROBE_ENTERED_FILE",
+                    entered_file.to_string_lossy().into_owned(),
+                ),
+            ],
+        )
+        .await,
+    );
+
+    let cli_task = Arc::clone(&client);
+    let launch_task =
+        tokio::spawn(
+            async move { call(&cli_task, "offrig_launch", json!({"plan_id": plan_id})).await },
+        );
+
+    // Wait until the second probe (the launch-claim stage right around begin_launch_with_account)
+    // actually enters its 10s sleep before issuing a concurrent write.
+    let w = Instant::now();
+    loop {
+        let count_entered = std::fs::read_to_string(&entered_file)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        if count_entered >= 2 {
+            break;
+        }
+        assert!(
+            w.elapsed() < Duration::from_secs(30),
+            "second liveness probe never entered (count={count_entered})"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // A concurrent SQLite writer must succeed quickly without waiting 10s or hitting SQLITE_BUSY.
+    let write_started = Instant::now();
+    let s = Store::open(&db).expect("open concurrent store");
+    s.journal_outcome(jc, "abandoned: concurrent writer while 10s probe ran")
+        .expect("concurrent journal_outcome must succeed without SQLITE_BUSY");
+    assert!(
+        write_started.elapsed() < Duration::from_secs(3),
+        "concurrent write waited {:?}, write lock must not be held during 10s probe",
+        write_started.elapsed()
+    );
+    drop(s);
+
+    let res = launch_task.await.expect("join");
+    assert_eq!(res.is_error, Some(false), "{:?}", body(&res));
+
+    if let Ok(c) = Arc::try_unwrap(client) {
+        c.cancel().await.ok();
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

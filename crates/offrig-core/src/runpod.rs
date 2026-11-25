@@ -46,6 +46,8 @@ pub struct Pod {
     #[serde(default)]
     pub last_started_at: Option<String>,
     #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub network_volume_id: Option<String>,
     #[serde(default)]
     pub machine: Option<Machine>,
@@ -133,6 +135,7 @@ impl TryFrom<serde_json::Value> for Pod {
             cost_per_hr: old.cost_per_hr,
             gpu_count: old.gpu_count,
             last_started_at: old.last_started_at,
+            created_at: old.created_at,
             network_volume_id: old.network_volume_id,
             machine: old.machine,
             env: old.env,
@@ -163,6 +166,8 @@ struct PodV1 {
     gpu_count: u32,
     #[serde(default)]
     last_started_at: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
     #[serde(default)]
     network_volume_id: Option<String>,
     #[serde(default)]
@@ -257,7 +262,9 @@ fn pod_from_v2(v: &serde_json::Value) -> Pod {
             .and_then(|g| g.get("count"))
             .and_then(|c| c.as_u64())
             .unwrap_or(0) as u32,
-        last_started_at: json_opt_string(v, "startedAt"),
+        last_started_at: json_opt_string(v, "startedAt")
+            .or_else(|| json_opt_string(v, "lastStartedAt")),
+        created_at: json_opt_string(v, "createdAt"),
         network_volume_id,
         machine,
         env: parse_pod_env(v.get("env")),
@@ -267,6 +274,18 @@ fn pod_from_v2(v: &serde_json::Value) -> Pod {
 impl Pod {
     pub fn is_running(&self) -> bool {
         self.desired_status == "RUNNING"
+    }
+
+    /// Best-effort Unix timestamp of when this pod was created (or last started).
+    pub fn created_at_unix(&self) -> Option<i64> {
+        self.created_at
+            .as_deref()
+            .and_then(crate::cost::parse_timestamp)
+            .or_else(|| {
+                self.last_started_at
+                    .as_deref()
+                    .and_then(crate::cost::parse_timestamp)
+            })
     }
 
     /// `(public ip, host port mapped to 22/tcp)`, once RunPod has assigned both.
