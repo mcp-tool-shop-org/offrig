@@ -332,6 +332,23 @@ pub fn bootstrap_log(alias: &str) -> Result<String> {
     )
 }
 
+/// Shell command that reads the on-pod `offrig self-stop:` status line once ssh is up.
+pub const SELF_STOP_READ_SCRIPT: &str = "cat /workspace/offrig/self-stop.status 2>/dev/null || grep '^offrig self-stop:' /workspace/offrig/bootstrap.log 2>/dev/null | tail -n 1";
+
+/// Extract the `offrig self-stop: ...` status line from ssh output.
+pub fn parse_self_stop(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .rfind(|line| line.starts_with(crate::spec::SELF_STOP_PREFIX))
+        .map(str::to_string)
+}
+
+/// Read the pod's self-stop status line over ssh (`armed fire_at=<n>` or `UNAVAILABLE (...)`).
+pub fn read_self_stop(alias: &str) -> Result<Option<String>> {
+    let out = ssh_exec(alias, SELF_STOP_READ_SCRIPT, Duration::from_secs(30))?;
+    Ok(parse_self_stop(&out))
+}
+
 /// The pod's model list read on the pod itself, for the tunnel identity check.
 /// The pod engine's OpenAI model list, read on the pod itself (both engines serve it).
 pub fn pod_models_json(alias: &str) -> Result<String> {

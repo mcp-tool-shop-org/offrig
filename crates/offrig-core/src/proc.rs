@@ -3,6 +3,7 @@
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
@@ -75,4 +76,342 @@ pub fn kill(child: &mut Child) {
     // Already-exited children make kill fail; the wait reaps either way.
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Seconds without a launch heartbeat before a non-responsive launch job's
+/// `pid` may be treated as stale when combined with `!pid_alive_at(pid, start)`.
+pub const LAUNCH_HEARTBEAT_STALE_SECS: i64 = 180;
+
+/// Result of inspecting an OS process `pid` and its recorded start time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessProbe {
+    Dead,
+    Alive(Option<String>),
+    Unknown,
+}
+
+/// Parse one RFC-4180 CSV line (`tasklist /FO CSV /NH` output): handles quoted fields,
+/// commas inside quotes, `""` escapes, and trailing `\r`.
+pub fn parse_csv_row(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.trim_end_matches(['\r', '\n']).chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    cur.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                cur.push(c);
+            }
+        } else if c == '"' {
+            in_quotes = true;
+        } else if c == ',' {
+            fields.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    fields.push(cur);
+    fields
+}
+
+/// Probe whether `pid` is live and, when available, return its OS-specific start-time
+/// token so PID reuse after a crash is never mistaken for the original launcher.
+pub fn process_start_time(pid: u32) -> ProcessProbe {
+    if pid == 0 {
+        return ProcessProbe::Dead;
+    }
+    #[cfg(debug_assertions)]
+    if pid != std::process::id()
+        && let Some(ms) = std::env::var("OFFRIG_TEST_PROBE_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    {
+        if let Ok(entered) = std::env::var("OFFRIG_TEST_PROBE_ENTERED_FILE")
+            && let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(entered)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{pid}");
+        }
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let proc_dir = format!("/proc/{pid}");
+        if !std::path::Path::new(&proc_dir).exists() {
+            return ProcessProbe::Dead;
+        }
+        match std::fs::read_to_string(format!("{proc_dir}/stat")) {
+            Ok(stat) => {
+                if let Some(after) = stat.rfind(") ") {
+                    let mut fields = stat[after + 2..].split_whitespace();
+                    let state = fields.next().and_then(|s| s.chars().next());
+                    if matches!(state, Some('Z' | 'X')) {
+                        return ProcessProbe::Dead;
+                    }
+                    // After `) `, field 3 (state) is index 0; field 22 (starttime) is index 19.
+                    let start = fields.nth(18).map(str::to_string);
+                    ProcessProbe::Alive(start)
+                } else {
+                    ProcessProbe::Alive(None)
+                }
+            }
+            Err(_) => ProcessProbe::Dead,
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let mut cmd = Command::new("ps");
+        cmd.args(["-o", "lstart=", "-p", &pid.to_string()]);
+        if let Ok(out) =
+            run_with_timeout(&mut cmd, Duration::from_secs(5), "checking process start")
+            && out.success()
+        {
+            let start = out.stdout.trim().to_string();
+            if !start.is_empty() {
+                return ProcessProbe::Alive(Some(start));
+            }
+        }
+        let mut k = Command::new("kill");
+        k.args(["-0", &pid.to_string()]);
+        match run_with_timeout(&mut k, Duration::from_secs(5), "checking process liveness") {
+            Ok(out) => {
+                if out.success()
+                    || out.stderr.contains("Operation not permitted")
+                    || out.stderr.contains("EPERM")
+                {
+                    ProcessProbe::Alive(None)
+                } else {
+                    ProcessProbe::Dead
+                }
+            }
+            Err(_) => ProcessProbe::Unknown,
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("tasklist");
+        cmd.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+        let listed = match run_with_timeout(
+            &mut cmd,
+            Duration::from_secs(10),
+            "checking process liveness",
+        ) {
+            Ok(out) => out.stdout.lines().any(|line| {
+                let cols = parse_csv_row(line);
+                cols.get(1)
+                    .and_then(|col| col.trim().parse::<u32>().ok())
+                    .is_some_and(|p| p == pid)
+            }),
+            Err(_) => return ProcessProbe::Unknown,
+        };
+        if !listed {
+            return ProcessProbe::Dead;
+        }
+        let mut ps = Command::new("powershell");
+        ps.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
+                 if ($p) {{ $p.StartTime.ToFileTimeUtc() }} else {{ 'DEAD' }}"
+            ),
+        ]);
+        match run_with_timeout(
+            &mut ps,
+            Duration::from_secs(10),
+            "reading process start time",
+        ) {
+            Ok(out) => {
+                let s = out.stdout.trim();
+                if s == "DEAD" {
+                    ProcessProbe::Dead
+                } else if s.parse::<i64>().is_ok() {
+                    ProcessProbe::Alive(Some(s.to_string()))
+                } else {
+                    ProcessProbe::Alive(None)
+                }
+            }
+            Err(_) => ProcessProbe::Alive(None),
+        }
+    }
+}
+
+/// Cached OS start-time token for the current process.
+pub fn own_start_time() -> Option<String> {
+    static OWN_START: OnceLock<Option<String>> = OnceLock::new();
+    OWN_START
+        .get_or_init(|| match process_start_time(std::process::id()) {
+            ProcessProbe::Alive(s) => s,
+            _ => None,
+        })
+        .clone()
+}
+
+/// Check whether `pid` is alive AND matches `recorded_start` (when both are known).
+/// A live PID whose OS start time differs from `recorded_start` indicates PID reuse
+/// and is treated as dead.
+pub fn pid_alive_at(pid: u32, recorded_start: Option<&str>) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if pid == std::process::id() {
+        return match (recorded_start, own_start_time().as_deref()) {
+            (Some(rec), Some(cur)) => rec == cur,
+            _ => true,
+        };
+    }
+    match process_start_time(pid) {
+        ProcessProbe::Dead => false,
+        ProcessProbe::Unknown => true,
+        ProcessProbe::Alive(actual) => match (recorded_start, actual.as_deref()) {
+            (Some(rec), Some(act)) => rec == act,
+            _ => true,
+        },
+    }
+}
+
+/// Best-effort OS check whether process `pid` currently exists and is not dead.
+pub fn pid_alive(pid: u32) -> bool {
+    pid_alive_at(pid, None)
+}
+
+/// Pre-probed process liveness cache taken outside any SQLite write lock so
+/// launch transactions never spawn `tasklist` or PowerShell while holding `BEGIN IMMEDIATE`.
+#[derive(Debug, Clone, Default)]
+pub struct LivenessSnapshot {
+    probed: std::collections::BTreeMap<(u32, Option<String>), bool>,
+}
+
+impl LivenessSnapshot {
+    /// Probe every unique `(pid, recorded_start)` pair upfront (with no DB locks held).
+    pub fn probe(targets: &[(u32, Option<String>)]) -> Self {
+        let mut probed = std::collections::BTreeMap::new();
+        for (pid, start) in targets {
+            let key = (*pid, start.clone());
+            probed
+                .entry(key)
+                .or_insert_with(|| pid_alive_at(*pid, start.as_deref()));
+        }
+        Self { probed }
+    }
+
+    /// Look up whether `(pid, recorded_start)` was already probed, handling `pid == 0`
+    /// and the current process in-memory without spawning any subprocesses.
+    pub fn is_alive(&self, pid: u32, recorded_start: Option<&str>) -> Option<bool> {
+        if pid == 0 {
+            return Some(false);
+        }
+        if pid == std::process::id() {
+            return Some(match (recorded_start, own_start_time().as_deref()) {
+                (Some(rec), Some(cur)) => rec == cur,
+                _ => true,
+            });
+        }
+        self.probed
+            .get(&(pid, recorded_start.map(str::to_string)))
+            .copied()
+    }
+}
+
+/// Extract `(pid, pid_started_at)` recorded in a launch job's progress JSON.
+pub fn job_pid_target(job: &crate::store::Job) -> Option<(u32, Option<String>)> {
+    let pid = job.progress["pid"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())?;
+    let started_at = job.progress["pid_started_at"].as_str().map(str::to_string);
+    Some((pid, started_at))
+}
+
+/// Check launch job liveness against `snap` without spawning OS processes. Returns
+/// `Err((pid, pid_started_at))` when heartbeat is stale and the PID was not in `snap`,
+/// so callers can drop any SQLite transaction, probe outside the lock, and retry.
+pub fn launch_job_proven_dead_with_snapshot(
+    job: &crate::store::Job,
+    now: i64,
+    snap: &LivenessSnapshot,
+) -> std::result::Result<bool, (u32, Option<String>)> {
+    let Some((pid, started_at)) = job_pid_target(job) else {
+        return Ok(false);
+    };
+    let Some(hb) = job.progress["heartbeat_at"].as_i64() else {
+        return Ok(false);
+    };
+    if now.saturating_sub(hb) <= LAUNCH_HEARTBEAT_STALE_SECS {
+        return Ok(false);
+    }
+    match snap.is_alive(pid, started_at.as_deref()) {
+        Some(alive) => Ok(!alive),
+        None => Err((pid, started_at)),
+    }
+}
+
+/// True only when `job` recorded a launching `pid` + `heartbeat_at` AND that process
+/// is no longer alive (including PID reuse with a different start time) AND its
+/// heartbeat is older than [`LAUNCH_HEARTBEAT_STALE_SECS`].
+pub fn launch_job_proven_dead(job: &crate::store::Job, now: i64) -> bool {
+    match launch_job_proven_dead_with_snapshot(job, now, &LivenessSnapshot::default()) {
+        Ok(dead) => dead,
+        Err((pid, started_at)) => !pid_alive_at(pid, started_at.as_deref()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_csv_row_handles_commas_and_escaped_quotes_in_tasklist_output() {
+        let row = parse_csv_row(r#""foo,bar"".exe","1234","Console","1","12,345 K""#);
+        assert_eq!(
+            row,
+            vec!["foo,bar\".exe", "1234", "Console", "1", "12,345 K"]
+        );
+        let info = parse_csv_row("INFO: No tasks are running which match the specified criteria.");
+        assert_eq!(info.len(), 1);
+    }
+
+    #[test]
+    fn current_pid_is_alive_and_exited_child_is_dead() {
+        assert!(!pid_alive(0));
+        assert!(pid_alive(std::process::id()));
+        let own = own_start_time();
+        assert!(own.is_some(), "expected OS process start time for self");
+        assert!(pid_alive_at(std::process::id(), own.as_deref()));
+        assert!(
+            !pid_alive_at(std::process::id(), Some("0")),
+            "live pid with different recorded start time must be treated as dead"
+        );
+
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn short child");
+        #[cfg(unix)]
+        let mut child = Command::new("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn short child");
+
+        let child_pid = child.id();
+        let status = child.wait().expect("wait child");
+        assert!(status.success());
+        assert!(!pid_alive(child_pid), "reaped pid {child_pid} must be dead");
+    }
 }

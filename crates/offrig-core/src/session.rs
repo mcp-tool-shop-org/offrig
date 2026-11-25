@@ -568,18 +568,35 @@ impl Session {
         cancel: &AtomicBool,
         on: &mut dyn FnMut(Event),
     ) -> Result<Pod> {
+        self.create_when_free_while(body, wait, cancel, &mut || Ok(true), on)
+    }
+
+    /// Create the pod as soon as RunPod has the GPUs while `still_committed()` remains
+    /// true (checked on every poll before calling `POST /pods` so a shutdown from
+    /// another process cancels the wait cleanly), or give up at the limit.
+    pub fn create_when_free_while(
+        &self,
+        body: &crate::runpod::PodCreate,
+        wait: Wait,
+        cancel: &AtomicBool,
+        still_committed: &mut dyn FnMut() -> Result<bool>,
+        on: &mut dyn FnMut(Event),
+    ) -> Result<Pod> {
         let started = Instant::now();
         let rate_until = wait.until.unwrap_or(started + wait.limit);
         let what = format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | "));
         let mut next_note = started;
         let mut attempt = 0u32;
         loop {
-            if cancel.load(Ordering::SeqCst) {
+            if cancel.load(Ordering::SeqCst) || !still_committed()? {
                 return Err(Error::Cancelled(format!("waiting for {what}")));
             }
             // Ask the catalog first so a full market costs no create calls; if it
             // cannot answer, try the create and let RunPod say no.
             if self.capacity_free(body) != Some(false) {
+                if cancel.load(Ordering::SeqCst) || !still_committed()? {
+                    return Err(Error::Cancelled(format!("waiting for {what}")));
+                }
                 on(Event::Step(format!("creating {} on {what}", body.name)));
                 match self.rp.create_pod_until(body, Some(rate_until), &mut |w| {
                     on(Event::Warn(w));
@@ -610,7 +627,7 @@ impl Session {
             }
             let wake = Instant::now() + wait.poll;
             while Instant::now() < wake {
-                if cancel.load(Ordering::SeqCst) {
+                if cancel.load(Ordering::SeqCst) || !still_committed()? {
                     return Err(Error::Cancelled(format!("waiting for {what}")));
                 }
                 std::thread::sleep(Duration::from_millis(200).min(wait.poll));

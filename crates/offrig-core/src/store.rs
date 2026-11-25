@@ -409,6 +409,23 @@ pub struct IndexStats {
 
 // ---------------------------------------------------------------- plans and budget
 
+/// Outcome of atomically claiming or starting a launch in [`Store::begin_launch_with_account`].
+#[derive(Debug, Clone)]
+pub struct LaunchClaim {
+    pub plan: Plan,
+    pub job_id: i64,
+    pub newly_committed: bool,
+}
+
+/// An un-deleted duplicate pod recorded when `terminate_duplicate_pod` failed all retries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedDuplicate {
+    pub journal_id: i64,
+    pub plan_id: i64,
+    pub pod_id: String,
+    pub outcome: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub id: i64,
@@ -1986,14 +2003,215 @@ impl Store {
 
     /// Record the pod a plan rented and when, so cost and the deadline can be
     /// computed later by anyone (the side-car, the watchdog, a restarted session).
+    /// Attaches only when the plan is `committed` and either holds no pod or already
+    /// holds `pod_id`. Any state/pod conflict is journaled as `attach_pod_conflict`
+    /// and returns a named `Error::Refused` without overwriting `pod_id`.
     pub fn attach_pod(&self, plan_id: i64, pod_id: &str) -> Result<()> {
         self.conn
-            .execute(
-                "UPDATE plans SET pod_id = ?1, started_at = COALESCE(started_at, ?3) WHERE id = ?2",
-                params![pod_id, plan_id, now_unix()],
-            )
-            .map_err(db("attaching a pod to a plan"))?;
-        Ok(())
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(db("starting a pod attach"))?;
+        enum Conflict {
+            PlanNotCommitted { state: String },
+            PodAlreadyAttached { kept: String },
+        }
+        let res = (|| -> Result<Option<Conflict>> {
+            let changed = self
+                .conn
+                .execute(
+                    "UPDATE plans SET pod_id = ?1, started_at = COALESCE(started_at, ?3)
+                     WHERE id = ?2 AND state = 'committed' AND (pod_id IS NULL OR pod_id = ?1)",
+                    params![pod_id, plan_id, now_unix()],
+                )
+                .map_err(db("attaching a pod to a plan"))?;
+            if changed > 0 {
+                return Ok(None);
+            }
+            let existing: Option<(String, Option<String>)> = self
+                .conn
+                .query_row(
+                    "SELECT state, pod_id FROM plans WHERE id = ?1",
+                    params![plan_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(db("checking existing pod on plan"))?;
+            match existing {
+                None => Err(Error::Refused(format!(
+                    "attach_pod_conflict(no_such_plan): no plan {plan_id}"
+                ))),
+                Some((state, kept)) if state != "committed" => {
+                    let intent = serde_json::json!({
+                        "conflict": "plan_not_committed",
+                        "plan_state": state,
+                        "kept_pod": kept,
+                        "rejected_pod": pod_id,
+                    });
+                    self.conn
+                        .execute(
+                            "INSERT INTO journal(action, plan_id, intent, outcome, at)
+                             VALUES ('attach_pod_conflict', ?1, ?2, ?3, ?4)",
+                            params![
+                                plan_id,
+                                intent.to_string(),
+                                format!(
+                                    "refused to attach {pod_id}: plan is {state}, not committed"
+                                ),
+                                now_unix()
+                            ],
+                        )
+                        .map_err(db("journaling attach_pod state conflict"))?;
+                    Ok(Some(Conflict::PlanNotCommitted { state }))
+                }
+                Some((_state, Some(other))) if other != pod_id => {
+                    let intent = serde_json::json!({
+                        "conflict": "pod_already_attached",
+                        "kept_pod": other,
+                        "rejected_pod": pod_id,
+                    });
+                    self.conn
+                        .execute(
+                            "INSERT INTO journal(action, plan_id, intent, outcome, at)
+                             VALUES ('attach_pod_conflict', ?1, ?2, ?3, ?4)",
+                            params![
+                                plan_id,
+                                intent.to_string(),
+                                format!("refused to replace {other} with {pod_id}"),
+                                now_unix()
+                            ],
+                        )
+                        .map_err(db("journaling attach_pod conflict"))?;
+                    Ok(Some(Conflict::PodAlreadyAttached { kept: other }))
+                }
+                _ => Ok(None),
+            }
+        })();
+        match res {
+            Ok(None) => self
+                .conn
+                .execute_batch("COMMIT")
+                .map_err(db("committing a pod attach")),
+            Ok(Some(conflict)) => {
+                self.conn
+                    .execute_batch("COMMIT")
+                    .map_err(db("committing an attach_pod conflict journal"))?;
+                match conflict {
+                    Conflict::PlanNotCommitted { state } => Err(Error::Refused(format!(
+                        "attach_pod_conflict(plan_not_committed): plan {plan_id} is {state}, not committed; refusing to attach pod {pod_id}"
+                    ))),
+                    Conflict::PodAlreadyAttached { kept } => Err(Error::Refused(format!(
+                        "attach_pod_conflict(pod_already_attached): plan {plan_id} already holds pod {kept}; refusing to replace it with {pod_id}"
+                    ))),
+                }
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// Atomically verify plan state/relaunch eligibility, commit (if still `planned`),
+    /// and create the `launch` job row with `(pid, pid_started_at, heartbeat_at)` in
+    /// one `BEGIN IMMEDIATE` transaction so two side-cars launching the same `planned`
+    /// plan cannot both pass before the relaunch guard sees the first launch.
+    pub fn begin_launch_with_account<F>(
+        &self,
+        id: i64,
+        account: Option<&AccountGuard>,
+        pid: u32,
+        pid_started_at: Option<&str>,
+        now: i64,
+        precheck: F,
+    ) -> Result<LaunchClaim>
+    where
+        F: FnOnce(&Store, &Plan, bool) -> Result<()>,
+    {
+        let held = match account {
+            Some(a) => a.enter(Provider::RunPod)?,
+            None => None,
+        };
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(db("starting a launch transaction"))?;
+        let res = (|| -> Result<LaunchClaim> {
+            let current = self
+                .plan(id)?
+                .ok_or_else(|| Error::Refused(format!("no plan {id}")))?;
+            if let Some(existing_pod) = current.pod_id.as_deref() {
+                return Err(Error::Refused(format!(
+                    "plan {id} already holds pod {existing_pod}"
+                )));
+            }
+            match current.state.as_str() {
+                "planned" => {
+                    precheck(self, &current, false)?;
+                    if let Some(r) = self.refusal(Provider::RunPod, current.worst_case)? {
+                        return Err(Error::Budget(format!(
+                            "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
+                            current.worst_case, r.remaining, r.scope
+                        )));
+                    }
+                    if let Some(h) = &held {
+                        h.check(
+                            current.worst_case,
+                            self.budget_for(Provider::RunPod)?.committed,
+                            "plan",
+                        )?;
+                    }
+                    self.conn
+                        .execute(
+                            "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
+                            params![id, current.worst_case, now],
+                        )
+                        .map_err(db("writing a commit"))?;
+                    let updated = self
+                        .conn
+                        .execute(
+                            "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1 AND state = 'planned'",
+                            params![id, now],
+                        )
+                        .map_err(db("marking the plan committed"))?;
+                    if updated != 1 {
+                        return Err(Error::Refused(format!(
+                            "plan {id} changed state while committing"
+                        )));
+                    }
+                    let plan = self
+                        .plan(id)?
+                        .ok_or_else(|| Error::Refused("plan vanished after commit".into()))?;
+                    let job_id = self.create_launch_job(id, pid, pid_started_at, now)?;
+                    Ok(LaunchClaim {
+                        plan,
+                        job_id,
+                        newly_committed: true,
+                    })
+                }
+                "committed" => {
+                    precheck(self, &current, true)?;
+                    let job_id = self.create_launch_job(id, pid, pid_started_at, now)?;
+                    Ok(LaunchClaim {
+                        plan: current,
+                        job_id,
+                        newly_committed: false,
+                    })
+                }
+                state => Err(Error::Refused(format!(
+                    "plan {id} is {state}; make a new plan"
+                ))),
+            }
+        })();
+        match res {
+            Ok(claim) => {
+                self.conn
+                    .execute_batch("COMMIT")
+                    .map_err(db("committing a launch transaction"))?;
+                Ok(claim)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// Committed plans: the ones that may be renting right now.
@@ -2035,6 +2253,29 @@ impl Store {
             )
             .optional()
             .map_err(db("reading a setting"))
+    }
+
+    pub fn clear_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .map_err(db("clearing a setting"))?;
+        Ok(())
+    }
+
+    /// Read all `(key, value)` pairs whose key begins with `prefix`.
+    pub fn settings_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT key, value FROM settings WHERE key LIKE ?1 ORDER BY key")
+            .map_err(db("preparing prefixed settings read"))?;
+        let rows = st
+            .query_map(params![format!("{prefix}%")], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(db("reading prefixed settings"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading prefixed settings"))?;
+        Ok(rows)
     }
 
     // ---- lanes (which project lane a plan's pod lives in)
@@ -2114,6 +2355,14 @@ impl Store {
         )
     }
 
+    pub fn plan_self_stop(&self, plan_id: i64) -> Result<Option<String>> {
+        self.setting(&format!("plan_self_stop:{plan_id}"))
+    }
+
+    pub fn set_plan_self_stop(&self, plan_id: i64, status: &str) -> Result<()> {
+        self.set_setting(&format!("plan_self_stop:{plan_id}"), status)
+    }
+
     // ---- jobs (long work run in the background; state survives restarts)
 
     pub fn create_job(&self, plan_id: i64, kind: &str) -> Result<i64> {
@@ -2124,6 +2373,31 @@ impl Store {
                 params![plan_id, kind, now],
             )
             .map_err(db("creating a job"))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Create a launch job row pre-populated with the launching process `pid`,
+    /// optional OS start-time token `pid_started_at`, and initial `heartbeat_at`.
+    pub fn create_launch_job(
+        &self,
+        plan_id: i64,
+        pid: u32,
+        pid_started_at: Option<&str>,
+        now: i64,
+    ) -> Result<i64> {
+        let progress = serde_json::json!({
+            "step": "starting",
+            "pid": pid,
+            "pid_started_at": pid_started_at,
+            "heartbeat_at": now,
+        });
+        self.conn
+            .execute(
+                "INSERT INTO jobs(plan_id, kind, state, progress, started_at, updated_at)
+                 VALUES (?1, 'launch', 'running', ?2, ?3, ?3)",
+                params![plan_id, progress.to_string(), now],
+            )
+            .map_err(db("creating a launch job"))?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -2482,6 +2756,190 @@ impl Store {
         .map_err(db("reading the journal"))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db("reading the journal"))
+    }
+
+    /// The pod id recorded in the `create_pod` journal outcome for `plan_id`, if any.
+    /// Bridges a crash between `create_when_free` and `attach_pod`.
+    pub fn journaled_pod_id(&self, plan_id: i64) -> Result<Option<String>> {
+        let outcome: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT outcome FROM journal
+                 WHERE plan_id = ?1 AND action = 'create_pod' AND outcome LIKE 'created pod %'
+                 ORDER BY id DESC LIMIT 1",
+                params![plan_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db("reading a journaled pod id"))?;
+        Ok(outcome
+            .and_then(|s| {
+                s.strip_prefix("created pod ")
+                    .map(|id| id.trim().to_string())
+            })
+            .filter(|id| !id.is_empty()))
+    }
+
+    /// Every journal entry recorded for `plan_id` in order: `(action, intent, outcome)`.
+    pub fn journal_for_plan(&self, plan_id: i64) -> Result<Vec<(String, String, Option<String>)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT action, intent, outcome FROM journal WHERE plan_id = ?1 ORDER BY id")
+            .map_err(db("preparing a plan journal read"))?;
+        st.query_map(params![plan_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(db("reading a plan's journal"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading a plan's journal"))
+    }
+
+    /// Most recent unfinished `create_pod` journal entry (`outcome IS NULL`) for `plan_id`.
+    pub fn unfinished_create_pod(&self, plan_id: i64) -> Result<Option<JournalEntry>> {
+        self.conn
+            .query_row(
+                "SELECT id, action, plan_id, intent FROM journal
+                 WHERE plan_id = ?1 AND action = 'create_pod' AND outcome IS NULL
+                 ORDER BY id DESC LIMIT 1",
+                params![plan_id],
+                |r| {
+                    Ok(JournalEntry {
+                        id: r.get(0)?,
+                        action: r.get(1)?,
+                        plan_id: r.get(2)?,
+                        intent: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db("reading unfinished create_pod journal"))
+    }
+
+    fn map_unresolved_duplicate_rows(
+        &self,
+        plan_filter: Option<i64>,
+    ) -> Result<Vec<UnresolvedDuplicate>> {
+        let mut st = match plan_filter {
+            Some(_) => self
+                .conn
+                .prepare(
+                    "SELECT id, plan_id, intent, outcome FROM journal
+                     WHERE action = 'terminate_duplicate_pod'
+                       AND plan_id = ?1
+                       AND outcome LIKE 'delete_failed:%'
+                     ORDER BY id",
+                )
+                .map_err(db("preparing unresolved duplicate read"))?,
+            None => self
+                .conn
+                .prepare(
+                    "SELECT id, plan_id, intent, outcome FROM journal
+                     WHERE action = 'terminate_duplicate_pod'
+                       AND outcome LIKE 'delete_failed:%'
+                     ORDER BY id",
+                )
+                .map_err(db("preparing unresolved duplicate read"))?,
+        };
+        let row_fn = |r: &Row<'_>| -> rusqlite::Result<Option<UnresolvedDuplicate>> {
+            let journal_id: i64 = r.get(0)?;
+            let plan_id: i64 = r.get(1)?;
+            let intent: String = r.get(2)?;
+            let outcome: String = r.get(3)?;
+            let pod_id = serde_json::from_str::<serde_json::Value>(&intent)
+                .ok()
+                .and_then(|v| v["pod"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            if pod_id.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(UnresolvedDuplicate {
+                    journal_id,
+                    plan_id,
+                    pod_id,
+                    outcome,
+                }))
+            }
+        };
+        let rows = match plan_filter {
+            Some(pid) => st
+                .query_map(params![pid], row_fn)
+                .map_err(db("reading unresolved duplicates"))?
+                .collect::<rusqlite::Result<Vec<_>>>(),
+            None => st
+                .query_map([], row_fn)
+                .map_err(db("reading unresolved duplicates"))?
+                .collect::<rusqlite::Result<Vec<_>>>(),
+        }
+        .map_err(db("reading unresolved duplicates"))?;
+        Ok(rows.into_iter().flatten().collect())
+    }
+
+    /// Unresolved duplicate-pod deletes across all plans (`terminate_duplicate_pod`
+    /// entries whose `outcome` still starts with `delete_failed:`).
+    pub fn unresolved_duplicate_pods(&self) -> Result<Vec<UnresolvedDuplicate>> {
+        self.map_unresolved_duplicate_rows(None)
+    }
+
+    /// Unresolved duplicate-pod deletes for `plan_id`.
+    pub fn unresolved_duplicate_pods_for_plan(
+        &self,
+        plan_id: i64,
+    ) -> Result<Vec<UnresolvedDuplicate>> {
+        self.map_unresolved_duplicate_rows(Some(plan_id))
+    }
+
+    /// Non-committed plans whose `create_pod` journal entry still has no outcome.
+    pub fn plans_with_unfinished_create_after_close(&self) -> Result<Vec<(i64, i64)>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT j.plan_id, j.id FROM journal j
+                 JOIN plans p ON p.id = j.plan_id
+                 WHERE j.action = 'create_pod' AND j.outcome IS NULL AND p.state != 'committed'
+                 ORDER BY j.id",
+            )
+            .map_err(db("preparing closing creates read"))?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db("reading closing creates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading closing creates"))
+    }
+
+    /// Non-committed plans whose latest `create_pod` journal outcome is an abandoned
+    /// unknown-state record (`abandoned:...unknown...`), meaning a pod created near the
+    /// crash may still exist unmarked on RunPod until shut down.
+    pub fn closed_plans_with_unknown_create(&self) -> Result<Vec<(Plan, i64, String)>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT j.plan_id, j.id, j.outcome FROM journal j
+                 JOIN plans p ON p.id = j.plan_id
+                 WHERE j.action = 'create_pod'
+                   AND p.state != 'committed'
+                   AND j.outcome LIKE 'abandoned:%unknown%'
+                   AND j.id = (
+                       SELECT MAX(j2.id) FROM journal j2
+                       WHERE j2.plan_id = j.plan_id AND j2.action = 'create_pod'
+                   )
+                 ORDER BY j.id",
+            )
+            .map_err(db("preparing unknown creates read"))?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(db("reading unknown creates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading unknown creates"))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (pid, jid, outcome) in rows {
+            if let Some(plan) = self.plan(pid)? {
+                out.push((plan, jid, outcome));
+            }
+        }
+        Ok(out)
     }
 
     // ---- handoffs
@@ -3052,6 +3510,9 @@ mod tests {
         assert_eq!(s.unfinished_journal().expect("read").len(), 1);
         s.journal_outcome(j, "created pod abc").expect("outcome");
         assert!(s.unfinished_journal().expect("read").is_empty());
+        assert_eq!(s.journaled_pod_id(1).expect("read").as_deref(), Some("abc"));
+        assert_eq!(s.journaled_pod_id(2).expect("read"), None);
+        assert_eq!(s.journal_for_plan(1).expect("read").len(), 1);
     }
 
     fn hand(s: &Store, deps: Vec<i64>) -> i64 {
@@ -4226,6 +4687,73 @@ mod tests {
         let e = Store::open_read_only(&v9).err().expect("refused");
         assert!(e.to_string().contains("schema v9"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attach_pod_refuses_to_overwrite_existing_pod_and_journals_conflict() {
+        let s = Store::open_in_memory().expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "small".into(),
+                gpu_count: 1,
+                gpu_types: vec![],
+                max_hours: 1.0,
+                max_price_hr: 0.25,
+                note: None,
+            })
+            .expect("plan");
+        // Refused on a non-committed (planned) plan.
+        let err_planned = s
+            .attach_pod(p.id, "pod0")
+            .expect_err("must refuse attaching to planned plan");
+        assert!(
+            err_planned.to_string().contains("plan_not_committed"),
+            "{err_planned}"
+        );
+        assert_eq!(s.plan(p.id).expect("read").expect("plan").pod_id, None);
+
+        s.commit_plan(p.id).expect("commit");
+        s.attach_pod(p.id, "pod1").expect("first attach");
+        // Idempotent when re-attaching the same pod id.
+        s.attach_pod(p.id, "pod1").expect("idempotent attach");
+
+        let err = s
+            .attach_pod(p.id, "pod2")
+            .expect_err("must refuse overwriting pod1 with pod2");
+        assert!(
+            err.to_string().contains("pod_already_attached")
+                && err.to_string().contains("pod1")
+                && err.to_string().contains("pod2"),
+            "{err}"
+        );
+        assert_eq!(
+            s.plan(p.id).expect("read").expect("plan").pod_id.as_deref(),
+            Some("pod1"),
+            "existing pod_id must stay intact"
+        );
+        let j = s.journal_for_plan(p.id).expect("journal");
+        assert!(
+            j.iter().any(|(a, i, o)| a == "attach_pod_conflict"
+                && i.contains("pod1")
+                && i.contains("pod2")
+                && o.is_some()),
+            "{j:?}"
+        );
+
+        // Also refused once closed, leaving pod_id untouched.
+        s.close_plan(p.id, 0.0).expect("close");
+        let err_closed = s
+            .attach_pod(p.id, "pod3")
+            .expect_err("must refuse attaching to closed plan");
+        assert!(
+            err_closed.to_string().contains("plan_not_committed"),
+            "{err_closed}"
+        );
+        assert_eq!(
+            s.plan(p.id).expect("read").expect("plan").pod_id.as_deref(),
+            Some("pod1")
+        );
     }
 
     #[test]

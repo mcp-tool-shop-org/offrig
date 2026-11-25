@@ -46,9 +46,14 @@ pub struct Pod {
     #[serde(default)]
     pub last_started_at: Option<String>,
     #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub network_volume_id: Option<String>,
     #[serde(default)]
     pub machine: Option<Machine>,
+    /// Container environment variables returned by RunPod (`OFFRIG_PLAN`, `OFFRIG_LANE`, ...).
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
@@ -77,6 +82,40 @@ fn lenient_string<'de, D: Deserializer<'de>>(
     })
 }
 
+/// Parse `env` from either a v2 JSON object or a v1 `"KEY=VAL"` array.
+fn parse_pod_env(v: Option<&serde_json::Value>) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    match v {
+        Some(serde_json::Value::Object(map)) => {
+            for (k, val) in map {
+                let s = match val {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => continue,
+                };
+                env.insert(k.clone(), s);
+            }
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            for item in arr {
+                if let Some((k, val)) = item.as_str().and_then(|s| s.split_once('=')) {
+                    env.insert(k.to_string(), val.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    env
+}
+
+fn deserialize_pod_env<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, String>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(parse_pod_env(v.as_ref()))
+}
+
 impl TryFrom<serde_json::Value> for Pod {
     type Error = serde_json::Error;
 
@@ -96,8 +135,10 @@ impl TryFrom<serde_json::Value> for Pod {
             cost_per_hr: old.cost_per_hr,
             gpu_count: old.gpu_count,
             last_started_at: old.last_started_at,
+            created_at: old.created_at,
             network_volume_id: old.network_volume_id,
             machine: old.machine,
+            env: old.env,
         })
     }
 }
@@ -126,9 +167,13 @@ struct PodV1 {
     #[serde(default)]
     last_started_at: Option<String>,
     #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
     network_volume_id: Option<String>,
     #[serde(default)]
     machine: Option<Machine>,
+    #[serde(default, deserialize_with = "deserialize_pod_env")]
+    env: BTreeMap<String, String>,
 }
 
 fn json_string(v: &serde_json::Value, key: &str) -> String {
@@ -217,15 +262,30 @@ fn pod_from_v2(v: &serde_json::Value) -> Pod {
             .and_then(|g| g.get("count"))
             .and_then(|c| c.as_u64())
             .unwrap_or(0) as u32,
-        last_started_at: json_opt_string(v, "startedAt"),
+        last_started_at: json_opt_string(v, "startedAt")
+            .or_else(|| json_opt_string(v, "lastStartedAt")),
+        created_at: json_opt_string(v, "createdAt"),
         network_volume_id,
         machine,
+        env: parse_pod_env(v.get("env")),
     }
 }
 
 impl Pod {
     pub fn is_running(&self) -> bool {
         self.desired_status == "RUNNING"
+    }
+
+    /// Best-effort Unix timestamp of when this pod was created (or last started).
+    pub fn created_at_unix(&self) -> Option<i64> {
+        self.created_at
+            .as_deref()
+            .and_then(crate::cost::parse_timestamp)
+            .or_else(|| {
+                self.last_started_at
+                    .as_deref()
+                    .and_then(crate::cost::parse_timestamp)
+            })
     }
 
     /// `(public ip, host port mapped to 22/tcp)`, once RunPod has assigned both.
@@ -1495,5 +1555,30 @@ mod tests {
             max_price_hr: None,
             try_first: None,
         }
+    }
+
+    #[test]
+    fn pod_parses_env_from_v2_object_and_v1_array() {
+        let v2: Pod = serde_json::from_value(serde_json::json!({
+            "id": "p2",
+            "name": "offrig-job",
+            "status": "RUNNING",
+            "env": { "OFFRIG_PLAN": "17", "OFFRIG_LANE": "plain", "NUM": 4, "FLAG": true }
+        }))
+        .expect("v2 pod");
+        assert_eq!(v2.env.get("OFFRIG_PLAN").map(String::as_str), Some("17"));
+        assert_eq!(v2.env.get("OFFRIG_LANE").map(String::as_str), Some("plain"));
+        assert_eq!(v2.env.get("NUM").map(String::as_str), Some("4"));
+        assert_eq!(v2.env.get("FLAG").map(String::as_str), Some("true"));
+
+        let v1: Pod = serde_json::from_value(serde_json::json!({
+            "id": "p1",
+            "name": "offrig-job",
+            "desiredStatus": "RUNNING",
+            "env": ["OFFRIG_PLAN=9", "OFFRIG_LANE=demo"]
+        }))
+        .expect("v1 pod");
+        assert_eq!(v1.env.get("OFFRIG_PLAN").map(String::as_str), Some("9"));
+        assert_eq!(v1.env.get("OFFRIG_LANE").map(String::as_str), Some("demo"));
     }
 }
