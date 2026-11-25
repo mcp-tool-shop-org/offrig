@@ -1969,6 +1969,26 @@ async fn dead_launcher_closed_plan_terminates_marked_pod_warns_on_unmarked_and_n
         "{st_warn}"
     );
 
+    // Clearing the cached setting must still keep the warning active via closed_plans_with_unknown_create.
+    {
+        let s = Store::open(&db).expect("reopen clear setting");
+        s.clear_setting(&offrig_core::watchdog::unknown_pods_key(plan2))
+            .expect("clear unknown_pods setting");
+    }
+    let st_fallback = body(&call(&client, "offrig_status", json!({})).await);
+    assert!(
+        st_fallback["unknown_create_pods"]
+            .to_string()
+            .contains("pod-unmarked"),
+        "{st_fallback}"
+    );
+    assert!(
+        st_fallback["next_action"]
+            .as_str()
+            .is_some_and(|n| n.contains("abandoned create_pod") && n.contains("pod-unmarked")),
+        "{st_fallback}"
+    );
+
     // Once the candidate pod is shut down externally, offrig_status clears the warning.
     pods.lock().expect("pods").clear();
     let st_clean = body(&call(&client, "offrig_status", json!({})).await);

@@ -574,6 +574,54 @@ fn pod_already_terminated_in_journal(store: &Store, plan_id: i64, pod_id: &str) 
         })
 }
 
+fn terminate_closed_plan_create_pod(
+    store: &Store,
+    rp: &RunPod,
+    plan: &Plan,
+    entry_id: i64,
+    pod_id: &str,
+    via: Option<&str>,
+) -> Result<Verdict> {
+    let reason = if via.is_some() {
+        format!(
+            "plan is {}; terminating pod from in-flight create_pod",
+            plan.state
+        )
+    } else {
+        format!(
+            "plan is {}; terminating marked candidate after launcher died",
+            plan.state
+        )
+    };
+    let j = store.journal(
+        "watchdog_terminate",
+        Some(plan.id),
+        &serde_json::json!({ "pod": pod_id, "reason": reason }),
+    )?;
+    match rp.delete_pod(pod_id) {
+        Ok(()) | Err(crate::error::Error::Api { status: 404, .. }) => {
+            store.journal_outcome(j, "terminated")?;
+            let create_outcome = match via {
+                Some(how) => {
+                    format!(
+                        "created pod {pod_id} (terminated by watchdog on closed plan via {how})"
+                    )
+                }
+                None => format!("created pod {pod_id} (terminated by watchdog on closed plan)"),
+            };
+            store.journal_outcome(entry_id, &create_outcome)?;
+            let _ = store.clear_setting(&unknown_pods_key(plan.id));
+            Ok(Verdict::Terminate {
+                reason: format!("plan is {}; terminated pod {pod_id}", plan.state),
+            })
+        }
+        Err(e) => {
+            store.journal_outcome(j, &format!("terminate failed: {e}"))?;
+            Ok(Verdict::Wait)
+        }
+    }
+}
+
 fn unresolved_create_after_close(
     store: &Store,
     base_cfg: &crate::config::Config,
@@ -601,35 +649,14 @@ fn unresolved_create_after_close(
         if let Some((found, how)) =
             match_plan_pod(plan, &cfg, journal_id.as_deref(), &taken, &owned, false)
         {
-            let j = store.journal(
-                "watchdog_terminate",
-                Some(plan.id),
-                &serde_json::json!({
-                    "pod": found.id,
-                    "reason": format!("plan is {}; terminating pod from in-flight create_pod", plan.state)
-                }),
-            )?;
-            match rp.delete_pod(&found.id) {
-                Ok(()) | Err(crate::error::Error::Api { status: 404, .. }) => {
-                    store.journal_outcome(j, "terminated")?;
-                    store.journal_outcome(
-                        entry.id,
-                        &format!(
-                            "created pod {} (terminated by watchdog on closed plan via {})",
-                            found.id,
-                            how.as_str()
-                        ),
-                    )?;
-                    let _ = store.clear_setting(&unknown_pods_key(plan.id));
-                    return Ok(Verdict::Terminate {
-                        reason: format!("plan is {}; terminated pod {}", plan.state, found.id),
-                    });
-                }
-                Err(e) => {
-                    store.journal_outcome(j, &format!("terminate failed: {e}"))?;
-                    return Ok(Verdict::Wait);
-                }
-            }
+            return terminate_closed_plan_create_pod(
+                store,
+                rp,
+                plan,
+                entry.id,
+                &found.id,
+                Some(how.as_str()),
+            );
         }
         let creator_job = serde_json::from_str::<serde_json::Value>(&entry.intent)
             .ok()
@@ -658,34 +685,9 @@ fn unresolved_create_after_close(
                             .get(crate::spec::ENV_LANE)
                             .is_none_or(|l| l == expected_lane))
             }) {
-                let j = store.journal(
-                    "watchdog_terminate",
-                    Some(plan.id),
-                    &serde_json::json!({
-                        "pod": marked.id,
-                        "reason": format!("plan is {}; terminating marked candidate after launcher died", plan.state)
-                    }),
-                )?;
-                match rp.delete_pod(&marked.id) {
-                    Ok(()) | Err(crate::error::Error::Api { status: 404, .. }) => {
-                        store.journal_outcome(j, "terminated")?;
-                        store.journal_outcome(
-                            entry.id,
-                            &format!(
-                                "created pod {} (terminated by watchdog on closed plan)",
-                                marked.id
-                            ),
-                        )?;
-                        let _ = store.clear_setting(&unknown_pods_key(plan.id));
-                        return Ok(Verdict::Terminate {
-                            reason: format!("plan is {}; terminated pod {}", plan.state, marked.id),
-                        });
-                    }
-                    Err(e) => {
-                        store.journal_outcome(j, &format!("terminate failed: {e}"))?;
-                        return Ok(Verdict::Wait);
-                    }
-                }
+                return terminate_closed_plan_create_pod(
+                    store, rp, plan, entry.id, &marked.id, None,
+                );
             }
             if candidates.is_empty() {
                 store.journal_outcome(entry.id, ABANDONED_CREATE_UNKNOWN_OUTCOME)?;

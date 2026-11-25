@@ -601,3 +601,255 @@ fn an_unknown_plan_ends_the_watchdog() {
     );
     assert!(m.requests().is_empty());
 }
+
+fn make_pod(id: &str, name: &str, status: &str, plan_id: Option<i64>) -> offrig_core::runpod::Pod {
+    let mut env = std::collections::BTreeMap::new();
+    if let Some(pid) = plan_id {
+        env.insert("OFFRIG_PLAN".into(), pid.to_string());
+    }
+    offrig_core::runpod::Pod {
+        id: id.into(),
+        name: name.into(),
+        desired_status: status.into(),
+        image: String::new(),
+        public_ip: None,
+        port_mappings: None,
+        ports: Vec::new(),
+        cost_per_hr: 1.0,
+        gpu_count: 1,
+        last_started_at: None,
+        created_at: None,
+        network_volume_id: None,
+        machine: None,
+        env,
+    }
+}
+
+#[test]
+fn relaunch_snapshot_gate_covers_unknown_create_and_need_probe_branches() {
+    use offrig_core::config::Config;
+    use offrig_core::proc::{LAUNCH_HEARTBEAT_STALE_SECS, LivenessSnapshot};
+    use offrig_core::watchdog::{
+        FAILED_CREATE_UNKNOWN_STEP, RelaunchBlock, RelaunchGate, check_relaunch_allowed,
+        check_relaunch_allowed_with_snapshot, collect_relaunch_probe_targets,
+    };
+
+    let store = Store::open_in_memory().expect("store");
+    let cfg = Config::default();
+    let plan = committed(&store, 1.0, None);
+    let now = 2_000_000_000i64;
+    let stale_hb = now - LAUNCH_HEARTBEAT_STALE_SECS - 30;
+
+    // Stale running job + unfinished create_pod with empty snapshot -> NeedProbe((pid, start)).
+    let j1 = store
+        .create_launch_job(plan.id, 999_998, Some("orig-start"), stale_hb)
+        .expect("job1");
+    let jc = store
+        .journal(
+            "create_pod",
+            Some(plan.id),
+            &serde_json::json!({ "job_id": j1 }),
+        )
+        .expect("jc");
+    let (targets, unknown) = collect_relaunch_probe_targets(&store, plan.id).expect("targets");
+    assert!(!unknown);
+    assert_eq!(targets, vec![(999_998, Some("orig-start".to_string()))]);
+    let empty_snap = LivenessSnapshot::default();
+    assert!(matches!(
+        check_relaunch_allowed_with_snapshot(&store, &cfg, plan.id, now, &empty_snap, None),
+        Err(RelaunchBlock::NeedProbe((999_998, Some(ref s)))) if s == "orig-start"
+    ));
+
+    // Close create_pod, leave running launch job -> live current PID blocks; dead PID allows.
+    store.journal_outcome(jc, "abandoned").expect("close jc");
+    let j_self = store
+        .create_launch_job(plan.id, std::process::id(), None, now)
+        .expect("j_self");
+    assert!(matches!(
+        check_relaunch_allowed_with_snapshot(&store, &cfg, plan.id, now, &empty_snap, None),
+        Err(RelaunchBlock::Refused(_))
+    ));
+    let _ = store.update_job(
+        j_self,
+        "running",
+        &serde_json::json!({ "pid": 999_998u32, "heartbeat_at": stale_hb }),
+        None,
+    );
+    assert!(matches!(
+        check_relaunch_allowed_with_snapshot(&store, &cfg, plan.id, now, &empty_snap, None),
+        Err(RelaunchBlock::NeedProbe((999_998, None)))
+    ));
+
+    // failed_create_unknown requires list_pods search (`searched_pods`), refuses EXITED pods,
+    // and returns AdoptExisting for a live matching pod.
+    let _ = store.journal(
+        "create_pod",
+        Some(plan.id),
+        &serde_json::json!({ "job_id": j_self }),
+    );
+    let _ = store.update_job(
+        j_self,
+        "failed",
+        &serde_json::json!({ "step": FAILED_CREATE_UNKNOWN_STEP, "create_unknown": true }),
+        Some("failed_create_unknown"),
+    );
+    assert!(matches!(
+        check_relaunch_allowed_with_snapshot(&store, &cfg, plan.id, now, &empty_snap, None),
+        Err(RelaunchBlock::Refused(_))
+    ));
+    let exited_pod = make_pod("pod-ex", "offrig-frontier", "EXITED", Some(plan.id));
+    assert!(matches!(
+        check_relaunch_allowed_with_snapshot(
+            &store,
+            &cfg,
+            plan.id,
+            now,
+            &empty_snap,
+            Some(&[exited_pod])
+        ),
+        Err(RelaunchBlock::Refused(_))
+    ));
+    let live_pod = make_pod("pod-live", "offrig-frontier", "RUNNING", Some(plan.id));
+    assert_eq!(
+        check_relaunch_allowed_with_snapshot(
+            &store,
+            &cfg,
+            plan.id,
+            now,
+            &empty_snap,
+            Some(std::slice::from_ref(&live_pod)),
+        )
+        .expect("adopt gate"),
+        RelaunchGate::AdoptExisting("pod-live".into())
+    );
+    let err = check_relaunch_allowed(&store, plan.id, now, Some(&[live_pod]))
+        .expect_err("convenience wrapper refuses raw relaunch when adoptable pod exists");
+    assert!(err.to_string().contains("adopt that pod"), "{err}");
+}
+
+#[test]
+fn duplicate_sweep_and_closed_plan_journal_branches() {
+    let store = Store::open_in_memory().expect("store");
+    let closed_a = committed(&store, 1.0, None);
+    store.set_plan_lane(closed_a.id, "alpha").expect("lane a");
+    let d1 = store
+        .journal(
+            "terminate_duplicate_pod",
+            Some(closed_a.id),
+            &serde_json::json!({ "pod": "p-gone", "reason": "dup" }),
+        )
+        .expect("d1");
+    let d2 = store
+        .journal(
+            "terminate_duplicate_pod",
+            Some(closed_a.id),
+            &serde_json::json!({ "pod": "p-term", "reason": "dup" }),
+        )
+        .expect("d2");
+    let d3 = store
+        .journal(
+            "terminate_duplicate_pod",
+            Some(closed_a.id),
+            &serde_json::json!({ "pod": "p-other", "reason": "dup" }),
+        )
+        .expect("d3");
+    let d4 = store
+        .journal(
+            "terminate_duplicate_pod",
+            Some(closed_a.id),
+            &serde_json::json!({ "pod": "p-retry", "reason": "dup" }),
+        )
+        .expect("d4");
+    for d in [d1, d2, d3, d4] {
+        store.journal_outcome(d, "delete_failed: err").expect("df");
+    }
+    let jc_settled = store
+        .journal(
+            "create_pod",
+            Some(closed_a.id),
+            &serde_json::json!({ "job_id": 1 }),
+        )
+        .expect("jc_settled");
+    store
+        .journal_outcome(jc_settled, "created pod p-settled")
+        .expect("outcome");
+    store.close_plan(closed_a.id, 0.0).expect("close a");
+
+    let list_json = serde_json::Value::Array(vec![
+        serde_json::json!({ "id": "p-term", "name": "offrig-alpha-frontier", "status": "TERMINATED", "cost": 3.0 }),
+        serde_json::json!({ "id": "p-other", "name": "foreign-pod", "status": "RUNNING", "cost": 3.0 }),
+        serde_json::json!({ "id": "p-retry", "name": "offrig-alpha-frontier", "status": "RUNNING", "cost": 3.0 }),
+        serde_json::json!({ "id": "p-settled", "name": "offrig-alpha-frontier", "status": "RUNNING", "cost": 3.0 }),
+    ])
+    .to_string();
+    let m_500 = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => (200, list_json.clone()),
+        "DELETE /pods/p-retry" => (500, "err".to_string()),
+        "DELETE /pods/p-settled" => (500, "err".to_string()),
+        _ => (404, "{}".to_string()),
+    });
+    assert_eq!(
+        watchdog::step(&store, &rp(&m_500), closed_a.id).expect("step 500"),
+        Verdict::Wait
+    );
+    assert_eq!(m_500.count("DELETE /pods/p-retry"), 1);
+    assert_eq!(m_500.count("DELETE /pods/p-settled"), 1);
+
+    // Retry succeeds and cleans up remaining duplicate + settled-journal pod.
+    let list_json2 = serde_json::Value::Array(vec![
+        serde_json::json!({ "id": "p-retry", "name": "offrig-alpha-frontier", "status": "RUNNING", "cost": 3.0 }),
+        serde_json::json!({ "id": "p-settled", "name": "offrig-alpha-frontier", "status": "RUNNING", "cost": 3.0 }),
+    ])
+    .to_string();
+    let m_200 = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => (200, list_json2.clone()),
+        "DELETE /pods/p-retry" => (200, "{}".to_string()),
+        "DELETE /pods/p-settled" => (200, "{}".to_string()),
+        _ => (404, "{}".to_string()),
+    });
+    let v = watchdog::step(&store, &rp(&m_200), closed_a.id).expect("step 200");
+    assert!(matches!(v, Verdict::Terminate { .. }), "{v:?}");
+    assert!(
+        store
+            .unresolved_duplicate_pods_for_plan(closed_a.id)
+            .expect("dups")
+            .is_empty()
+    );
+
+    // Closed plan with unresolved create_pod: list_pods 500 -> Wait; dead launcher & no candidates -> ABANDONED_CREATE_UNKNOWN_OUTCOME + Exit.
+    let closed_b = committed(&store, 1.0, None);
+    let now = offrig_core::cost::now_unix();
+    let stale = now - offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS - 30;
+    let jb = store
+        .create_launch_job(closed_b.id, 999_997, None, stale)
+        .expect("jb");
+    let jcb = store
+        .journal(
+            "create_pod",
+            Some(closed_b.id),
+            &serde_json::json!({ "job_id": jb }),
+        )
+        .expect("jcb");
+    store.close_plan(closed_b.id, 0.0).expect("close b");
+
+    let m_err = serve(|_, _| (500, "down".to_string()));
+    assert_eq!(
+        watchdog::step(&store, &rp(&m_err), closed_b.id).expect("err step"),
+        Verdict::Wait
+    );
+    let m_empty = serve(|req, _| match req.route().as_str() {
+        "GET /pods" => (200, "[]".to_string()),
+        _ => (404, "{}".to_string()),
+    });
+    assert_eq!(
+        watchdog::step(&store, &rp(&m_empty), closed_b.id).expect("empty step"),
+        Verdict::Exit
+    );
+    let outcomes = store.journal_for_plan(closed_b.id).expect("jb outcomes");
+    assert!(
+        outcomes.iter().any(|(a, _, o)| a == "create_pod"
+            && o.as_deref() == Some(watchdog::ABANDONED_CREATE_UNKNOWN_OUTCOME)),
+        "{outcomes:?}"
+    );
+    let _ = jcb;
+}
