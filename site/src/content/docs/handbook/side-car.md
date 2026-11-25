@@ -180,14 +180,19 @@ the session and the side-car are all gone.
 
 - It never acts on a failed lookup.
 - Before closing a committed plan that has no `pod_id` (and on every step while `pod_id`
-  is unset), it checks the plan's `create_pod` journal and the lane's live pods (by
-  `OFFRIG_PLAN` marker and lane pod name), attaches any matching pod, and terminates it at
-  the deadline. A relaunch probes the lane first and re-attaches that pod instead of
-  creating a second.
-- Every planned pod starts a background on-pod deadline timer (`deadline + 120s`) using
-  RunPod's preinstalled `runpodctl` and the container's pod-scoped `RUNPOD_POD_ID` /
-  `RUNPOD_API_KEY` (no host API key is placed on the pod), as a backstop if the host
-  watchdog is lost.
+  is unset), it checks the plan's `create_pod` journal, the lane's live pods matching
+  `OFFRIG_PLAN` (strictly within the plan's lane), and (only when RunPod's listing omits
+  `env` for all pods, and never on the plain lane) the plan's exact lane pod name, attaches
+  any matching pod, and terminates it at the deadline. A relaunch probes the lane first
+  (reusing only `RUNNING`, `PROVISIONING`, or `STARTING` pods, and terminating any `EXITED`
+  or stopped pod instead), refuses to launch a second pod while an active `create_pod` is
+  still live in another side-car, and terminates any duplicate pod if a race still occurs.
+- Every planned pod writes `offrig self-stop: armed fire_at=<n>` or
+  `offrig self-stop: UNAVAILABLE (<missing>)` during bootstrap and starts the background
+  on-pod deadline timer (`deadline + 120s`) using RunPod's preinstalled `runpodctl` and the
+  container's pod-scoped `RUNPOD_POD_ID` / `RUNPOD_API_KEY` (no host API key is placed on
+  the pod), as a backstop if the host watchdog is lost; launch reads this status over SSH
+  into `offrig_job` and `offrig_status` and warns loudly when `UNAVAILABLE`.
 - Without `RUNPOD_API_KEY`, the watchdog exits non-zero and records the failure in the
   store (surfaced by `offrig_status`, `offrig_job`, and the desktop app), and
   `offrig_launch` refuses to start a paid pod if the key is missing or the watchdog fails

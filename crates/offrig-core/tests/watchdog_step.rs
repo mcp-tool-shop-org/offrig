@@ -312,6 +312,139 @@ fn an_orphan_pod_created_before_attach_is_found_and_terminated_at_the_deadline()
 }
 
 #[test]
+fn env_plan_marker_in_another_lane_never_matches() {
+    let store = Store::open_in_memory().expect("store");
+    let plan = committed(&store, 0.0001, None);
+    store.set_plan_lane(plan.id, "alpha").expect("lane");
+
+    let cfg = watchdog::cfg_in_plan_lane(&offrig_core::config::Config::default(), Some("alpha"));
+    let pid = plan.id.to_string();
+    let raw_pods = vec![
+        serde_json::json!({
+            "id": "p-beta",
+            "name": "offrig-beta-frontier",
+            "status": "RUNNING",
+            "cost": 3.0,
+            "env": {"OFFRIG_PLAN": pid, "OFFRIG_LANE": "beta"}
+        }),
+        serde_json::json!({
+            "id": "p-plain",
+            "name": "offrig-frontier",
+            "status": "RUNNING",
+            "cost": 3.0,
+            "env": {"OFFRIG_PLAN": pid, "OFFRIG_LANE": "plain"}
+        }),
+        serde_json::json!({
+            "id": "p-empty",
+            "name": "",
+            "status": "RUNNING",
+            "cost": 3.0,
+            "env": {"OFFRIG_PLAN": pid, "OFFRIG_LANE": "alpha"}
+        }),
+        serde_json::json!({
+            "id": "p-wrong-profile",
+            "name": "offrig-alpha-jam",
+            "status": "RUNNING",
+            "cost": 3.0,
+            "env": {"OFFRIG_PLAN": pid, "OFFRIG_LANE": "alpha"}
+        }),
+    ];
+    let parsed: Vec<offrig_core::runpod::Pod> = raw_pods
+        .iter()
+        .map(|v| serde_json::from_value(v.clone()).expect("pod"))
+        .collect();
+    assert_eq!(
+        watchdog::match_plan_pod(&plan, &cfg, None, &[], &parsed, false),
+        None,
+        "OFFRIG_PLAN on another lane or mismatched pod name must never match"
+    );
+
+    let list_body = serde_json::Value::Array(raw_pods).to_string();
+    let m = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => (200, list_body.clone()),
+        _ => (404, "{}".to_string()),
+    });
+    let verdict = watchdog::step(&store, &rp(&m), plan.id).expect("step");
+    assert!(
+        matches!(&verdict, Verdict::Close { reason } if reason.contains("before any pod")),
+        "{verdict:?}"
+    );
+    assert_eq!(m.count("DELETE /pods/p-beta"), 0);
+    assert_eq!(m.count("DELETE /pods/p-plain"), 0);
+    assert_eq!(m.count("DELETE /pods/p-empty"), 0);
+    assert_eq!(m.count("DELETE /pods/p-wrong-profile"), 0);
+    let closed = store.plan(plan.id).expect("read").expect("plan");
+    assert_eq!(closed.pod_id, None);
+}
+
+#[test]
+fn plain_lane_plan_and_env_present_listing_never_adopt_by_name_alone() {
+    let store = Store::open_in_memory().expect("store");
+    let plain_plan = committed(&store, 2.0, None);
+    let unmarked_plain = vec![serde_json::json!({
+        "id": "p-plain-unmarked",
+        "name": "offrig-frontier",
+        "desiredStatus": "RUNNING",
+        "costPerHr": 3.0
+    })];
+    let plain_list = serde_json::Value::Array(unmarked_plain.clone()).to_string();
+    let m_plain = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => (200, plain_list.clone()),
+        _ => (404, "{}".to_string()),
+    });
+    assert_eq!(
+        watchdog::step(&store, &rp(&m_plain), plain_plan.id).expect("step"),
+        Verdict::Wait
+    );
+    assert_eq!(
+        store
+            .plan(plain_plan.id)
+            .expect("read")
+            .expect("plan")
+            .pod_id,
+        None,
+        "plain-lane plan must never adopt an unmarked offrig-<profile> pod"
+    );
+
+    // Even in a project lane, if any pod in the listing carries env, an unmarked pod
+    // must not be adopted by name alone.
+    let lane_plan = committed(&store, 2.0, None);
+    store.set_plan_lane(lane_plan.id, "alpha").expect("lane");
+    let mixed = vec![
+        serde_json::json!({
+            "id": "p-alpha-unmarked",
+            "name": "offrig-alpha-frontier",
+            "status": "RUNNING",
+            "cost": 3.0
+        }),
+        serde_json::json!({
+            "id": "p-beta-marked",
+            "name": "offrig-beta-job",
+            "status": "RUNNING",
+            "cost": 0.5,
+            "env": {"OFFRIG_PLAN": "999", "OFFRIG_LANE": "beta"}
+        }),
+    ];
+    let mixed_list = serde_json::Value::Array(mixed).to_string();
+    let m_mixed = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => (200, mixed_list.clone()),
+        _ => (404, "{}".to_string()),
+    });
+    assert_eq!(
+        watchdog::step(&store, &rp(&m_mixed), lane_plan.id).expect("step"),
+        Verdict::Wait
+    );
+    assert_eq!(
+        store
+            .plan(lane_plan.id)
+            .expect("read")
+            .expect("plan")
+            .pod_id,
+        None
+    );
+}
+
+#[test]
 fn an_unknown_plan_ends_the_watchdog() {
     let m = serve(|_, _| (404, "{}".to_string()));
     let store = Store::open_in_memory().expect("store");

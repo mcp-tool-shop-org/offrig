@@ -8,20 +8,31 @@ All notable changes to offrig are documented here. The format is based on
 
 - **Orphan-pod recovery and on-pod deadline backstop:**
   - Before closing a pod-less committed plan (and on each step while `pod_id` is unset),
-    the watchdog now checks the plan's journal (`created pod <id>`) and the lane's live
-    pods (by `OFFRIG_PLAN` marker and lane pod name) so a pod created just before a host
-    crash is attached and terminated at the plan's deadline (`Unknown` lookups still never
-    act).
-  - `offrig_launch` now probes the lane before creating a pod and attaches an existing
-    live pod belonging to the plan instead of creating a second one.
+    the watchdog now checks the plan's journal (`created pod <id>`), `OFFRIG_PLAN` marker
+    (strictly within the plan's own lane via `owns_pod`), and (when RunPod's listing omitted
+    `env` for every pod, never on the plain lane) exact lane pod name so a pod created
+    just before a host crash is attached and terminated at the plan's deadline (`Unknown`
+    lookups still never act).
+  - Concurrent side-cars in the same project can no longer create a second pod for one plan:
+    `offrig_launch` refuses relaunch while `create_pod` has no outcome unless the launching
+    PID is gone and its heartbeat is stale beyond `LAUNCH_HEARTBEAT_STALE_SECS`, re-reads
+    the plan after create and terminates+journals any duplicate pod, and `Store::attach_pod`
+    refuses (and journals `attach_pod_conflict`) rather than silently overwriting an
+    existing `pod_id`.
+  - `offrig_launch` probes the lane before creating a pod and reuses only `RUNNING`,
+    `PROVISIONING`, or `STARTING` pods belonging to the plan; `EXITED` or stopped pods are
+    terminated and journalled instead of reused.
   - Every planned pod launch (model and job profiles) wires a background self-stop timer
     at `deadline + 120s` (`SELF_STOP_MARGIN_SECS`) using RunPod's preinstalled `runpodctl`
     with the container's injected `RUNPOD_POD_ID` and pod-scoped `RUNPOD_API_KEY` (no
-    studio/host API key is placed on the pod).
+    studio/host API key is placed on the pod), writes `offrig self-stop: armed fire_at=<n>`
+    or `offrig self-stop: UNAVAILABLE (<missing>)` to `/workspace/offrig/self-stop.status`
+    and `bootstrap.log`, and reads that status over SSH into `offrig_job` and
+    `offrig_status` (with a loud warning when `UNAVAILABLE`).
   - Watchdog startup without `RUNPOD_API_KEY` now exits non-zero and records the failure
     in the project store so `offrig_status`, `offrig_job`, and the desktop app surface the
-    unguarded plan loudly, and `offrig_launch` refuses to start a paid pod when the key
-    is missing or the watchdog cannot start.
+    unguarded plan loudly (instructing to shut down held pods), and `offrig_launch` refuses
+    to start a paid pod when the key is missing or the watchdog cannot start.
 - Dependency lockfile bump (`Cargo.lock`): `url` 2.5.8 -> 2.5.9 (with `form_urlencoded` 1.2.2 -> 1.2.3) for RUSTSEC-2026-0592, and `cookie` -> 0.18.3 for RUSTSEC-2026-0594.
 
 ## [1.3.0] - 2026-11-05

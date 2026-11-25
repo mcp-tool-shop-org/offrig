@@ -91,7 +91,9 @@ impl Progress<'_> {
         v
     }
 
-    fn push(&self) {
+    fn push(&mut self) {
+        self.v["pid"] = json!(std::process::id());
+        self.v["heartbeat_at"] = json!(now_unix());
         // Progress is advisory; a failed write must not stop the launch.
         let _ = self.store.update_job(self.job, "running", &self.v, None);
     }
@@ -382,6 +384,123 @@ pub fn ensure_owned(cfg: &Config, pod: &Pod) -> Result<()> {
     )))
 }
 
+/// Only a `RUNNING` pod, or RunPod v2's starting states (`PROVISIONING` / `STARTING`,
+/// see `live_step` and `session::wait_ready`), may be reused by a probe before create.
+/// Any `EXITED`, stopped, or `ERROR` pod of this plan is terminated and journalled instead.
+pub fn pod_status_is_reusable(status: &str) -> bool {
+    matches!(status, "RUNNING" | "PROVISIONING" | "STARTING")
+}
+
+/// True only when `job` recorded a launching `pid` + `heartbeat_at` AND that process
+/// is no longer alive AND its heartbeat is older than `LAUNCH_HEARTBEAT_STALE_SECS`.
+pub fn launch_job_proven_dead(job: &offrig_core::store::Job, now: i64) -> bool {
+    let Some(pid) = job.progress["pid"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+    else {
+        return false;
+    };
+    let Some(hb) = job.progress["heartbeat_at"].as_i64() else {
+        return false;
+    };
+    !offrig_core::proc::pid_alive(pid)
+        && now.saturating_sub(hb) > offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS
+}
+
+/// Decide whether a committed pod-less `plan_id` may launch again:
+/// - if `create_pod` has an unfinished journal entry (`outcome IS NULL`), refuse unless the
+///   launch job that wrote it is proven dead (`!pid_alive(pid)` and stale heartbeat);
+/// - if the latest launch job is still `running` with a recorded `pid`, refuse unless proven dead.
+pub fn check_relaunch_allowed(store: &Store, plan_id: i64, now: i64) -> Result<()> {
+    let latest_launch = store.job_for_plan(plan_id, "launch")?;
+    if let Some(entry) = store.unfinished_create_pod(plan_id)? {
+        let creator_job = serde_json::from_str::<Value>(&entry.intent)
+            .ok()
+            .and_then(|v| v["job_id"].as_i64())
+            .and_then(|jid| store.job(jid).ok().flatten())
+            .or_else(|| latest_launch.clone());
+        let proven_dead = creator_job
+            .as_ref()
+            .is_some_and(|j| launch_job_proven_dead(j, now));
+        if !proven_dead {
+            return Err(Error::Refused(format!(
+                "plan {plan_id} has an unfinished create_pod journal entry (id {}) whose launching process is not proven dead; refusing relaunch so a second pod cannot be created",
+                entry.id
+            )));
+        }
+    }
+    if let Some(job) = latest_launch
+        && job.state == "running"
+        && job.progress["pid"].is_u64()
+        && !launch_job_proven_dead(&job, now)
+    {
+        return Err(Error::Refused(format!(
+            "plan {plan_id} already has a running launch job {} (pid {}) that is not proven dead; follow it with offrig_job instead of relaunching",
+            job.id, job.progress["pid"]
+        )));
+    }
+    Ok(())
+}
+
+fn terminate_duplicate_pod(
+    store: &Store,
+    rp: &RunPod,
+    plan_id: i64,
+    duplicate_id: &str,
+    kept_pod: &str,
+) -> Result<String> {
+    let j = store.journal(
+        "terminate_duplicate_pod",
+        Some(plan_id),
+        &json!({
+            "pod": duplicate_id,
+            "kept_pod": kept_pod,
+            "reason": "plan already holds another pod",
+        }),
+    )?;
+    let outcome = match rp.delete_pod(duplicate_id) {
+        Ok(()) => format!("terminated duplicate pod {duplicate_id} (plan keeps {kept_pod})"),
+        Err(d) if delete_already_gone(&d) => {
+            format!("terminated duplicate pod {duplicate_id} (plan keeps {kept_pod})")
+        }
+        Err(d) => format!(
+            "terminate duplicate pod {duplicate_id} failed: {}",
+            chain(&d)
+        ),
+    };
+    store.journal_outcome(j, &outcome)?;
+    Ok(outcome)
+}
+
+/// Re-read `plan_id` after pod creation and attach `pod` only if the plan does not
+/// already hold a different pod id; otherwise terminate `pod` at once and journal it.
+pub fn claim_or_terminate_duplicate_pod(
+    store: &Store,
+    rp: &RunPod,
+    plan_id: i64,
+    pod: &Pod,
+) -> Result<()> {
+    let current = store
+        .plan(plan_id)?
+        .ok_or_else(|| Error::Refused(format!("no plan {plan_id}")))?;
+    if current
+        .pod_id
+        .as_deref()
+        .is_some_and(|other| other != pod.id)
+        || store.attach_pod(plan_id, &pod.id).is_err()
+    {
+        let kept = store
+            .plan(plan_id)?
+            .and_then(|p| p.pod_id)
+            .unwrap_or_else(|| "another pod".into());
+        let outcome = terminate_duplicate_pod(store, rp, plan_id, &pod.id, &kept)?;
+        return Err(Error::Refused(format!(
+            "plan {plan_id} already holds pod {kept}; {outcome}"
+        )));
+    }
+    Ok(())
+}
+
 fn probe_existing_plan_pod(
     store: &Store,
     cfg: &Config,
@@ -389,25 +508,71 @@ fn probe_existing_plan_pod(
     plan: &Plan,
 ) -> Result<Option<(Pod, watchdog::PodMatch)>> {
     let pods = rp.list_pods()?;
-    let journal_id = store.journaled_pod_id(plan.id)?;
+    let listing_omitted_env = pods.iter().all(|p| p.env.is_empty());
+    let mut journal_id = store.journaled_pod_id(plan.id)?;
     let open = store.open_plans()?;
-    let taken: Vec<&str> = open
+    let mut excluded: Vec<String> = open
         .iter()
         .filter(|p| p.id != plan.id)
-        .filter_map(|p| p.pod_id.as_deref())
+        .filter_map(|p| p.pod_id.clone())
         .collect();
     let owned: Vec<Pod> = pods.into_iter().filter(|p| cfg.owns_pod(&p.name)).collect();
-    let Some((pod, how)) = watchdog::match_plan_pod(
-        plan,
-        cfg.lane_tag.as_deref(),
-        journal_id.as_deref(),
-        &taken,
-        &owned,
-    ) else {
-        return Ok(None);
-    };
-    ensure_plan_pod(cfg, plan, pod)?;
-    Ok(Some((pod.clone(), how)))
+    loop {
+        let taken: Vec<&str> = excluded.iter().map(String::as_str).collect();
+        let Some((matched, how)) = watchdog::match_plan_pod(
+            plan,
+            cfg,
+            journal_id.as_deref(),
+            &taken,
+            &owned,
+            listing_omitted_env,
+        ) else {
+            return Ok(None);
+        };
+        let pod = matched.clone();
+        ensure_plan_pod(cfg, plan, &pod)?;
+        if pod_status_is_reusable(&pod.desired_status) {
+            return Ok(Some((pod, how)));
+        }
+        let jt = store.journal(
+            "terminate_pod",
+            Some(plan.id),
+            &json!({
+                "pod": pod.id,
+                "name": pod.name,
+                "status": pod.desired_status,
+                "matched_by": how.as_str(),
+                "reason": "non-running pod found on probe",
+            }),
+        )?;
+        match rp.delete_pod(&pod.id) {
+            Ok(()) => {
+                let _ = offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, &pod.id);
+                store.journal_outcome(
+                    jt,
+                    &format!("terminated {} pod {}", pod.desired_status, pod.id),
+                )?;
+            }
+            Err(d) if delete_already_gone(&d) => {
+                let _ = offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, &pod.id);
+                store.journal_outcome(
+                    jt,
+                    &format!(
+                        "terminated {} pod {} (already gone)",
+                        pod.desired_status, pod.id
+                    ),
+                )?;
+            }
+            Err(d) => {
+                store.journal_outcome(jt, &format!("terminate failed: {}", chain(&d)))?;
+                return Err(d);
+            }
+        }
+        if journal_id.as_deref() == Some(pod.id.as_str()) {
+            journal_id = None;
+        }
+        excluded.push(pod.id);
+    }
 }
 
 fn launch(
@@ -445,7 +610,11 @@ fn launch(
     let mut progress = Progress {
         store,
         job: job_id,
-        v: json!({ "step": "starting" }),
+        v: json!({
+            "step": "starting",
+            "pid": std::process::id(),
+            "heartbeat_at": now_unix(),
+        }),
         gpu_types: plan.gpu_types.clone(),
         max_price_hr: plan.max_price_hr,
         min_cuda: min_cuda.clone(),
@@ -504,44 +673,48 @@ fn launch(
     progress.v["wait_minutes"] = json!(wait.limit.as_secs() / 60);
     // Probe the lane before creating: if a previous launch crashed between create and
     // attach, reuse and attach that live pod instead of renting a second one.
-    let pod = if let Some((existing, how)) =
-        probe_existing_plan_pod(store, cfg, &session.rp, &plan)?
-    {
-        let ja = store.journal(
-            "attach_existing_pod",
-            Some(plan_id),
-            &json!({
-                "pod": existing.id,
-                "name": existing.name,
-                "matched_by": how.as_str(),
-            }),
-        )?;
-        store.attach_pod(plan_id, &existing.id)?;
-        store.journal_outcome(
-            ja,
-            &format!("attached existing pod {} ({})", existing.id, how.as_str()),
-        )?;
-        existing
-    } else {
-        let j = store.journal(
-            "create_pod",
-            Some(plan_id),
-            &json!({ "profile": profile.name, "gpus": format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | ")) }),
-        )?;
-        let created = session.create_when_free(&body, wait, cancel, &mut |e| progress.event(e));
-        let pod = match created {
-            Ok(p) => {
-                store.journal_outcome(j, &format!("created pod {}", p.id))?;
-                p
-            }
-            Err(e) => {
-                store.journal_outcome(j, &format!("no pod: {}", chain(&e)))?;
-                return Err(e);
-            }
+    let pod =
+        if let Some((existing, how)) = probe_existing_plan_pod(store, cfg, &session.rp, &plan)? {
+            let ja = store.journal(
+                "attach_existing_pod",
+                Some(plan_id),
+                &json!({
+                    "pod": existing.id,
+                    "name": existing.name,
+                    "matched_by": how.as_str(),
+                }),
+            )?;
+            claim_or_terminate_duplicate_pod(store, &session.rp, plan_id, &existing)?;
+            store.journal_outcome(
+                ja,
+                &format!("attached existing pod {} ({})", existing.id, how.as_str()),
+            )?;
+            existing
+        } else {
+            let j = store.journal(
+                "create_pod",
+                Some(plan_id),
+                &json!({
+                    "job_id": job_id,
+                    "pid": std::process::id(),
+                    "profile": profile.name,
+                    "gpus": format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | "))
+                }),
+            )?;
+            let created = session.create_when_free(&body, wait, cancel, &mut |e| progress.event(e));
+            let pod = match created {
+                Ok(p) => {
+                    store.journal_outcome(j, &format!("created pod {}", p.id))?;
+                    p
+                }
+                Err(e) => {
+                    store.journal_outcome(j, &format!("no pod: {}", chain(&e)))?;
+                    return Err(e);
+                }
+            };
+            claim_or_terminate_duplicate_pod(store, &session.rp, plan_id, &pod)?;
+            pod
         };
-        store.attach_pod(plan_id, &pod.id)?;
-        pod
-    };
     progress.v["pod_id"] = json!(pod.id);
     progress.v["pod_created_at"] = json!(now_unix());
     progress.v["pod_status"] = json!(pod.desired_status);
@@ -599,6 +772,18 @@ fn launch(
                 progress.step(format!("WARNING: {w}"));
             }
         }
+        let self_stop = offrig_core::remote::read_self_stop(&cfg.ssh_alias)
+            .ok()
+            .flatten();
+        if let Some(line) = &self_stop {
+            progress.v["self_stop"] = json!(line);
+            let _ = store.set_plan_self_stop(plan_id, line);
+            if let Some(w) = spec::self_stop_warning(Some(line)) {
+                progress.step(format!("WARNING: {w}"));
+            } else {
+                progress.step(line.clone());
+            }
+        }
         if profile.is_job() {
             // Nothing is served: ready means sshd answers. Work goes up with offrig_put.
             return Ok(json!({
@@ -606,6 +791,7 @@ fn launch(
                 "pod_id": pod.id,
                 "cost_per_hr": pod.cost_per_hr,
                 "rented": rented,
+                "self_stop": self_stop,
                 "ssh_alias": cfg.ssh_alias,
                 "lane": cfg.lane_tag,
                 "job_dir": spec::JOB_DIR,
@@ -621,6 +807,7 @@ fn launch(
                 "pod_id": pod.id,
                 "cost_per_hr": pod.cost_per_hr,
                 "rented": rented,
+                "self_stop": self_stop,
                 "tunnel": cfg.tunnel_base_url(),
                 "lane": cfg.lane_tag,
                 "models": models,
@@ -636,6 +823,7 @@ fn launch(
                 "pod_id": pod.id,
                 "cost_per_hr": pod.cost_per_hr,
                 "rented": rented,
+                "self_stop": self_stop,
                 "tunnel": cfg.tunnel_base_url(),
                 "lane": cfg.lane_tag,
                 "models": models,
@@ -656,6 +844,7 @@ fn launch(
                 "pod_id": pod.id,
                 "cost_per_hr": pod.cost_per_hr,
                 "rented": rented,
+                "self_stop": self_stop,
                 "tunnel": cfg.tunnel_base_url(),
                 "lane": cfg.lane_tag,
                 "models": models,
@@ -1049,6 +1238,13 @@ pub fn lane_busy(
         }
     }
     let launching_plan = open.iter().find(|p| p.id == launching);
+    let listing_omitted_env = pods.iter().all(|p| p.env.is_empty());
+    let journal_id = launching_plan.and_then(|lp| store.journaled_pod_id(lp.id).ok().flatten());
+    let taken: Vec<&str> = open
+        .iter()
+        .filter(|p| p.id != launching)
+        .filter_map(|p| p.pod_id.as_deref())
+        .collect();
     for pod in pods {
         if cfg.owns_pod(&pod.name) && pod.desired_status != "TERMINATED" {
             let plan = open
@@ -1061,11 +1257,15 @@ pub fn lane_busy(
             if plan.is_none()
                 && let Some(lp) = launching_plan
                 && lp.pod_id.is_none()
-                && ensure_plan_pod(cfg, lp, pod).is_ok()
-                && pod
-                    .env
-                    .get(spec::ENV_PLAN)
-                    .is_none_or(|v| v == &launching.to_string())
+                && watchdog::match_plan_pod(
+                    lp,
+                    cfg,
+                    journal_id.as_deref(),
+                    &taken,
+                    std::slice::from_ref(pod),
+                    listing_omitted_env,
+                )
+                .is_some()
             {
                 continue;
             }
@@ -1908,5 +2108,121 @@ mod tests {
             lane_busy(&f.ctx, &f.store, &cfg, id, &[other_marked]).is_err(),
             "a pod marked for another plan still blocks"
         );
+    }
+
+    #[test]
+    fn pod_status_is_reusable_allows_only_running_and_v2_starting_states() {
+        for ok in ["RUNNING", "PROVISIONING", "STARTING"] {
+            assert!(pod_status_is_reusable(ok), "{ok}");
+        }
+        for bad in ["EXITED", "STOPPED", "ERROR", "TERMINATED", ""] {
+            assert!(!pod_status_is_reusable(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn launch_job_is_proven_dead_only_when_pid_gone_and_heartbeat_stale() {
+        let now = 1_700_000_000;
+        let stale_hb = now - offrig_core::proc::LAUNCH_HEARTBEAT_STALE_SECS - 1;
+        let fresh_hb = now - 10;
+        let make_job = |pid: Option<u32>, hb: Option<i64>| offrig_core::store::Job {
+            id: 1,
+            plan_id: 1,
+            kind: "launch".into(),
+            state: "running".into(),
+            progress: json!({ "pid": pid, "heartbeat_at": hb }),
+            error: None,
+            started_at: now,
+            updated_at: now,
+        };
+        // Current live pid + stale heartbeat -> NOT proven dead.
+        assert!(!launch_job_proven_dead(
+            &make_job(Some(std::process::id()), Some(stale_hb)),
+            now
+        ));
+        // Dead pid (unlikely u32::MAX / exited child; pid 0 returns false in pid_alive? wait: spawn+wait child)
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit", "0"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let dead_pid = child.id();
+        let _ = child.wait();
+
+        // Dead pid + fresh heartbeat -> NOT proven dead yet.
+        assert!(!launch_job_proven_dead(
+            &make_job(Some(dead_pid), Some(fresh_hb)),
+            now
+        ));
+        // Dead pid + stale heartbeat -> proven dead.
+        assert!(launch_job_proven_dead(
+            &make_job(Some(dead_pid), Some(stale_hb)),
+            now
+        ));
+        // Missing pid or heartbeat -> NOT proven dead.
+        assert!(!launch_job_proven_dead(
+            &make_job(None, Some(stale_hb)),
+            now
+        ));
+        assert!(!launch_job_proven_dead(
+            &make_job(Some(dead_pid), None),
+            now
+        ));
+
+        // Verify check_relaunch_allowed end-to-end against Store rows:
+        let f = Fixture::new("relaunch-guard");
+        let plan_id = f.planned("job");
+        f.store.commit_plan(plan_id).expect("commit");
+        // Live running launch job with live pid blocks relaunch even before create_pod.
+        let j_live = f
+            .store
+            .create_launch_job(plan_id, std::process::id(), now)
+            .expect("live job");
+        assert!(check_relaunch_allowed(&f.store, plan_id, now).is_err());
+
+        // Unfinished create_pod written by that job blocks relaunch even after pid dies
+        // while the heartbeat is still fresh, and succeeds only once pid is gone AND
+        // heartbeat is stale.
+        let jc = f
+            .store
+            .journal(
+                "create_pod",
+                Some(plan_id),
+                &json!({ "job_id": j_live, "pid": dead_pid }),
+            )
+            .expect("journal");
+        f.store
+            .update_job(
+                j_live,
+                "running",
+                &json!({ "pid": dead_pid, "heartbeat_at": fresh_hb }),
+                None,
+            )
+            .expect("update");
+        assert!(check_relaunch_allowed(&f.store, plan_id, now).is_err());
+
+        f.store
+            .update_job(
+                j_live,
+                "running",
+                &json!({ "pid": dead_pid, "heartbeat_at": stale_hb }),
+                None,
+            )
+            .expect("update stale");
+        check_relaunch_allowed(&f.store, plan_id, now)
+            .expect("dead pid + stale hb allows relaunch");
+        f.store
+            .journal_outcome(jc, "abandoned")
+            .expect("close journal");
     }
 }

@@ -166,45 +166,68 @@ pub fn expected_pod_name(lane_tag: Option<&str>, profile: &str) -> String {
     }
 }
 
-fn pod_in_plan_lane(lane_tag: Option<&str>, expected_name: &str, p: &Pod) -> bool {
-    let expected_lane = lane_tag.unwrap_or("plain");
-    p.name == expected_name
-        || p.env.get(crate::spec::ENV_LANE).map(String::as_str) == Some(expected_lane)
-        || lane_tag.is_some_and(|tag| p.name.starts_with(&format!("offrig-{tag}-")))
+/// Build a `Config` view in `lane_tag` (`None` is the plain lane) without
+/// mutating `lanes.toml`.
+pub fn cfg_in_plan_lane(
+    base: &crate::config::Config,
+    lane_tag: Option<&str>,
+) -> crate::config::Config {
+    let mut cfg = base.clone();
+    cfg.lane_tag = lane_tag.map(str::to_string);
+    cfg
 }
 
 /// Find a live pod belonging to `plan` when `plan.pod_id` is still unset:
-/// first by the journal's `created pod <id>`, then by the `OFFRIG_PLAN` marker in the
-/// plan's lane, then by the plan's exact lane pod name (when not marked for another plan).
+/// - filters every candidate through `cfg.owns_pod(&p.name)` (identical to `ops` probe)
+///   and the plan's expected lane pod name, never adopting another lane's or empty-named pod;
+/// - checks `journal_pod_id` first, then `OFFRIG_PLAN` marker (in the plan's lane);
+/// - falls back to `PodName` ONLY when the API listing omitted `env` for every pod
+///   (`listing_omitted_env`) AND the plan is in a named project lane (`cfg.lane_tag.is_some()`).
+///   A plain-lane plan never adopts a pod by name alone.
+///
 /// Pods already attached to another open plan (`taken_pod_ids`) are ignored.
 pub fn match_plan_pod<'a>(
     plan: &Plan,
-    lane_tag: Option<&str>,
+    cfg: &crate::config::Config,
     journal_pod_id: Option<&str>,
     taken_pod_ids: &[&str],
     pods: &'a [Pod],
+    listing_omitted_env: bool,
 ) -> Option<(&'a Pod, PodMatch)> {
-    let is_live =
-        |p: &&Pod| p.desired_status != "TERMINATED" && !taken_pod_ids.contains(&p.id.as_str());
+    let expected_name = expected_pod_name(cfg.lane_tag.as_deref(), &plan.profile);
+    let expected_lane = cfg.lane_tag.as_deref().unwrap_or("plain");
+    let is_owned_live = |p: &&Pod| {
+        p.desired_status != "TERMINATED"
+            && !taken_pod_ids.contains(&p.id.as_str())
+            && cfg.owns_pod(&p.name)
+    };
     if let Some(jid) = journal_pod_id
-        && let Some(p) = pods.iter().filter(is_live).find(|p| p.id == jid)
+        && let Some(p) = pods
+            .iter()
+            .filter(is_owned_live)
+            .find(|p| p.id == jid && p.name == expected_name)
     {
         return Some((p, PodMatch::Journal));
     }
     let plan_str = plan.id.to_string();
-    let expected_name = expected_pod_name(lane_tag, &plan.profile);
-    if let Some(p) = pods.iter().filter(is_live).find(|p| {
-        p.env.get(crate::spec::ENV_PLAN).map(String::as_str) == Some(plan_str.as_str())
-            && (p.name.is_empty() || pod_in_plan_lane(lane_tag, &expected_name, p))
+    if let Some(p) = pods.iter().filter(is_owned_live).find(|p| {
+        p.name == expected_name
+            && p.env.get(crate::spec::ENV_PLAN).map(String::as_str) == Some(plan_str.as_str())
+            && p.env
+                .get(crate::spec::ENV_LANE)
+                .is_none_or(|l| l == expected_lane)
     }) {
         return Some((p, PodMatch::EnvPlan));
     }
-    if let Some(p) = pods.iter().filter(is_live).find(|p| {
-        p.name == expected_name
-            && p.env
-                .get(crate::spec::ENV_PLAN)
-                .is_none_or(|v| v == &plan_str)
-    }) {
+    if listing_omitted_env
+        && cfg.lane_tag.is_some()
+        && let Some(p) = pods.iter().filter(is_owned_live).find(|p| {
+            p.name == expected_name
+                && p.env
+                    .get(crate::spec::ENV_PLAN)
+                    .is_none_or(|v| v == &plan_str)
+        })
+    {
         return Some((p, PodMatch::PodName));
     }
     None
@@ -225,6 +248,17 @@ fn look(rp: &RunPod, pod_id: Option<&str>) -> PodSeen {
 
 /// One watchdog step: look, decide, act, record. Returns what it decided.
 pub fn step(store: &Store, rp: &RunPod, plan_id: i64) -> Result<Verdict> {
+    let base_cfg = crate::config::Config::load().unwrap_or_default();
+    step_with_config(store, &base_cfg, rp, plan_id)
+}
+
+/// One watchdog step using an explicit base [`crate::config::Config`] for lane ownership filtering.
+pub fn step_with_config(
+    store: &Store,
+    base_cfg: &crate::config::Config,
+    rp: &RunPod,
+    plan_id: i64,
+) -> Result<Verdict> {
     let now = now_unix();
     store.clear_setting(&error_key(plan_id))?;
     store.set_setting(&heartbeat_key(plan_id), &now.to_string())?;
@@ -242,6 +276,9 @@ pub fn step(store: &Store, rp: &RunPod, plan_id: i64) -> Result<Verdict> {
             Ok(pods) => {
                 let journal_id = store.journaled_pod_id(plan_id)?;
                 let lane_tag = store.plan_lane(plan_id)?;
+                let cfg = cfg_in_plan_lane(base_cfg, lane_tag.as_deref());
+                let listing_omitted_env = pods.iter().all(|p| p.env.is_empty());
+                let owned: Vec<Pod> = pods.into_iter().filter(|p| cfg.owns_pod(&p.name)).collect();
                 let open = store.open_plans()?;
                 let taken: Vec<&str> = open
                     .iter()
@@ -250,10 +287,11 @@ pub fn step(store: &Store, rp: &RunPod, plan_id: i64) -> Result<Verdict> {
                     .collect();
                 if let Some((found, how)) = match_plan_pod(
                     &plan,
-                    lane_tag.as_deref(),
+                    &cfg,
                     journal_id.as_deref(),
                     &taken,
-                    &pods,
+                    &owned,
+                    listing_omitted_env,
                 ) {
                     let ja = store.journal(
                         "watchdog_attach_orphan",

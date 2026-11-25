@@ -34,9 +34,13 @@ sidebar:
 - **Runaway spend.** A plan's worst case is committed against a human-set cap before
   anything is rented, a launch takes only a plan id, and a watchdog ends every side-car pod
   at its deadline (including pods created just before a crash, matched via the journal,
-  `OFFRIG_PLAN`, and lane pod name). Every planned pod also starts an on-pod deadline
-  timer (`deadline + 120s`) using RunPod's preinstalled `runpodctl` and pod-scoped
-  credentials (never the host's `RUNPOD_API_KEY`). If `RUNPOD_API_KEY` is missing or the
+  `OFFRIG_PLAN` in the plan's lane, or lane pod name when `env` is omitted for all pods and
+  never on the plain lane; relaunches refuse concurrent live `create_pod` entries and
+  terminate any duplicate pod rather than overwriting `pod_id`). Every planned pod also
+  checks prerequisites during bootstrap, writes `offrig self-stop: armed fire_at=<n>` or
+  `offrig self-stop: UNAVAILABLE (<missing>)` (surfaced over SSH into `offrig_job` and
+  `offrig_status`), and starts the on-pod deadline timer (`deadline + 120s`) using RunPod's
+  preinstalled `runpodctl` and pod-scoped credentials (never the host's `RUNPOD_API_KEY`). If `RUNPOD_API_KEY` is missing or the
   watchdog cannot start, `offrig_launch` refuses to rent a paid pod and any unguarded
   plan is flagged in `offrig_status` and the desktop app. A recipe that hangs after startup, or that cannot answer one
   completion, is reported and left running, so it keeps billing until you shut it down

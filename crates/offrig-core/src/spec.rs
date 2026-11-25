@@ -187,9 +187,25 @@ pub const ENV_DEADLINE: &str = "OFFRIG_DEADLINE";
 /// The host watchdog polls every 60s, so 120s gives it first turn to terminate
 /// the pod and close the plan's books while bounding spend if the host dies.
 pub const SELF_STOP_MARGIN_SECS: i64 = 120;
+/// Path on the pod where bootstrap records whether the on-pod self-stop backstop armed.
+pub const SELF_STOP_STATUS_FILE: &str = "/workspace/offrig/self-stop.status";
+/// Line prefix written by bootstrap and read over SSH after pod boot.
+pub const SELF_STOP_PREFIX: &str = "offrig self-stop: ";
 
-const SELF_STOP_START: &str = "# offrig-self-stop: fire_at=";
-const SELF_STOP_END: &str = "</dev/null >/dev/null 2>&1 &\n";
+const SELF_STOP_START: &str = "# offrig-self-stop-begin\n";
+const SELF_STOP_END: &str = "# offrig-self-stop-end\n";
+
+/// Build a warning message when the pod's self-stop status line reports `UNAVAILABLE`.
+pub fn self_stop_warning(status: Option<&str>) -> Option<String> {
+    let line = status?.trim();
+    if line.contains("UNAVAILABLE") {
+        Some(format!(
+            "{line}; on-pod backstop is not armed, so keep the host watchdog running until offrig_shutdown"
+        ))
+    } else {
+        None
+    }
+}
 
 /// Background timer placed in a planned pod's bootstrap script as a backstop
 /// beneath the host watchdog.
@@ -203,17 +219,24 @@ const SELF_STOP_END: &str = "</dev/null >/dev/null 2>&1 &\n";
 pub fn self_stop_timer(deadline: i64) -> String {
     let fire_at = deadline.saturating_add(SELF_STOP_MARGIN_SECS);
     format!(
-        "{SELF_STOP_START}{fire_at}\n\
-         (now=$(date -u +%s); wait=$(({fire_at} - now)); \
-         if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
-         mkdir -p /workspace/offrig; \
-         echo \"[offrig] on-pod deadline {fire_at} reached; stopping ${{RUNPOD_POD_ID:-unknown}}\" >> /workspace/offrig/bootstrap.log 2>&1; \
-         if [ -n \"${{RUNPOD_POD_ID:-}}\" ]; then \
-           runpodctl pod delete \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1 \
-           || runpodctl remove pod \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1 \
-           || runpodctl pod stop \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1 \
-           || runpodctl stop pod \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1; \
-         fi) {SELF_STOP_END}"
+        "{SELF_STOP_START}\
+         _offrig_ss_missing=\"\"; \
+         if ! command -v runpodctl >/dev/null 2>&1; then _offrig_ss_missing=\"runpodctl\"; fi; \
+         if [ -z \"${{RUNPOD_POD_ID:-}}\" ]; then _offrig_ss_missing=\"${{_offrig_ss_missing:+$_offrig_ss_missing, }}RUNPOD_POD_ID\"; fi; \
+         mkdir -p {STATE_DIR}; \
+         if [ -z \"$_offrig_ss_missing\" ]; then \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at}\" | tee {SELF_STOP_STATUS_FILE}; \
+           (now=$(date -u +%s); wait=$(({fire_at} - now)); \
+           if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
+           echo \"[offrig] on-pod deadline {fire_at} reached; stopping ${{RUNPOD_POD_ID}}\" >> {STATE_DIR}/bootstrap.log 2>&1; \
+           runpodctl pod delete \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1 \
+           || runpodctl remove pod \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1 \
+           || runpodctl pod stop \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1 \
+           || runpodctl stop pod \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1) </dev/null >/dev/null 2>&1 & \
+         else \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}UNAVAILABLE ($_offrig_ss_missing)\" | tee {SELF_STOP_STATUS_FILE}; \
+         fi\n\
+         {SELF_STOP_END}"
     )
 }
 
@@ -857,6 +880,21 @@ mod tests {
                 "{}: {cmd}",
                 profile.name
             );
+            assert!(
+                cmd.contains("offrig self-stop: armed fire_at="),
+                "{}: {cmd}",
+                profile.name
+            );
+            assert!(
+                cmd.contains("offrig self-stop: UNAVAILABLE ("),
+                "{}: {cmd}",
+                profile.name
+            );
+            assert!(
+                cmd.contains(SELF_STOP_STATUS_FILE),
+                "{}: {cmd}",
+                profile.name
+            );
             let timer_pos = cmd.find("fire_at=").expect("timer");
             let main_pos = cmd
                 .find("exec ollama serve")
@@ -877,5 +915,17 @@ mod tests {
             assert!(wire["env"].get("RUNPOD_API_KEY").is_none());
         }
         assert!(saw_model && saw_job, "both model and job profiles tested");
+    }
+
+    #[test]
+    fn self_stop_warning_triggers_only_on_unavailable() {
+        assert_eq!(self_stop_warning(None), None);
+        assert_eq!(
+            self_stop_warning(Some("offrig self-stop: armed fire_at=1900000120")),
+            None
+        );
+        let warn = self_stop_warning(Some("offrig self-stop: UNAVAILABLE (runpodctl)"))
+            .expect("must warn");
+        assert!(warn.contains("UNAVAILABLE (runpodctl)"), "{warn}");
     }
 }

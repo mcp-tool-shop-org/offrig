@@ -739,6 +739,7 @@ impl Sidecar {
                         "watchdog_alive": wd_alive,
                         "watchdog_guarding": wd_err.is_none() && wd_alive,
                         "watchdog_error": wd_err,
+                        "self_stop": s.plan_self_stop(p.id).ok().flatten(),
                         "runner_alive": runner::alive(s, p.id, now),
                     })
                 })
@@ -925,12 +926,37 @@ impl Sidecar {
                 ))
             })
             .collect();
+        let unguarded_has_pod = open_plans
+            .iter()
+            .any(|p| p["watchdog_error"].is_string() && p["pod_id"].is_string());
         let next = if watchdog_warnings.is_empty() {
+            next
+        } else if unguarded_has_pod {
+            format!(
+                "WARNING, watchdog is not guarding: {}. Set RUNPOD_API_KEY and shut down before spending more. Then: {next}",
+                watchdog_warnings.join("; ")
+            )
+        } else {
+            format!(
+                "WARNING, watchdog is not guarding: {}. Set RUNPOD_API_KEY before relaunching or close the plan. Then: {next}",
+                watchdog_warnings.join("; ")
+            )
+        };
+        let self_stop_warnings: Vec<String> = open_plans
+            .iter()
+            .filter_map(|p| {
+                let w = offrig_core::spec::self_stop_warning(p["self_stop"].as_str())?;
+                let pid = p["plan_id"].as_i64()?;
+                let prof = p["profile"].as_str().unwrap_or("unknown");
+                Some(format!("plan {pid} ({prof}): {w}"))
+            })
+            .collect();
+        let next = if self_stop_warnings.is_empty() {
             next
         } else {
             format!(
-                "WARNING, watchdog is not guarding: {}. Set RUNPOD_API_KEY and shut down or relaunch before spending more. Then: {next}",
-                watchdog_warnings.join("; ")
+                "WARNING, on-pod self-stop is unavailable: {}. Keep the host watchdog running until offrig_shutdown. Then: {next}",
+                self_stop_warnings.join("; ")
             )
         };
         ok(json!({
@@ -996,6 +1022,7 @@ impl Sidecar {
             },
             "open_plans": open_plans,
             "watchdog_warnings": watchdog_warnings,
+            "self_stop_warnings": self_stop_warnings,
             "openrouter_completions": completions,
             "unfinished_side_effects": journal.len(),
             "next_action": next,
@@ -1628,6 +1655,15 @@ impl Sidecar {
                 "run offrig_status, shut the plan down with offrig_shutdown, and plan again",
             );
         }
+        if plan.state == "committed"
+            && let Err(e) =
+                self.with_store(|s| ops::check_relaunch_allowed(s, id, cost::now_unix()))
+        {
+            return fail_err(
+                &e,
+                "follow the active launch with offrig_job or shut the plan down with offrig_shutdown",
+            );
+        }
         // Refuse to start a paid pod when the RunPod key is missing and the watchdog
         // cannot run.
         if let Err(e) = RunPod::from_env() {
@@ -1653,24 +1689,34 @@ impl Sidecar {
             }
         };
         // Refuse if any other open plan has a failed watchdog that is not guarding.
-        if let Err(e) = self.with_store(|s| {
+        let other_unguarded_has_pod = match self.with_store(|s| {
             if let Some(other) = s
                 .open_plans()?
                 .into_iter()
                 .find(|p| p.id != id && watchdog::failure(s, p.id).ok().flatten().is_some())
             {
-                return Err(offrig_core::Error::Refused(format!(
-                    "plan {} ({}) has a watchdog that is not guarding; resolve it before launching another paid pod",
-                    other.id, other.profile
-                )));
+                return Ok((
+                    other.pod_id.is_some(),
+                    Some(offrig_core::Error::Refused(format!(
+                        "plan {} ({}) has a watchdog that is not guarding; resolve it before launching another paid pod",
+                        other.id, other.profile
+                    ))),
+                ));
             }
-            Ok(())
+            Ok((false, None))
         }) {
-            return fail_err(
-                &e,
-                "shut down or relaunch the unguarded plan before starting another paid pod; nothing was spent",
-            );
-        }
+            Ok((has_pod, Some(e))) => {
+                let next = if has_pod {
+                    "shut down the unguarded plan before starting another paid pod; nothing was spent"
+                } else {
+                    "set RUNPOD_API_KEY and relaunch or close the unguarded plan before starting another paid pod; nothing was spent"
+                };
+                return fail_err(&e, next);
+            }
+            Ok((_, None)) => false,
+            Err(e) => return fail_err(&e, "check the project database; nothing was spent"),
+        };
+        let _ = other_unguarded_has_pod;
         // One lane, one ssh alias, one pod at a time: a lane that already has a live
         // plan refuses a second launch before anything remote is asked.
         if let Err(e) = self.with_store(|s| ops::lane_busy(&self.ctx, s, &cfg, id, &[])) {
@@ -1708,14 +1754,32 @@ impl Sidecar {
             .unwrap_or_else(|e| balances::Balance::Unknown(e.to_string()));
         let guard = account::AccountGuard::new(scope, balance);
         let newly_committed = plan.state != "committed";
-        let committed = match self.with_store(|s| {
+        let now = cost::now_unix();
+        let (committed, job_id) = match self.with_store(|s| {
             let _ = s.clear_setting(&watchdog::error_key(id));
             if let Err(e) = ops::lane_busy(&self.ctx, s, &cfg, id, &lane_pods) {
                 return Ok(Err(e));
             }
-            if newly_committed {
-                s.commit_plan_with_account(id, &guard).map(Ok)
+            let current = s
+                .plan(id)?
+                .ok_or_else(|| offrig_core::Error::Refused(format!("no plan {id}")))?;
+            if let Some(existing_pod) = current.pod_id.as_deref() {
+                return Ok(Err(offrig_core::Error::Refused(format!(
+                    "plan {id} already holds pod {existing_pod}"
+                ))));
+            }
+            let p = if newly_committed {
+                s.commit_plan_with_account(id, &guard)?
             } else {
+                if let Err(e) = ops::check_relaunch_allowed(s, id, now) {
+                    return Ok(Err(e));
+                }
+                if let Some(entry) = s.unfinished_create_pod(id)? {
+                    let _ = s.journal_outcome(
+                        entry.id,
+                        "abandoned: launching process died before recording outcome",
+                    );
+                }
                 if let Some(stale) = s.job_for_plan(id, "launch")?
                     && stale.state == "running"
                 {
@@ -1730,29 +1794,27 @@ impl Sidecar {
                         Some("previous side-car exited before launch finished"),
                     )?;
                 }
-                Ok(Ok(s.plan(id)?.ok_or_else(|| {
-                    offrig_core::Error::Refused(format!("no plan {id}"))
-                })?))
+                current
+            };
+            match s.create_launch_job(id, std::process::id(), now) {
+                Ok(job_id) => Ok(Ok((p, job_id))),
+                Err(e) => {
+                    if newly_committed {
+                        let _ = s.close_plan(id, 0.0);
+                    }
+                    Err(e)
+                }
             }
         }) {
-            Ok(Ok(p)) => p,
+            Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 return fail_err(
                     &e,
-                    "shut that pod down first (offrig_shutdown, offrig down from the CLI, or the app); nothing was spent",
+                    "shut that pod down first (or follow the running launch with offrig_job); nothing was spent",
                 );
             }
             Err(e) => {
                 return fail_err(&e, "make a cheaper or shorter plan; nothing was spent");
-            }
-        };
-        let job_id = match self.with_store(|s| s.create_job(id, "launch")) {
-            Ok(j) => j,
-            Err(e) => {
-                if newly_committed {
-                    let _ = self.with_store(|s| s.close_plan(id, 0.0));
-                }
-                return fail_err(&e, "nothing was rented; the commitment was released");
             }
         };
         let wd = self.with_store(|s| {
@@ -2014,7 +2076,12 @@ impl Sidecar {
         // the plan did not list, a price above the plan's) is repeated at the top level
         // and, except on a hung or unresponsive report, in next_action so it cannot be
         // missed. Those two reports keep their own sentence. Nothing is terminated for it.
-        let warnings: Vec<String> = job.progress["rented"]["warnings"]
+        if progress["self_stop"].is_null()
+            && let Ok(Some(line)) = self.with_store(|s| s.plan_self_stop(job.plan_id))
+        {
+            progress["self_stop"] = json!(line);
+        }
+        let mut warnings: Vec<String> = job.progress["rented"]["warnings"]
             .as_array()
             .map(|w| {
                 w.iter()
@@ -2022,6 +2089,9 @@ impl Sidecar {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(w) = offrig_core::spec::self_stop_warning(progress["self_stop"].as_str()) {
+            warnings.push(w);
+        }
         let next = if report_only || warnings.is_empty() {
             next
         } else {
@@ -2398,6 +2468,7 @@ fn run_watchdog(project: &Path, plan_id: i64) -> anyhow::Result<()> {
         .map_or(Duration::from_secs(60), Duration::from_secs);
     #[cfg(not(debug_assertions))]
     let poll = Duration::from_secs(60);
+    let base_cfg = Config::load().unwrap_or_default();
     wlog(project, plan_id, "watchdog started");
     loop {
         let rp = match RunPod::from_env() {
@@ -2409,7 +2480,7 @@ fn run_watchdog(project: &Path, plan_id: i64) -> anyhow::Result<()> {
                 anyhow::bail!("watchdog for plan {plan_id} {msg}");
             }
         };
-        match watchdog::step(&store, &rp, plan_id) {
+        match watchdog::step_with_config(&store, &base_cfg, &rp, plan_id) {
             Ok(Verdict::Wait) => {}
             Ok(v) => {
                 wlog(project, plan_id, &format!("{v:?}"));
