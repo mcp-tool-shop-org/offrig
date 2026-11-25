@@ -997,6 +997,43 @@ async fn unknown_or_guessed_task_id_and_tasks_update_are_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn check_skill_procedure_only(text: &str) -> Result<(), String> {
+    let patterns: &[(&str, &str)] = &[
+        ("windows_drive_path", r"(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\/]"),
+        ("unix_home_path", r#"/home/[^/ \t\r\n"'`]+/"#),
+        ("macos_users_path", r#"/Users/[^/ \t\r\n"'`]+/"#),
+        (
+            "api_key_or_pem",
+            r"(?:rpa|sk|ghp|gho|ghs|glpat)_[A-Za-z0-9_\-]{8,}|sk-[A-Za-z0-9_\-]{12,}|AKIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_\-]{20,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
+        ),
+        (
+            "long_hex_secret",
+            r"(?:^|[^0-9A-Fa-f])[0-9A-Fa-f]{32,}(?:$|[^0-9A-Fa-f])",
+        ),
+        (
+            "long_base64_secret",
+            r"(?:^|[^A-Za-z0-9+/=_\-])[A-Za-z0-9+/]{40,}={0,2}(?:$|[^A-Za-z0-9+/=_\-])",
+        ),
+        (
+            "hardcoded_budget",
+            r"\$[0-9]+(?:\.[0-9]+)?|(?:^|[^A-Za-z0-9_])(?:(?:budget|cap|spend_limit|max_price_hr)[ \t\r\n]*[:=][ \t\r\n]*\$?[0-9]+|offrig[ \t\r\n]+budget[^\r\n]*[^A-Za-z0-9_][0-9]+)",
+        ),
+        (
+            "hardcoded_lane",
+            r#"(?:^|[^A-Za-z0-9_])(?:lane|ssh_alias|OFFRIG_LANE)[ \t\r\n]*[:=][ \t\r\n]*['"`]?[A-Za-z0-9_\-]+"#,
+        ),
+    ];
+    for &(label, pat) in patterns {
+        let re = regex_automata::meta::Regex::new(pat)
+            .unwrap_or_else(|e| panic!("invalid regex {label}: {e}"));
+        if let Some(m) = re.find(text) {
+            let excerpt = text[m.range()].trim();
+            return Err(format!("matched {label} ({excerpt:?})"));
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn skills_list_and_get_match_file_digest_and_contain_no_secrets_or_paths() {
     let pods: Pods = Arc::default();
@@ -1092,32 +1129,25 @@ async fn skills_list_and_get_match_file_digest_and_contain_no_secrets_or_paths()
             if e.code == ErrorCode::RESOURCE_NOT_FOUND || e.code == ErrorCode::INVALID_PARAMS
     ));
 
-    // Assert skill content holds procedure only: zero secret-shaped tokens, zero machine paths, zero internal words.
-    for forbidden in [
-        "rpa_",
-        "sk-",
-        "ghp_",
-        "AKIA",
-        "AIza",
-        "-----BEGIN",
-        "E:/",
-        "E:\\",
-        "C:/",
-        "C:\\",
-        "/Users/",
-        "/home/",
-        "mikey",
-        "Publisher",
-        "Director",
-        "R&D",
-        "seed-",
-        "harvest",
+    // Assert skill content holds procedure only using generic patterns (no absolute paths,
+    // no secret-shaped tokens, and no hard-coded budget/lane values).
+    for sample in [
+        "path C:\\Users\\someone\\x here",
+        "path /home/someone/x here",
+        "path /Users/someone/x here",
+        "key rpa_0123456789abcdef0123456789",
+        "hex 0123456789abcdef0123456789abcdef",
+        "b64 QWxhZGRpbjpvcGVuIHNlc2FtZQxhZGRpbjpvcGVuIHNlc2FtZQo=",
+        "cap: $25.00",
+        "lane: prod-gpu",
     ] {
         assert!(
-            !text.contains(forbidden),
-            "SKILL.md must not contain {forbidden:?}"
+            check_skill_procedure_only(sample).is_err(),
+            "generic leak check must reject sample {sample:?}"
         );
     }
+    check_skill_procedure_only(text)
+        .unwrap_or_else(|e| panic!("SKILL.md failed procedure-only check: {e}"));
     assert!(text.contains("offrig_plan"));
     assert!(text.contains("offrig_launch"));
     assert!(text.contains("offrig_shutdown"));

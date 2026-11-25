@@ -6362,7 +6362,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "7beb65854b5f04fea35b07c0ae81f0ba4cf88c38e25f63896c3dc746242de166",
+          "hash": "dced990ee785a65d648296284d49204c5c2c03531b7fe09fabb5bbdad14300f1",
           "path": "crates/offrig-mcp/Cargo.toml"
         },
         {
@@ -8549,7 +8549,7 @@
           "testsInside": true
         },
         {
-          "hash": "fdbccb69128e3bdd576b14dadadc18f10182b083f69c52d066d8f52206eb3685",
+          "hash": "2d090a2ec00cc0b7dec2ca2c36c6d8bb83c9f6b11e0a53a667866a768c24304f",
           "importOrder": [
             "crates/offrig-mcp/tests/common/mod.rs",
             "crates/offrig-core/src/config.rs",
@@ -8647,7 +8647,7 @@
           "path": "CHANGELOG.md"
         },
         {
-          "hash": "a6a48ca630791ba62f168189783d7de163d85689ddccc307c4c8e6d7ad3a853d",
+          "hash": "6e3ebf633dd914378fe80b34c47547c2e4847c438d92130cdbaf250307ac3aef",
           "path": "Cargo.lock"
         },
         {
@@ -10185,7 +10185,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "e640e3be8318f9897f94eac98e73616813f087e7",
+    "commit": "2bd768c979f982bf36bae9a4076b387e3858d070",
     "tracked": 166
   },
   "landings": [

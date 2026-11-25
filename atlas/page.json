@@ -42,70 +42,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 5,
-      "changed": 24,
+      "added": 0,
+      "changed": 3,
       "moved": 0,
-      "parts": 4,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci now also runs crates/offrig-core/src/proc.rs, crates/offrig-mcp/src/skills.rs, crates/offrig-mcp/src/tasks.rs and 2 more.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "crates/offrig-core/src/proc.rs",
-          "crates/offrig-mcp/src/skills.rs",
-          "crates/offrig-mcp/src/tasks.rs",
-          "crates/offrig-mcp/tests/orphan_pod.rs",
-          "crates/offrig-mcp/tests/tasks_skills.rs"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "crates/offrig-mcp/skills/offrig-session/SKILL.md is now read by crates/offrig-mcp/src/skills.rs.",
-        "subjects": [
-          "crates/offrig-mcp/skills/offrig-session/SKILL.md",
-          "crates/offrig-mcp/src/skills.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-app/src/worker.rs, `spawn` gained a step, `unguarded_in_scope`, before `new`.",
-        "subjects": [
-          "crates/offrig-app/src/worker.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In crates/offrig-core/src/siblings.rs, `read_plan` gained a step, `failure`, before `chain`.",
-        "subjects": [
-          "crates/offrig-core/src/siblings.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "crates/offrig-core/src/watchdog.rs now starts at `check_relaunch_allowed`; it started at `step`.",
-        "subjects": [
-          "crates/offrig-core/src/watchdog.rs"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "And 4 more changes to the order of work.",
-        "subjects": []
-      },
-      {
         "kind": "counts",
-        "sentence": "5 files added and 24 changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-11-25; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "bc5901991dc67099b29272085dc63c4ed5799e8b",
-      "generatedAt": "2026-11-12T00:42:44.243Z"
+      "commit": "e640e3be8318f9897f94eac98e73616813f087e7",
+      "generatedAt": "2026-11-25T05:30:19.008Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -139,9 +93,24 @@
       "shared": 5
     },
     {
+      "a": "crates/offrig-mcp/src/main.rs",
+      "b": "crates/offrig-mcp/src/ops.rs",
+      "either": 34,
+      "partLabels": [
+        "offrig-mcp",
+        "offrig-mcp"
+      ],
+      "parts": [
+        "offrig-mcp",
+        "offrig-mcp"
+      ],
+      "relation": "inside",
+      "shared": 17
+    },
+    {
       "a": "crates/offrig-core/src/lib.rs",
       "b": "crates/offrig-core/src/store.rs",
-      "either": 23,
+      "either": 24,
       "partLabels": [
         "offrig-core",
         "offrig-core"
@@ -152,21 +121,6 @@
       ],
       "relation": "inside",
       "shared": 12
-    },
-    {
-      "a": "crates/offrig-core/src/spec.rs",
-      "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 22,
-      "partLabels": [
-        "offrig-core",
-        "offrig-mcp"
-      ],
-      "parts": [
-        "offrig-core",
-        "offrig-mcp"
-      ],
-      "relation": "b-imports-a",
-      "shared": 11
     },
     {
       "a": "crates/offrig-core/src/calibrate_run.rs",
@@ -189,7 +143,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "e640e3be8318f9897f94eac98e73616813f087e7",
+  "commit": "2bd768c979f982bf36bae9a4076b387e3858d070",
   "defaultBranch": "main",
   "derived": "6 parts, mostly Rust (90 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
@@ -558,7 +512,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-25T05:30:19.008Z",
+  "generatedAt": "2026-11-25T05:48:01.099Z",
   "limits": [
     "14 writes and 8 reads use paths built at run time and are not named here.",
     "11 writes and 13 reads go to a path their caller passes, not to this repository.",

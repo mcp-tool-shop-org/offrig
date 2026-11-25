@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-11-25 from commit e640e3b by Atlas 1.26.0.
+Mapped at 2026-11-25 from commit 2bd768c by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,15 +8,9 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 6 parts, mostly Rust (90 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-11-12 (bc59019)
+## What changed since 2026-11-25 (e640e3b)
 
-- ci now also runs crates/offrig-core/src/proc.rs, crates/offrig-mcp/src/skills.rs, crates/offrig-mcp/src/tasks.rs and 2 more.
-- crates/offrig-mcp/skills/offrig-session/SKILL.md is now read by crates/offrig-mcp/src/skills.rs.
-- In crates/offrig-app/src/worker.rs, `spawn` gained a step, `unguarded_in_scope`, before `new`.
-- In crates/offrig-core/src/siblings.rs, `read_plan` gained a step, `failure`, before `chain`.
-- crates/offrig-core/src/watchdog.rs now starts at `check_relaunch_allowed`; it started at `step`.
-- And 4 more changes to the order of work.
-- 5 files added and 24 changed content, across 4 parts.
+Nothing structural changed since 2026-11-25; 3 files changed content.
 
 ## What comes in
 
@@ -62,8 +56,8 @@ ci writes nothing this map can see.
 
 - **crates/offrig-cli/src/verify_cmd.rs** and **crates/offrig-core/src/calibrate_run.rs** changed together in 7 of 10 commits, and the offrig-cli part imports the offrig-core part.
 - **crates/offrig-core/src/runpod.rs** and **crates/offrig-core/src/stage.rs** changed together in 5 of 9 commits, inside the offrig-core part.
-- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 12 of 23 commits, inside the offrig-core part.
-- **crates/offrig-core/src/spec.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 11 of 22 commits, and the offrig-mcp part imports the offrig-core part.
+- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 17 of 34 commits, inside the offrig-mcp part.
+- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 12 of 24 commits, inside the offrig-core part.
 - **crates/offrig-core/src/calibrate_run.rs** and **crates/offrig-core/src/verify.rs** changed together in 5 of 10 commits, inside the offrig-core part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.

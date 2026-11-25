@@ -2783,6 +2783,7 @@ version = "1.3.0"
 dependencies = [
  "anyhow",
  "offrig-core",
+ "regex-automata",
  "rmcp",
  "rusqlite",
  "serde",
