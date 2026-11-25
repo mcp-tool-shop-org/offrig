@@ -6,6 +6,10 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-25
+
+**A pod offrig launches from a plan is never left running unseen, and MCP clients can follow a launch as a task.** For planned launches, the watchdog now finds pods whose launching process died before the pod was recorded and terminates them (or, when it cannot tell, flags them in `offrig_status` as `unknown_create_pods`), a launch probes before it creates, and the pod carries an on-pod deadline timer. Pods started by hand with `offrig up` or from the app are not covered. The side-car also serves `offrig_launch` as an MCP task and the `offrig-session` procedure as an MCP skill.
+
 - **MCP Tasks for `offrig_launch` (`io.modelcontextprotocol/tasks`) and static `offrig-session` skill (`io.modelcontextprotocol/skills`):**
   - Raised the `rmcp` dependency floor in `crates/offrig-mcp/Cargo.toml` from `3.5.0` to `3.9.0` (while keeping `Cargo.lock` at `3.9.0`) because `io.modelcontextprotocol/skills` (`skills/list` and `skills/get`) requires `rmcp 3.9.0`.
   - Declared `io.modelcontextprotocol/tasks` on the side-car server. Per-request when the client declares tasks support, `offrig_launch` returns a `CreateTaskResult` with an opaque OS-CSPRNG (`getrandom`) `taskId` mapped to the launch job; `tasks/get` projects the launch job's state (`working`, `completed` including tool-level `isError: true` failures, `cancelled`, and `failed` reserved for protocol errors) alongside `progress`, `warnings`, and `deadline`; `tasks/cancel` rejects terminal tasks (`-32602`, directing callers to `offrig_shutdown`) and on running launches routes through `offrig_shutdown` with `"task cancelled"` without pre-cancelling before in-flight handoffs are checked (reporting that the pod is still running and how to proceed via `offrig_shutdown` with a `reason` if refused); `tasks/update` is refused; `ttlMs` governs task handle retention only while `plan.deadline()`, the watchdog, and on-pod self-stop remain authoritative. Non-declaring clients continue to receive the unchanged synchronous `offrig_launch` + `offrig_job` flow.

@@ -169,7 +169,7 @@ recusado, não apenas o de outro canal). Cada resposta da ferramenta de trabalho
 `project` e `plan_id` em que atuou (as respostas da ferramenta de trabalho também indicam o `lane`); `offrig_status`
 indica o `project` e lista todos os planos abertos com seu `plan_id`, canal e nome do pod.
 
-**Tarefas e skills.** Um cliente compatível com MCP Tasks pode executar `offrig_launch` como tarefa: `tasks/get` mostra o mesmo estado que `offrig_job`, e `tasks/cancel` encerra a sessão por meio de `offrig_shutdown`. O prazo do plano e o watchdog continuam decidindo quando um pod para. O servidor também publica uma skill de procedimento, `offrig-session`. Os detalhes estão no [manual do side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).
+**Tarefas e skills.** Um cliente compatível com MCP Tasks pode executar `offrig_launch` como tarefa: `tasks/get` mostra o mesmo estado que `offrig_job`, e `tasks/cancel` cancela uma inicialização ainda em andamento (por meio de `offrig_shutdown`); para parar uma sessão já pronta, chame `offrig_shutdown`. O prazo do plano e o watchdog continuam decidindo quando um pod para. O servidor também publica uma skill de procedimento, `offrig-session`. Os detalhes estão no [manual do side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).
 
 Os papéis vêm do Role OS (pastas e cartões de pacote inicial) mais quatro papéis de jogo incluídos
 aqui nos formatos do Role OS: designer de jogos, designer de sistemas, designer de narrativa,

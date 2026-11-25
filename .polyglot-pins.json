@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "pins": {
+    "c7d88f6ee3de4446:es": {
+      "lang": "es",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**Tareas y skills.** Un cliente compatible con MCP Tasks puede ejecutar `offrig_launch` como tarea: `tasks/get` muestra el mismo estado que `offrig_job`, y `tasks/cancel` cancela un lanzamiento que aún está en curso (mediante `offrig_shutdown`); para detener una sesión ya lista, llama a `offrig_shutdown`. El plazo del plan y el watchdog siguen decidiendo cuándo se detiene un pod. El servidor también publica una skill de procedimiento, `offrig-session`. Los detalles están en el [manual del side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "pinnedAt": "2026-11-25T18:32:27.330Z"
+    },
+    "c7d88f6ee3de4446:fr": {
+      "lang": "fr",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**Tâches et skills.** Un client qui prend en charge MCP Tasks peut exécuter `offrig_launch` comme tâche : `tasks/get` affiche le même état que `offrig_job`, et `tasks/cancel` annule un lancement encore en cours (via `offrig_shutdown`) ; pour arrêter une session prête, appelez `offrig_shutdown`. L'échéance du plan et le watchdog décident toujours du moment où un pod s'arrête. Le serveur publie aussi une skill de procédure, `offrig-session`. Les détails se trouvent dans le [manuel du side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "pinnedAt": "2026-11-25T18:32:27.332Z"
+    },
+    "c7d88f6ee3de4446:hi": {
+      "lang": "hi",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**टास्क और स्किल।** MCP Tasks का समर्थन करने वाला क्लाइंट `offrig_launch` को टास्क के रूप में चला सकता है: `tasks/get` वही स्थिति दिखाता है जो `offrig_job` दिखाता है, और `tasks/cancel` अभी चल रहे लॉन्च को रद्द करता है (`offrig_shutdown` के ज़रिए); तैयार सत्र को रोकने के लिए `offrig_shutdown` कॉल करें। पॉड कब रुकेगा, यह अब भी प्लान की समय-सीमा और वॉचडॉग तय करते हैं। सर्वर एक प्रक्रिया स्किल, `offrig-session`, भी प्रकाशित करता है। विवरण [side-car हैंडबुक](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks) में है।",
+      "pinnedAt": "2026-11-25T18:32:27.332Z"
+    },
+    "c7d88f6ee3de4446:it": {
+      "lang": "it",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**Task e skill.** Un client che supporta MCP Tasks può eseguire `offrig_launch` come task: `tasks/get` mostra lo stesso stato di `offrig_job` e `tasks/cancel` annulla un avvio ancora in corso (tramite `offrig_shutdown`); per fermare una sessione già pronta, chiama `offrig_shutdown`. La scadenza del piano e il watchdog decidono ancora quando un pod si ferma. Il server pubblica anche una skill di procedura, `offrig-session`. I dettagli sono nel [manuale del side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "pinnedAt": "2026-11-25T18:32:27.333Z"
+    },
+    "c7d88f6ee3de4446:ja": {
+      "lang": "ja",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**タスクとスキル。** MCP Tasks に対応したクライアントは `offrig_launch` をタスクとして実行できます。`tasks/get` は `offrig_job` と同じ状態を示し、`tasks/cancel` は進行中の起動を（`offrig_shutdown` を通じて）取り消します。準備済みのセッションを止めるには `offrig_shutdown` を呼び出してください。ポッドをいつ停止するかは、引き続きプランの期限とウォッチドッグが決めます。サーバーは手順スキル `offrig-session` も 1 つ公開しています。詳しくは [side-car ハンドブック](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks) を参照してください。",
+      "pinnedAt": "2026-11-25T18:32:27.333Z"
+    },
+    "c7d88f6ee3de4446:pt": {
+      "lang": "pt",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**Tarefas e skills.** Um cliente compatível com MCP Tasks pode executar `offrig_launch` como tarefa: `tasks/get` mostra o mesmo estado que `offrig_job`, e `tasks/cancel` cancela uma inicialização ainda em andamento (por meio de `offrig_shutdown`); para parar uma sessão já pronta, chame `offrig_shutdown`. O prazo do plano e o watchdog continuam decidindo quando um pod para. O servidor também publica uma skill de procedimento, `offrig-session`. Os detalhes estão no [manual do side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "pinnedAt": "2026-11-25T18:32:27.334Z"
+    },
+    "c7d88f6ee3de4446:zh": {
+      "lang": "zh",
+      "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
+      "translation": "**任务与技能。** 支持 MCP Tasks 的客户端可以把 `offrig_launch` 作为任务运行：`tasks/get` 显示与 `offrig_job` 相同的状态，`tasks/cancel` 取消仍在进行中的启动（通过 `offrig_shutdown`）；要停止已就绪的会话，请调用 `offrig_shutdown`。何时停止 pod 仍由计划的期限和 watchdog 决定。服务器还发布一个流程技能 `offrig-session`。详情见 [side-car 手册](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks)。",
+      "pinnedAt": "2026-11-25T18:32:27.334Z"
+    }
+  }
+}
