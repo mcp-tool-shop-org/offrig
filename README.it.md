@@ -162,6 +162,8 @@ quindi una sessione sopravvive alla compressione o a un riavvio senza dover spie
 
 **A quale piano di lavoro si applica uno strumento di gestione dei lavori.** `offrig_put`, `offrig_exec` e `offrig_get` accettano un `plan_id` opzionale. Con esattamente un piano di lavoro attivo e nessun `plan_id`, lo utilizzano come prima. Con più di un piano di lavoro attivo e nessun `plan_id`, lo rifiutano e elencano i piani attivi (ID, profilo, nome del pod): non fanno mai supposizioni. Con un `plan_id`, agiscono solo sul pod di quel piano e solo dopo aver verificato che il nome del pod corrisponda a quello del piano (il pod di un altro "lane" viene rifiutato, non solo di un altro piano). Ogni risposta dello strumento di gestione dei lavori e `offrig_job` indica il `project` e il `plan_id` su cui ha agito (lo strumento di gestione dei lavori indica anche il `lane`); `offrig_status` indica il `project` ed elenca ogni piano attivo con il suo `plan_id`, "lane" e nome del pod.
 
+**Task e skill.** Un client che supporta MCP Tasks può eseguire `offrig_launch` come task: `tasks/get` mostra lo stesso stato di `offrig_job` e `tasks/cancel` chiude la sessione tramite `offrig_shutdown`. La scadenza del piano e il watchdog decidono ancora quando un pod si ferma. Il server pubblica anche una skill di procedura, `offrig-session`. I dettagli sono nel [manuale del side-car](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).
+
 I ruoli derivano da Role OS (cartelle e schede di avvio) più quattro ruoli di gioco forniti qui nei formati di Role OS: game designer, system designer, narrative designer, lore keeper. Il limite di budget è stabilito solo da un essere umano:
 
 ```text

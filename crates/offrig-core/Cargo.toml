@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 dirs = "7.0.0"
+getrandom = "0.4.3"
 ignore = "0.4.33"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 rusqlite = { version = "0.42.0", features = ["bundled"] }

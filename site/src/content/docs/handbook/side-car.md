@@ -233,6 +233,50 @@ fail before that cost different amounts, and `offrig_job` says which happened:
 Count a `pod_not_ready` as a paid attempt; a `no_capacity` can simply be retried. A capacity wait counts against the plan's hours, so leave room for it
 in `max_hours`.
 
+## Tasks
+
+When a client declares the `io.modelcontextprotocol/tasks` extension capability on a request,
+`offrig_launch` returns a `CreateTaskResult` (`resultType: "task"`) holding an opaque,
+server-generated bearer `taskId` mapped to the launch job row in the project database, plus
+`pollIntervalMs` (`5000` ms) and a display-only `ttlMs`. Clients that do not declare the
+capability receive the synchronous `offrig_launch` response and poll `offrig_job` unchanged;
+support is selected per request rather than session-wide so subagents and one-shot calls keep
+working beside task-aware sessions.
+
+- **Read-only view:** `tasks/get` projects the live launch job row (`working` while booting,
+  `completed` when ready or when a tool-level launch error occurred — including `isError: true`
+  failures such as `no_capacity` or `pod_not_ready`, per SEP-2663, reserving `failed` strictly
+  for JSON-RPC protocol errors — and `cancelled` once stopped) alongside `progress`, `warnings`,
+  `deadline`, `minutes_left`, and `spent_so_far`. Unknown, guessed, or expired task IDs are
+  refused (`-32602`). `tasks/update` is not supported and is refused cleanly.
+- **Cancel semantics:** `tasks/cancel` is accepted only for non-terminal (`working`) tasks;
+  calling `tasks/cancel` on a task already in a terminal status (`completed`, `failed`, or
+  `cancelled`) is rejected with `-32602` (`INVALID_PARAMS`) pointing callers to `offrig_shutdown`
+  so an already-ready pod is never stopped by a late cancel or rewritten in its terminal payload.
+  For a live launch, `tasks/cancel` routes directly through `offrig_shutdown` with the fixed
+  reason `"task cancelled"`, which sets the launch cancel flag only after passing the
+  in-flight-handoffs check. If `offrig_shutdown` refuses because handoffs are still active, the
+  launch continues running uncancelled, the refusal is recorded, and `tasks/get` reports that
+  the pod is still running, why, and how to proceed (`offrig_shutdown` with a `reason`).
+- **`ttlMs` is display-only:** `ttlMs` controls only how long task handle metadata stays in
+  the database (`plan.deadline()` plus a 10-minute buffer by default). Once `ttlMs` elapses,
+  the task mapping is purged, while the pod remains governed solely by `plan.deadline()`, the
+  detached watchdog, and the on-pod self-stop timer. Clients that exit without sending
+  `tasks/cancel`, clamp `pollIntervalMs`, or ignore expired tasks never leave an unguarded pod.
+
+## Skills
+
+`offrig-mcp` declares `io.modelcontextprotocol/skills` alongside `resources` (`skills/list`,
+`skills/get`, and `resources/read`) to serve one static, procedure-only skill at
+`skill://offrig/offrig-session/SKILL.md`. It explains the order to plan, launch, follow, run
+handoffs or job commands, and shut down a rented GPU session.
+
+- **Static manifest with digest:** The skill manifest lists `SkillResources::Files` with exact
+  byte size and `sha256:` digest (never `"resources": "dynamic"`).
+- **Procedure only, untrusted text:** Policy enforcement (budget caps, lane ownership,
+  deadlines, and shutdown checks) stays in server code; the skill carries no secrets, policy
+  overrides, or machine paths.
+
 ## Handoffs and the runner
 
 A **handoff** is a unit of work for the pod's model, headed by a role and carrying an

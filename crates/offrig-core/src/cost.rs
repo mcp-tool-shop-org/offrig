@@ -90,6 +90,13 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+pub fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// Spend since the pod last started, at its hourly rate.
 pub fn session_cost(cost_per_hr: f64, started_unix: i64, now_unix: i64) -> f64 {
     let secs = (now_unix - started_unix).max(0);
