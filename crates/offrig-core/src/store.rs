@@ -2255,11 +2255,19 @@ impl Store {
             .map_err(db("reading a setting"))
     }
 
+    /// Clear a setting by exact key.
     pub fn clear_setting(&self, key: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM settings WHERE key = ?1", params![key])
             .map_err(db("clearing a setting"))?;
         Ok(())
+    }
+
+    /// Generate 128 bits of non-guessable lowercase hex entropy via SQLite's CSPRNG.
+    pub fn random_hex_128(&self) -> Result<String> {
+        self.conn
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
+            .map_err(db("generating random token"))
     }
 
     /// Read all `(key, value)` pairs whose key begins with `prefix`.

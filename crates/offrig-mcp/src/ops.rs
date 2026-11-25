@@ -1212,6 +1212,9 @@ pub fn ask(
     }))
 }
 
+/// Fixed reason recorded when an MCP `tasks/cancel` shuts a plan down.
+pub const TASK_CANCEL_REASON: &str = "task cancelled";
+
 /// Terminate the plan's pod and close its books with the spend measured.
 pub fn shutdown(
     db: &Path,
@@ -1219,6 +1222,20 @@ pub fn shutdown(
     ctx: &LaneCtx,
     plan_id: i64,
     reason: Option<&str>,
+) -> Result<Value> {
+    let allow_in_flight_override = reason.map(str::trim).is_some_and(|r| !r.is_empty());
+    shutdown_with_override(db, shared, ctx, plan_id, reason, allow_in_flight_override)
+}
+
+/// Terminate the plan's pod and close its books, separating an explicit caller override for
+/// in-flight handoffs from an automatic protocol-level reason such as `TASK_CANCEL_REASON`.
+pub fn shutdown_with_override(
+    db: &Path,
+    shared: &Shared,
+    ctx: &LaneCtx,
+    plan_id: i64,
+    reason: Option<&str>,
+    allow_in_flight_override: bool,
 ) -> Result<Value> {
     let store = Store::open(db)?;
     let plan = store
@@ -1235,7 +1252,7 @@ pub fn shutdown(
         .map(|h| h.id)
         .collect();
     let reason = reason.map(str::trim).filter(|r| !r.is_empty());
-    if !in_flight.is_empty() && reason.is_none() {
+    if !in_flight.is_empty() && !allow_in_flight_override {
         return Err(Error::Refused(format!(
             "handoffs {in_flight:?} are in flight and their work lives on the pod; record a checkpoint for each \
              (offrig_memory_record kind=checkpoint task_id=<id>) or pass a reason to terminate anyway"

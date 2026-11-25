@@ -10,9 +10,11 @@
 mod complete;
 mod ops;
 mod runner;
+mod skills;
+mod tasks;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -599,6 +601,210 @@ impl Sidecar {
             Ok(Ok(v)) => ok(v),
             Ok(Err(e)) => fail_err(&e, "check the paths; the pod bills until shutdown"),
             Err(e) => fail_internal(&e, "retry"),
+        }
+    }
+
+    async fn build_job_snapshot(&self, job: store::Job) -> (Value, Option<String>) {
+        let now = cost::now_unix();
+        // While the pod boots, the launch thread's last step can be minutes old (a slow
+        // host), so look at the pod now. After ssh is up the launch's own steps are
+        // current by construction and are shown as they are.
+        let mut progress = job.progress.clone();
+        if job.state == "running"
+            && progress["phase"] == "pod_boot"
+            && let Some(pod_id) = progress["pod_id"].as_str().map(str::to_string)
+        {
+            let created = progress["pod_created_at"].as_i64();
+            match tokio::task::spawn_blocking(move || ops::live_progress(&pod_id, created)).await {
+                Ok(Ok(view)) => {
+                    progress["launch_step"] = progress["step"].take();
+                    progress["launch_step_at"] = progress["at"].take();
+                    progress["step"] = json!(view.step);
+                    progress["pod_status"] = json!(view.pod_status);
+                    progress["at"] = json!(now);
+                    progress["step_source"] = json!("the pod's state, checked just now");
+                }
+                Ok(Err(e)) => progress["live_check_error"] = json!(chain(&e)),
+                Err(e) => progress["live_check_error"] = json!(e.to_string()),
+            }
+        }
+        let plan = self.with_store(|s| s.plan(job.plan_id)).ok().flatten();
+        let deadline = plan.as_ref().and_then(|p| p.deadline().map(when));
+        let alive = self
+            .with_store(|s| Ok(watchdog::alive(s, job.plan_id, now, WATCHDOG_STALE_SECS)))
+            .unwrap_or(false);
+        let wd_err = self
+            .with_store(|s| watchdog::failure(s, job.plan_id))
+            .ok()
+            .flatten();
+        let rate = job.progress["cost_per_hr"].as_f64();
+        // A stopped launch recorded its own cost when it closed the plan; the
+        // time-based figure below would keep growing after the pod was terminated.
+        let failure = job.progress["failure"].clone();
+        let (spent, left) = match &plan {
+            _ if failure["spent"].is_number() => (failure["spent"].as_f64(), None),
+            Some(p) if p.pod_id.is_some() => (
+                Some(watchdog::spend(p, rate.unwrap_or(p.max_price_hr), now)),
+                p.deadline().map(|d| (d - now).max(0) / 60),
+            ),
+            Some(p) => (Some(0.0), p.deadline().map(|d| (d - now).max(0) / 60)),
+            None => (None, None),
+        };
+        let next = match job.state.as_str() {
+            "running" => "check again in about a minute",
+            "done" if job.progress["job_dir"].is_string() => {
+                "the job pod is ready: offrig_put your files, offrig_exec the work, offrig_get the results, then offrig_shutdown"
+            }
+            "done" => {
+                "the pod is ready: work handoffs with offrig_ask, and shut down with offrig_shutdown when done"
+            }
+            "cancelled" => "the launch was stopped; nothing more is billing for it",
+            _ if job.progress["step"] == watchdog::FAILED_CREATE_UNKNOWN_STEP => {
+                "the launch ended while create_pod had no outcome (failed_create_unknown); run offrig_launch to search RunPod and recover or relaunch, or offrig_shutdown to close the plan"
+            }
+            _ if failure["pod_rented"] == true => {
+                "the pod was rented and billed before the launch stopped; offrig terminated it and closed the plan at the spend shown (failure.spent). Read failure.code, then plan again"
+            }
+            _ if failure["pod_rented"] == false => {
+                "nothing was rented and nothing was spent. Read failure.code, then plan again"
+            }
+            _ => "read the error; a pod rented by this launch was terminated; plan again",
+        };
+        // A hung or unresponsive engine names its own next step, and that
+        // sentence is the whole next_action. A rental warning stays in
+        // `warnings` so it cannot replace it.
+        let report_only =
+            job.progress["step"] == "engine_hung" || job.progress["step"] == "engine_unresponsive";
+        let next = if report_only {
+            let fallback = if job.progress["step"] == "engine_hung" {
+                offrig_core::session::ENGINE_HUNG_NEXT
+            } else {
+                offrig_core::session::ENGINE_UNRESPONSIVE_NEXT
+            };
+            job.progress["next_action"]
+                .as_str()
+                .unwrap_or(fallback)
+                .to_string()
+        } else {
+            next.to_string()
+        };
+        // What was rented, set against the plan. A mismatch (an old host driver, a GPU
+        // the plan did not list, a price above the plan's) is repeated at the top level
+        // and, except on a hung or unresponsive report, in next_action so it cannot be
+        // missed. Those two reports keep their own sentence. Nothing is terminated for it.
+        if progress["self_stop"].is_null()
+            && let Ok(Some(line)) = self.with_store(|s| s.plan_self_stop(job.plan_id))
+        {
+            progress["self_stop"] = json!(line);
+        }
+        let mut warnings: Vec<String> = job.progress["rented"]["warnings"]
+            .as_array()
+            .map(|w| {
+                w.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(w) = offrig_core::spec::self_stop_warning(progress["self_stop"].as_str()) {
+            warnings.push(w);
+        }
+        let next = if report_only || warnings.is_empty() {
+            next
+        } else {
+            format!(
+                "WARNING, read before using this pod: {} Then: {next}",
+                warnings.join(" ")
+            )
+        };
+        let rented = &job.progress["rented"];
+        (
+            json!({
+                "project": self.project.display().to_string(),
+                "job_id": job.id,
+                "plan_id": job.plan_id,
+                "state": job.state,
+                "progress": progress,
+                "rented": rented,
+                "gpu_count": rented["gpu_count"],
+                "gpus": rented["gpus"],
+                "planned_gpu_count": rented["planned_gpu_count"],
+                "gpu_mismatch": rented["gpu_mismatch"],
+                "gpu_mismatch_source": rented["gpu_mismatch_source"],
+                "measured_gpu_count": rented["measured_gpu_count"],
+                "warnings": warnings,
+                "error": job.error,
+                "code": failure["code"],
+                "retryable": failure["retryable"],
+                "pod_rented": failure["pod_rented"],
+                "failure": failure,
+                "plan_state": plan.as_ref().map(|p| p.state.clone()),
+                "watchdog_alive": alive,
+                "watchdog_error": wd_err,
+                "minutes_left": left,
+                "spent_so_far": spent,
+                "next_action": next,
+            }),
+            deadline,
+        )
+    }
+
+    async fn execute_shutdown(
+        &self,
+        plan_id: i64,
+        reason: Option<String>,
+        allow_in_flight_override: bool,
+    ) -> Result<Value, Box<CallToolResult>> {
+        let (db, shared, ctx) = (
+            self.db_path(),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.ctx),
+        );
+        let res = tokio::task::spawn_blocking(move || {
+            ops::shutdown_with_override(
+                &db,
+                &shared,
+                &ctx,
+                plan_id,
+                reason.as_deref(),
+                allow_in_flight_override,
+            )
+        })
+        .await;
+        match res {
+            Ok(Ok(mut v)) => {
+                let unresolved_create = v["pending_create_in_flight"] == json!(true)
+                    || self
+                        .with_store(|s| Ok(s.unfinished_create_pod(plan_id)?.is_some()))
+                        .unwrap_or(false);
+                if unresolved_create {
+                    if !self
+                        .with_store(|s| {
+                            Ok(watchdog::alive(
+                                s,
+                                plan_id,
+                                cost::now_unix(),
+                                WATCHDOG_STALE_SECS,
+                            ))
+                        })
+                        .unwrap_or(false)
+                    {
+                        let _ = spawn_watchdog(&self.project, plan_id);
+                    }
+                    v["next_action"] = json!(
+                        "WARNING, create_pod has no outcome, so a pod may exist; the plan watchdog is running to terminate any pod carrying this plan's marker or flag unmarked candidates in offrig_status. Then: record the session's results in memory; plan again only when there is queued work"
+                    );
+                } else {
+                    v["next_action"] = json!(
+                        "record the session's results in memory; plan again only when there is queued work"
+                    );
+                }
+                Ok(v)
+            }
+            Ok(Err(e)) => Err(Box::new(fail_err(
+                &e,
+                "follow the error; the pod still bills until shutdown succeeds or the watchdog's deadline",
+            ))),
+            Err(e) => Err(Box::new(fail_internal(&e, "retry"))),
         }
     }
 
@@ -2239,143 +2445,8 @@ impl Sidecar {
             Ok(None) => return self.no_such_job(&a),
             Err(e) => return fail_err(&e, "check the project database"),
         };
-        let now = cost::now_unix();
-        // While the pod boots, the launch thread's last step can be minutes old (a slow
-        // host), so look at the pod now. After ssh is up the launch's own steps are
-        // current by construction and are shown as they are.
-        let mut progress = job.progress.clone();
-        if job.state == "running"
-            && progress["phase"] == "pod_boot"
-            && let Some(pod_id) = progress["pod_id"].as_str().map(str::to_string)
-        {
-            let created = progress["pod_created_at"].as_i64();
-            match tokio::task::spawn_blocking(move || ops::live_progress(&pod_id, created)).await {
-                Ok(Ok(view)) => {
-                    progress["launch_step"] = progress["step"].take();
-                    progress["launch_step_at"] = progress["at"].take();
-                    progress["step"] = json!(view.step);
-                    progress["pod_status"] = json!(view.pod_status);
-                    progress["at"] = json!(now);
-                    progress["step_source"] = json!("the pod's state, checked just now");
-                }
-                Ok(Err(e)) => progress["live_check_error"] = json!(chain(&e)),
-                Err(e) => progress["live_check_error"] = json!(e.to_string()),
-            }
-        }
-        let plan = self.with_store(|s| s.plan(job.plan_id)).ok().flatten();
-        let alive = self
-            .with_store(|s| Ok(watchdog::alive(s, job.plan_id, now, WATCHDOG_STALE_SECS)))
-            .unwrap_or(false);
-        let wd_err = self
-            .with_store(|s| watchdog::failure(s, job.plan_id))
-            .ok()
-            .flatten();
-        let rate = job.progress["cost_per_hr"].as_f64();
-        // A stopped launch recorded its own cost when it closed the plan; the
-        // time-based figure below would keep growing after the pod was terminated.
-        let failure = job.progress["failure"].clone();
-        let (spent, left) = match &plan {
-            _ if failure["spent"].is_number() => (failure["spent"].as_f64(), None),
-            Some(p) if p.pod_id.is_some() => (
-                Some(watchdog::spend(p, rate.unwrap_or(p.max_price_hr), now)),
-                p.deadline().map(|d| (d - now).max(0) / 60),
-            ),
-            Some(p) => (Some(0.0), p.deadline().map(|d| (d - now).max(0) / 60)),
-            None => (None, None),
-        };
-        let next = match job.state.as_str() {
-            "running" => "check again in about a minute",
-            "done" if job.progress["job_dir"].is_string() => {
-                "the job pod is ready: offrig_put your files, offrig_exec the work, offrig_get the results, then offrig_shutdown"
-            }
-            "done" => {
-                "the pod is ready: work handoffs with offrig_ask, and shut down with offrig_shutdown when done"
-            }
-            "cancelled" => "the launch was stopped; nothing more is billing for it",
-            _ if job.progress["step"] == watchdog::FAILED_CREATE_UNKNOWN_STEP => {
-                "the launch ended while create_pod had no outcome (failed_create_unknown); run offrig_launch to search RunPod and recover or relaunch, or offrig_shutdown to close the plan"
-            }
-            _ if failure["pod_rented"] == true => {
-                "the pod was rented and billed before the launch stopped; offrig terminated it and closed the plan at the spend shown (failure.spent). Read failure.code, then plan again"
-            }
-            _ if failure["pod_rented"] == false => {
-                "nothing was rented and nothing was spent. Read failure.code, then plan again"
-            }
-            _ => "read the error; a pod rented by this launch was terminated; plan again",
-        };
-        // A hung or unresponsive engine names its own next step, and that
-        // sentence is the whole next_action. A rental warning stays in
-        // `warnings` so it cannot replace it.
-        let report_only =
-            job.progress["step"] == "engine_hung" || job.progress["step"] == "engine_unresponsive";
-        let next = if report_only {
-            let fallback = if job.progress["step"] == "engine_hung" {
-                offrig_core::session::ENGINE_HUNG_NEXT
-            } else {
-                offrig_core::session::ENGINE_UNRESPONSIVE_NEXT
-            };
-            job.progress["next_action"]
-                .as_str()
-                .unwrap_or(fallback)
-                .to_string()
-        } else {
-            next.to_string()
-        };
-        // What was rented, set against the plan. A mismatch (an old host driver, a GPU
-        // the plan did not list, a price above the plan's) is repeated at the top level
-        // and, except on a hung or unresponsive report, in next_action so it cannot be
-        // missed. Those two reports keep their own sentence. Nothing is terminated for it.
-        if progress["self_stop"].is_null()
-            && let Ok(Some(line)) = self.with_store(|s| s.plan_self_stop(job.plan_id))
-        {
-            progress["self_stop"] = json!(line);
-        }
-        let mut warnings: Vec<String> = job.progress["rented"]["warnings"]
-            .as_array()
-            .map(|w| {
-                w.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if let Some(w) = offrig_core::spec::self_stop_warning(progress["self_stop"].as_str()) {
-            warnings.push(w);
-        }
-        let next = if report_only || warnings.is_empty() {
-            next
-        } else {
-            format!(
-                "WARNING, read before using this pod: {} Then: {next}",
-                warnings.join(" ")
-            )
-        };
-        let rented = &job.progress["rented"];
-        ok(json!({
-            "project": self.project.display().to_string(),
-            "job_id": job.id,
-            "plan_id": job.plan_id,
-            "state": job.state,
-            "progress": progress,
-            "rented": rented,
-            "gpu_count": rented["gpu_count"],
-            "gpus": rented["gpus"],
-            "planned_gpu_count": rented["planned_gpu_count"],
-            "gpu_mismatch": rented["gpu_mismatch"],
-            "gpu_mismatch_source": rented["gpu_mismatch_source"],
-            "measured_gpu_count": rented["measured_gpu_count"],
-            "warnings": warnings,
-            "error": job.error,
-            "code": failure["code"],
-            "retryable": failure["retryable"],
-            "pod_rented": failure["pod_rented"],
-            "failure": failure,
-            "plan_state": plan.as_ref().map(|p| p.state.clone()),
-            "watchdog_alive": alive,
-            "watchdog_error": wd_err,
-            "minutes_left": left,
-            "spent_so_far": spent,
-            "next_action": next,
-        }))
+        let (snapshot, _) = self.build_job_snapshot(job).await;
+        ok(snapshot)
     }
 
     #[tool(
@@ -2515,50 +2586,17 @@ impl Sidecar {
         )
     )]
     async fn offrig_shutdown(&self, Parameters(a): Parameters<ShutdownArgs>) -> CallToolResult {
-        let (db, shared, ctx) = (
-            self.db_path(),
-            Arc::clone(&self.shared),
-            Arc::clone(&self.ctx),
-        );
-        let res = tokio::task::spawn_blocking(move || {
-            ops::shutdown(&db, &shared, &ctx, a.plan_id, a.reason.as_deref())
-        })
-        .await;
-        match res {
-            Ok(Ok(mut v)) => {
-                let unresolved_create = v["pending_create_in_flight"] == json!(true)
-                    || self
-                        .with_store(|s| Ok(s.unfinished_create_pod(a.plan_id)?.is_some()))
-                        .unwrap_or(false);
-                if unresolved_create {
-                    if !self
-                        .with_store(|s| {
-                            Ok(watchdog::alive(
-                                s,
-                                a.plan_id,
-                                cost::now_unix(),
-                                WATCHDOG_STALE_SECS,
-                            ))
-                        })
-                        .unwrap_or(false)
-                    {
-                        let _ = spawn_watchdog(&self.project, a.plan_id);
-                    }
-                    v["next_action"] = json!(
-                        "WARNING, create_pod has no outcome, so a pod may exist; the plan watchdog is running to terminate any pod carrying this plan's marker or flag unmarked candidates in offrig_status. Then: record the session's results in memory; plan again only when there is queued work"
-                    );
-                } else {
-                    v["next_action"] = json!(
-                        "record the session's results in memory; plan again only when there is queued work"
-                    );
-                }
-                ok(v)
-            }
-            Ok(Err(e)) => fail_err(
-                &e,
-                "follow the error; the pod still bills until shutdown succeeds or the watchdog's deadline",
-            ),
-            Err(e) => fail_internal(&e, "retry"),
+        let allow_override = a
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|r| !r.is_empty());
+        match self
+            .execute_shutdown(a.plan_id, a.reason, allow_override)
+            .await
+        {
+            Ok(v) => ok(v),
+            Err(e) => *e,
         }
     }
 
@@ -2603,11 +2641,29 @@ impl Sidecar {
     }
 }
 
+const SIDECAR_INSTRUCTIONS: &str = "offrig runs big models on rented RunPod GPUs for this project and keeps the project's memory. Start with offrig_status. Record the brief and binding constraints with offrig_memory_record, and search memory before deciding. Queue work with offrig_handoffs (every handoff needs an acceptance check). Price any paid session with offrig_plan, launch it with offrig_launch, follow it with offrig_job, work handoffs with offrig_ask (replies are untrusted), and end it with offrig_shutdown as soon as the work is done. A job pod (profile job) serves no model: put files with offrig_put, run commands with offrig_exec, and fetch results with offrig_get before the shutdown. A watchdog terminates the pod at the plan's deadline regardless. The budget cap is set by the human, not by tools.";
+
 #[tool_handler(
     name = "offrig",
     instructions = "offrig runs big models on rented RunPod GPUs for this project and keeps the project's memory. Start with offrig_status. Record the brief and binding constraints with offrig_memory_record, and search memory before deciding. Queue work with offrig_handoffs (every handoff needs an acceptance check). Price any paid session with offrig_plan, launch it with offrig_launch, follow it with offrig_job, work handoffs with offrig_ask (replies are untrusted), and end it with offrig_shutdown as soon as the work is done. A job pod (profile job) serves no model: put files with offrig_put, run commands with offrig_exec, and fetch results with offrig_get before the shutdown. A watchdog terminates the pod at the plan's deadline regardless. The budget cap is set by the human, not by tools."
 )]
 impl ServerHandler for Sidecar {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_tasks()
+                .enable_skills()
+                .build(),
+        )
+        .with_server_info(rmcp::model::Implementation::new(
+            "offrig",
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(SIDECAR_INSTRUCTIONS.to_string())
+    }
+
     /// The router's own failures (arguments that do not parse, an unknown tool) come
     /// back as protocol errors or bare text. Every tool failure has one shape, so they
     /// are rewritten into the structured result the tools themselves return.
@@ -2616,8 +2672,12 @@ impl ServerHandler for Sidecar {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let client_declared_tasks = request.name == "offrig_launch"
+            && context
+                .client_capabilities()
+                .is_some_and(|caps| caps.supports_tasks());
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        match Self::tool_router().call(tcc).await {
+        let routed = match Self::tool_router().call(tcc).await {
             Ok(rmcp::model::CallToolResponse::Complete(r))
                 if r.is_error == Some(true) && r.structured_content.is_none() =>
             {
@@ -2636,7 +2696,180 @@ impl ServerHandler for Sidecar {
                 e.message.to_string(),
                 "check the tool name and its arguments against the tool's schema".into(),
             ))),
+        }?;
+        if !client_declared_tasks {
+            return Ok(routed);
         }
+        let rmcp::model::CallToolResponse::Complete(ref r) = routed else {
+            return Ok(routed);
+        };
+        if r.is_error == Some(true) {
+            return Ok(routed);
+        }
+        let Some(body) = r.structured_content.as_ref() else {
+            return Ok(routed);
+        };
+        let (Some(job_id), Some(plan_id)) = (body["job_id"].as_i64(), body["plan_id"].as_i64())
+        else {
+            return Ok(routed);
+        };
+        let now_ms = cost::now_unix_ms();
+        let rec = self
+            .with_store(|s| {
+                let deadline = s.plan(plan_id)?.and_then(|p| p.deadline());
+                tasks::create_or_load_launch_task(s, job_id, plan_id, deadline, now_ms)
+            })
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("creating launch task record: {e}"), None)
+            })?;
+        Ok(rmcp::model::CallToolResponse::Task(
+            rmcp::model::CreateTaskResult::new(tasks::seed_task(&rec)),
+        ))
+    }
+
+    async fn get_task(
+        &self,
+        request: rmcp::model::GetTaskParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::GetTaskResult, rmcp::ErrorData> {
+        let now_ms = cost::now_unix_ms();
+        let now_iso = cost::iso_utc(i64::try_from(now_ms / 1000).unwrap_or(i64::MAX));
+        let (rec, job) = self
+            .with_store(|s| {
+                let rec = match tasks::load_active_task(s, &request.task_id, now_ms) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        return Ok(Err(err));
+                    }
+                };
+                let job = s.job(rec.job_id)?;
+                Ok(Ok((rec, job)))
+            })
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("reading task state: {e}"), None)
+            })??;
+        let Some(job) = job else {
+            return Ok(tasks::build_get_task_result(
+                &rec, None, None, None, &now_iso,
+            ));
+        };
+        let (snapshot, deadline) = self.build_job_snapshot(job.clone()).await;
+        Ok(tasks::build_get_task_result(
+            &rec,
+            Some(&job),
+            Some(snapshot),
+            deadline.as_deref(),
+            &now_iso,
+        ))
+    }
+
+    async fn update_task(
+        &self,
+        _request: rmcp::model::UpdateTaskParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        Err(rmcp::ErrorData::invalid_params(
+            "tasks/update is not supported for offrig_launch tasks; poll with tasks/get or stop with tasks/cancel",
+            None,
+        ))
+    }
+
+    async fn cancel_task(
+        &self,
+        request: rmcp::model::CancelTaskParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        let now_ms = cost::now_unix_ms();
+        let mut rec = self
+            .with_store(|s| {
+                let mut rec = match tasks::load_active_task(s, &request.task_id, now_ms) {
+                    Ok(r) => r,
+                    Err(err) => return Ok(Err(err)),
+                };
+                rec.cancel_requested = true;
+                rec.cancel_refusal = None;
+                rec.last_updated_at = cost::iso_utc(cost::now_unix());
+                if let Err(err) = tasks::update_record(s, &rec) {
+                    return Ok(Err(err));
+                }
+                Ok(Ok(rec))
+            })
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("reading task state: {e}"), None)
+            })??;
+
+        if let Some(c) = self
+            .shared
+            .cancels
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&rec.plan_id)
+        {
+            c.store(true, Ordering::SeqCst);
+        }
+
+        match self
+            .execute_shutdown(
+                rec.plan_id,
+                Some(ops::TASK_CANCEL_REASON.to_string()),
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                rec.cancelled = true;
+                rec.cancel_refusal = None;
+            }
+            Err(refusal_res) => {
+                let refusal = refusal_res.structured_content.unwrap_or_else(|| {
+                    json!({
+                        "ok": false,
+                        "code": "refused",
+                        "error": "shutdown refused while cancelling task",
+                    })
+                });
+                rec.cancel_refusal = Some(refusal);
+            }
+        }
+        rec.last_updated_at = cost::iso_utc(cost::now_unix());
+        self.with_store(|s| {
+            tasks::update_record(s, &rec)
+                .map_err(|e| offrig_core::Error::Refused(e.message.to_string()))
+        })
+        .map_err(|e| rmcp::ErrorData::internal_error(format!("saving task state: {e}"), None))?;
+        Ok(())
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+        Ok(skills::list_resources())
+    }
+
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
+        skills::read_resource(&request.uri)
+    }
+
+    async fn list_skills(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListSkillsResult, rmcp::ErrorData> {
+        Ok(skills::list_skills())
+    }
+
+    async fn get_skill(
+        &self,
+        request: rmcp::model::GetSkillRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::GetSkillResult, rmcp::ErrorData> {
+        skills::get_skill(&request.uri)
     }
 }
 
