@@ -183,6 +183,56 @@ pub const ENV_LANE: &str = "OFFRIG_LANE";
 pub const ENV_PLAN: &str = "OFFRIG_PLAN";
 pub const ENV_DEADLINE: &str = "OFFRIG_DEADLINE";
 
+/// Seconds past a plan's deadline when the on-pod backstop timer fires.
+/// The host watchdog polls every 60s, so 120s gives it first turn to terminate
+/// the pod and close the plan's books while bounding spend if the host dies.
+pub const SELF_STOP_MARGIN_SECS: i64 = 120;
+
+const SELF_STOP_START: &str = "# offrig-self-stop: fire_at=";
+const SELF_STOP_END: &str = "</dev/null >/dev/null 2>&1 &\n";
+
+/// Background timer placed in a planned pod's bootstrap script as a backstop
+/// beneath the host watchdog.
+///
+/// Uses Runpod's preinstalled `runpodctl` CLI and the pod-scoped `RUNPOD_POD_ID`
+/// and `RUNPOD_API_KEY` that Runpod injects into every Pod container
+/// (`https://docs.runpod.io/pods/manage-pods` sections "Stop a Pod" and
+/// "Terminate a Pod", `https://docs.runpod.io/pods/templates/environment-variables`
+/// section "Runpod-provided variables", and `https://docs.runpod.io/runpodctl/overview`
+/// section "Install Runpod CLI locally"). No studio/host API key is placed on the pod.
+pub fn self_stop_timer(deadline: i64) -> String {
+    let fire_at = deadline.saturating_add(SELF_STOP_MARGIN_SECS);
+    format!(
+        "{SELF_STOP_START}{fire_at}\n\
+         (now=$(date -u +%s); wait=$(({fire_at} - now)); \
+         if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
+         mkdir -p /workspace/offrig; \
+         echo \"[offrig] on-pod deadline {fire_at} reached; stopping ${{RUNPOD_POD_ID:-unknown}}\" >> /workspace/offrig/bootstrap.log 2>&1; \
+         if [ -n \"${{RUNPOD_POD_ID:-}}\" ]; then \
+           runpodctl pod delete \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1 \
+           || runpodctl remove pod \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1 \
+           || runpodctl pod stop \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1 \
+           || runpodctl stop pod \"$RUNPOD_POD_ID\" >> /workspace/offrig/bootstrap.log 2>&1; \
+         fi) {SELF_STOP_END}"
+    )
+}
+
+fn install_self_stop(cmd: &mut String, deadline: i64) {
+    if let Some(start) = cmd.find(SELF_STOP_START)
+        && let Some(end_rel) = cmd[start..].find(SELF_STOP_END)
+    {
+        cmd.replace_range(start..start + end_rel + SELF_STOP_END.len(), "");
+    }
+    let snippet = self_stop_timer(deadline);
+    let anchor = "echo \"[offrig] bootstrap start $(date -u +%FT%TZ)\"\n";
+    let pos = cmd
+        .find(anchor)
+        .map(|i| i + anchor.len())
+        .or_else(|| cmd.find("set -u\n").map(|i| i + "set -u\n".len()))
+        .unwrap_or(0);
+    cmd.insert_str(pos, &snippet);
+}
+
 pub fn pod_create(cfg: &Config, profile: &Profile) -> PodCreate {
     let on_volume = profile.network_volume_id.is_some();
     let (image, start, mut env) = match (&profile.job, &profile.recipe) {
@@ -259,13 +309,17 @@ pub fn pod_create_for_plan(
 }
 
 /// Mark a plan's pod with its plan id and deadline (UTC, ISO 8601), added to the env it
-/// already carries. A plan whose worst case is not committed has no deadline to show.
+/// already carries, and wire the on-pod deadline timer into its startup command. A plan
+/// whose worst case is not committed has no deadline to show or schedule.
 pub fn mark_plan(body: &mut PodCreate, plan: &crate::store::Plan) {
     body.max_price_hr = Some(plan.max_price_hr);
     body.env.insert(ENV_PLAN.into(), plan.id.to_string());
     if let Some(d) = plan.deadline() {
         body.env
             .insert(ENV_DEADLINE.into(), crate::cost::iso_utc(d));
+        if let Some(cmd) = body.docker_start_cmd.first_mut() {
+            install_self_stop(cmd, d);
+        }
     }
 }
 
@@ -762,5 +816,66 @@ mod tests {
             "the plan's list, unchanged, even when a floor was also passed"
         );
         assert!(v["gpu"].get("minCudaVersion").is_none(), "{v}");
+    }
+
+    #[test]
+    fn every_pod_starting_profile_carries_the_self_stop_timer_at_deadline_plus_margin() {
+        let cfg = Config::default();
+        assert!(!cfg.profiles.is_empty());
+        let committed = 1_709_208_000;
+        let p_plan = plan(Some(committed));
+        let deadline = p_plan.deadline().expect("committed plan has deadline");
+        let expected_fire = deadline + SELF_STOP_MARGIN_SECS;
+        let mut saw_model = false;
+        let mut saw_job = false;
+
+        for profile in &cfg.profiles {
+            if profile.is_job() {
+                saw_job = true;
+            } else {
+                saw_model = true;
+            }
+            let mut body = pod_create_for_plan(&cfg, profile, &[], None, None, None);
+            mark_plan(&mut body, &p_plan);
+            // Calling mark_plan twice does not duplicate the timer.
+            mark_plan(&mut body, &p_plan);
+
+            let cmd = &body.docker_start_cmd[0];
+            assert_eq!(
+                cmd.matches(&format!("fire_at={expected_fire}")).count(),
+                1,
+                "{}: missing or duplicated self-stop timer: {cmd}",
+                profile.name
+            );
+            assert!(
+                cmd.contains("runpodctl pod delete \"$RUNPOD_POD_ID\""),
+                "{}: {cmd}",
+                profile.name
+            );
+            assert!(
+                cmd.contains("runpodctl pod stop \"$RUNPOD_POD_ID\""),
+                "{}: {cmd}",
+                profile.name
+            );
+            let timer_pos = cmd.find("fire_at=").expect("timer");
+            let main_pos = cmd
+                .find("exec ollama serve")
+                .or_else(|| cmd.find("sglang.launch_server"))
+                .or_else(|| cmd.find("sleep infinity"))
+                .expect("profile main command");
+            assert!(
+                timer_pos < main_pos,
+                "{}: self-stop timer must start before main command",
+                profile.name
+            );
+
+            // Wire body also carries the timer and never exposes any studio API key.
+            let wire = body.wire(&profile.gpu_type_ids[0]);
+            let wire_cmd = wire["cmd"][0].as_str().expect("wire cmd");
+            assert!(wire_cmd.contains(&expected_fire.to_string()));
+            assert!(!body.env.contains_key("RUNPOD_API_KEY"));
+            assert!(wire["env"].get("RUNPOD_API_KEY").is_none());
+        }
+        assert!(saw_model && saw_job, "both model and job profiles tested");
     }
 }

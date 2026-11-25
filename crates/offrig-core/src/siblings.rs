@@ -35,10 +35,12 @@ pub struct OpenPlan {
     pub deadline: Option<i64>,
     /// The worst case the plan committed against its budget, in USD.
     pub committed_worst_case: f64,
+    /// Recorded watchdog failure when the plan's watchdog is not guarding.
+    pub watchdog_error: Option<String>,
 }
 
 impl OpenPlan {
-    fn of(p: &Plan) -> Self {
+    fn of(p: &Plan, watchdog_error: Option<String>) -> Self {
         OpenPlan {
             plan_id: p.id,
             profile: p.profile.clone(),
@@ -46,6 +48,7 @@ impl OpenPlan {
             note: p.note.clone(),
             deadline: p.deadline(),
             committed_worst_case: p.worst_case,
+            watchdog_error,
         }
     }
 }
@@ -82,13 +85,18 @@ impl Sibling {
         };
         match &self.plan {
             PlanView::Open(p) => format!(
-                "{who}: plan {}{}, ends {}, worst case ${:.2}",
+                "{who}: plan {}{}, ends {}, worst case ${:.2}{}",
                 p.plan_id,
                 p.note
                     .as_deref()
                     .map_or(String::new(), |n| format!(" ({n})")),
                 p.deadline.map_or("at no set time".into(), iso_utc),
-                p.committed_worst_case
+                p.committed_worst_case,
+                p.watchdog_error
+                    .as_deref()
+                    .map_or(String::new(), |e| format!(
+                        ", WARNING: watchdog not guarding ({e})"
+                    )),
             ),
             PlanView::NoOpenPlan => format!("{who}: its store has no open plan"),
             PlanView::NoProject => format!("{who}: belongs to no one project"),
@@ -105,6 +113,8 @@ impl Sibling {
                     "note": p.note,
                     "deadline": p.deadline.map(iso_utc),
                     "committed_worst_case": (p.committed_worst_case * 100.0).round() / 100.0,
+                    "watchdog_guarding": p.watchdog_error.is_none(),
+                    "watchdog_error": p.watchdog_error,
                 }),
                 Value::Null,
             ),
@@ -188,14 +198,22 @@ pub fn read_plan(project: &Path, pod_id: &str) -> PlanView {
     if !db.is_file() {
         return PlanView::Unreadable("no offrig store at that project".into());
     }
-    let plans = Store::open_read_only(&db).and_then(|s| s.open_plans());
-    match plans {
-        Err(e) => PlanView::Unreadable(crate::error::chain(&e)),
-        Ok(plans) => plans
+    let plans = Store::open_read_only(&db).and_then(|s| {
+        let open = s.open_plans()?;
+        let chosen = open
             .iter()
             .find(|p| p.pod_id.as_deref() == Some(pod_id))
-            .or_else(|| plans.first())
-            .map_or(PlanView::NoOpenPlan, |p| PlanView::Open(OpenPlan::of(p))),
+            .or_else(|| open.first())
+            .cloned();
+        Ok(chosen.map(|p| {
+            let err = crate::watchdog::failure(&s, p.id).ok().flatten();
+            OpenPlan::of(&p, err)
+        }))
+    });
+    match plans {
+        Err(e) => PlanView::Unreadable(crate::error::chain(&e)),
+        Ok(Some(p)) => PlanView::Open(p),
+        Ok(None) => PlanView::NoOpenPlan,
     }
 }
 
@@ -409,6 +427,7 @@ mod tests {
                 note: None,
                 deadline: None,
                 committed_worst_case: 1.0,
+                watchdog_error: None,
             }),
         };
         assert_eq!(
@@ -431,6 +450,27 @@ mod tests {
             none.summary(),
             "lane a, project /p: its store has no open plan"
         );
+        let unguarded = Sibling {
+            lane: "a".into(),
+            project: Some("/p".into()),
+            pod: pod("x", "offrig-a-job"),
+            plan: PlanView::Open(OpenPlan {
+                plan_id: 4,
+                profile: "job".into(),
+                gpu_count: 1,
+                note: None,
+                deadline: None,
+                committed_worst_case: 1.0,
+                watchdog_error: Some("no key".into()),
+            }),
+        };
+        assert_eq!(
+            unguarded.summary(),
+            "lane a, project /p: plan 4, ends at no set time, worst case $1.00, WARNING: watchdog not guarding (no key)"
+        );
+        let ujson = unguarded.to_json();
+        assert_eq!(ujson["plan"]["watchdog_guarding"], false);
+        assert_eq!(ujson["plan"]["watchdog_error"], "no key");
     }
 
     /// A v4 side-car reads a sibling's v3 store normally (a read-only view never

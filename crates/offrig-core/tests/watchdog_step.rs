@@ -124,7 +124,10 @@ fn a_vanished_or_terminated_pod_closes_the_plan_at_its_ceiling_rate() {
 
 #[test]
 fn a_plan_that_never_rented_closes_free_once_its_time_is_up() {
-    let m = serve(|_, _| (404, "{}".to_string()));
+    let m = serve(|req, _| match req.route().as_str() {
+        "GET /pods" => (200, "[]".to_string()),
+        _ => (404, "{}".to_string()),
+    });
     let store = Store::open_in_memory().expect("store");
     let plan = committed(&store, 0.0001, None);
     let verdict = watchdog::step(&store, &rp(&m), plan.id).expect("step");
@@ -132,12 +135,180 @@ fn a_plan_that_never_rented_closes_free_once_its_time_is_up() {
         matches!(&verdict, Verdict::Close { reason } if reason.contains("before any pod")),
         "{verdict:?}"
     );
-    assert!(
-        m.requests().is_empty(),
-        "no pod id means nothing to look up"
+    assert_eq!(
+        m.count("GET /pods"),
+        1,
+        "probes RunPod once for unattached pods before closing"
     );
     let b = store.budget().expect("budget");
     assert!(b.spent.abs() < 1e-9 && b.committed.abs() < 1e-9, "{b:?}");
+}
+
+#[test]
+fn a_failed_lookup_on_a_podless_plan_never_closes_or_acts() {
+    let m = serve(|_, _| (500, "down".to_string()));
+    let store = Store::open_in_memory().expect("store");
+    let plan = committed(&store, 0.0001, None);
+    assert_eq!(
+        watchdog::step(&store, &rp(&m), plan.id).expect("step"),
+        Verdict::Wait
+    );
+    assert_eq!(
+        store.plan(plan.id).expect("read").expect("exists").state,
+        "committed"
+    );
+}
+
+#[test]
+fn an_orphan_pod_created_before_attach_is_found_and_terminated_at_the_deadline() {
+    use std::sync::{Arc, Mutex};
+
+    for mode in ["journal", "name", "env_plan"] {
+        let store = Store::open_in_memory().expect("store");
+        // Plan starts inside its deadline, then another plan uses a past deadline.
+        let plan = committed(&store, 2.0, None);
+        store.set_plan_lane(plan.id, "alpha").expect("lane");
+
+        let pods: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(vec![
+            // Foreign / other-lane pods must never be matched.
+            serde_json::json!({
+                "id": "p-foreign",
+                "name": "unrelated-pod",
+                "desiredStatus": "RUNNING",
+                "costPerHr": 1.0
+            }),
+            serde_json::json!({
+                "id": "p-other-lane",
+                "name": "offrig-beta-frontier",
+                "desiredStatus": "RUNNING",
+                "costPerHr": 3.0
+            }),
+        ]));
+        let orphan = match mode {
+            "journal" => {
+                let j = store
+                    .journal("create_pod", Some(plan.id), &serde_json::json!({}))
+                    .expect("journal");
+                store
+                    .journal_outcome(j, "created pod p-orphan-j")
+                    .expect("outcome");
+                serde_json::json!({
+                    "id": "p-orphan-j",
+                    "name": "offrig-alpha-frontier",
+                    "desiredStatus": "RUNNING",
+                    "costPerHr": 3.0
+                })
+            }
+            "name" => serde_json::json!({
+                "id": "p-orphan-n",
+                "name": "offrig-alpha-frontier",
+                "desiredStatus": "RUNNING",
+                "costPerHr": 3.0
+            }),
+            _ => serde_json::json!({
+                "id": "p-orphan-e",
+                "name": "offrig-alpha-frontier",
+                "status": "RUNNING",
+                "cost": 3.0,
+                "env": {
+                    "OFFRIG_PLAN": plan.id.to_string(),
+                    "OFFRIG_LANE": "alpha"
+                }
+            }),
+        };
+        let orphan_id = orphan["id"].as_str().expect("id").to_string();
+        pods.lock().expect("pods").push(orphan);
+
+        let pods_srv = Arc::clone(&pods);
+        let m = serve(move |req, _| {
+            let mut list = pods_srv.lock().expect("pods");
+            let route = req.route();
+            if route == "GET /pods" {
+                (200, serde_json::Value::Array(list.clone()).to_string())
+            } else if let Some(id) = route.strip_prefix("DELETE /pods/") {
+                list.retain(|p| p["id"] != id);
+                (204, String::new())
+            } else {
+                (404, "{}".to_string())
+            }
+        });
+
+        // Before deadline: watchdog attaches the orphan and waits.
+        let before = watchdog::step(&store, &rp(&m), plan.id).expect("step before");
+        assert_eq!(before, Verdict::Wait, "{mode}");
+        let attached = store.plan(plan.id).expect("read").expect("plan");
+        assert_eq!(
+            attached.pod_id.as_deref(),
+            Some(orphan_id.as_str()),
+            "{mode}"
+        );
+
+        // Now test a pod-less plan already past its deadline: attaches AND terminates in one step.
+        let expired = committed(&store, 0.0001, None);
+        store.set_plan_lane(expired.id, "alpha").expect("lane");
+        let expired_orphan = match mode {
+            "journal" => {
+                let j = store
+                    .journal("create_pod", Some(expired.id), &serde_json::json!({}))
+                    .expect("journal");
+                store
+                    .journal_outcome(j, "created pod p-exp-j")
+                    .expect("outcome");
+                serde_json::json!({
+                    "id": "p-exp-j",
+                    "name": "offrig-alpha-frontier",
+                    "desiredStatus": "RUNNING",
+                    "costPerHr": 3.0
+                })
+            }
+            "name" => serde_json::json!({
+                "id": "p-exp-n",
+                "name": "offrig-alpha-frontier",
+                "desiredStatus": "RUNNING",
+                "costPerHr": 3.0
+            }),
+            _ => serde_json::json!({
+                "id": "p-exp-e",
+                "name": "offrig-alpha-frontier",
+                "status": "RUNNING",
+                "cost": 3.0,
+                "env": {
+                    "OFFRIG_PLAN": expired.id.to_string(),
+                    "OFFRIG_LANE": "alpha"
+                }
+            }),
+        };
+        let exp_id = expired_orphan["id"].as_str().expect("id").to_string();
+        pods.lock().expect("pods").push(expired_orphan);
+
+        let verdict = watchdog::step(&store, &rp(&m), expired.id).expect("step expired");
+        assert!(
+            matches!(&verdict, Verdict::Terminate { reason } if reason.contains(&exp_id)),
+            "{mode}: {verdict:?}"
+        );
+        assert_eq!(m.count(&format!("DELETE /pods/{exp_id}")), 1, "{mode}");
+        assert!(
+            !pods.lock().expect("pods").iter().any(|p| p["id"] == exp_id),
+            "{mode}: orphan removed from RunPod"
+        );
+        assert_eq!(
+            store.plan(expired.id).expect("read").expect("plan").state,
+            "closed"
+        );
+        let j_entries = store.journal_for_plan(expired.id).expect("journal");
+        assert!(
+            j_entries
+                .iter()
+                .any(|(a, _, o)| a == "watchdog_attach_orphan" && o.is_some()),
+            "{mode}: {j_entries:?}"
+        );
+        assert!(
+            j_entries
+                .iter()
+                .any(|(a, _, o)| a == "watchdog_terminate" && o.as_deref() == Some("terminated")),
+            "{mode}: {j_entries:?}"
+        );
+    }
 }
 
 #[test]

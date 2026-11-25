@@ -382,6 +382,34 @@ pub fn ensure_owned(cfg: &Config, pod: &Pod) -> Result<()> {
     )))
 }
 
+fn probe_existing_plan_pod(
+    store: &Store,
+    cfg: &Config,
+    rp: &RunPod,
+    plan: &Plan,
+) -> Result<Option<(Pod, watchdog::PodMatch)>> {
+    let pods = rp.list_pods()?;
+    let journal_id = store.journaled_pod_id(plan.id)?;
+    let open = store.open_plans()?;
+    let taken: Vec<&str> = open
+        .iter()
+        .filter(|p| p.id != plan.id)
+        .filter_map(|p| p.pod_id.as_deref())
+        .collect();
+    let owned: Vec<Pod> = pods.into_iter().filter(|p| cfg.owns_pod(&p.name)).collect();
+    let Some((pod, how)) = watchdog::match_plan_pod(
+        plan,
+        cfg.lane_tag.as_deref(),
+        journal_id.as_deref(),
+        &taken,
+        &owned,
+    ) else {
+        return Ok(None);
+    };
+    ensure_plan_pod(cfg, plan, pod)?;
+    Ok(Some((pod.clone(), how)))
+}
+
 fn launch(
     ctx: &LaneCtx,
     db: &Path,
@@ -397,6 +425,11 @@ fn launch(
     let cfg = &ctx.cfg_for_plan(store, &plan)?;
     let profile = cfg.profile(&plan.profile)?.clone();
     let session = Session::with_client(cfg.clone(), RunPod::from_env()?);
+    if let Some(why) = watchdog::failure(store, plan_id)? {
+        return Err(Error::Refused(format!(
+            "watchdog for plan {plan_id} is not guarding ({why}); refusing to start a paid pod"
+        )));
+    }
     // The plan's own pin or floor, else the profile's (a plan made before plans stored one).
     // A pin and a floor are never both sent. A stored pin wins if both were written.
     let planned_pin = store.plan_cuda_versions(plan_id)?;
@@ -469,23 +502,46 @@ fn launch(
     };
     progress.v["phase"] = json!("capacity");
     progress.v["wait_minutes"] = json!(wait.limit.as_secs() / 60);
-    let j = store.journal(
-        "create_pod",
-        Some(plan_id),
-        &json!({ "profile": profile.name, "gpus": format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | ")) }),
-    )?;
-    let created = session.create_when_free(&body, wait, cancel, &mut |e| progress.event(e));
-    let pod = match created {
-        Ok(p) => {
-            store.journal_outcome(j, &format!("created pod {}", p.id))?;
-            p
-        }
-        Err(e) => {
-            store.journal_outcome(j, &format!("no pod: {}", chain(&e)))?;
-            return Err(e);
-        }
+    // Probe the lane before creating: if a previous launch crashed between create and
+    // attach, reuse and attach that live pod instead of renting a second one.
+    let pod = if let Some((existing, how)) =
+        probe_existing_plan_pod(store, cfg, &session.rp, &plan)?
+    {
+        let ja = store.journal(
+            "attach_existing_pod",
+            Some(plan_id),
+            &json!({
+                "pod": existing.id,
+                "name": existing.name,
+                "matched_by": how.as_str(),
+            }),
+        )?;
+        store.attach_pod(plan_id, &existing.id)?;
+        store.journal_outcome(
+            ja,
+            &format!("attached existing pod {} ({})", existing.id, how.as_str()),
+        )?;
+        existing
+    } else {
+        let j = store.journal(
+            "create_pod",
+            Some(plan_id),
+            &json!({ "profile": profile.name, "gpus": format!("{}x {}", body.gpu_count, body.gpu_type_ids.join(" | ")) }),
+        )?;
+        let created = session.create_when_free(&body, wait, cancel, &mut |e| progress.event(e));
+        let pod = match created {
+            Ok(p) => {
+                store.journal_outcome(j, &format!("created pod {}", p.id))?;
+                p
+            }
+            Err(e) => {
+                store.journal_outcome(j, &format!("no pod: {}", chain(&e)))?;
+                return Err(e);
+            }
+        };
+        store.attach_pod(plan_id, &pod.id)?;
+        pod
     };
-    store.attach_pod(plan_id, &pod.id)?;
     progress.v["pod_id"] = json!(pod.id);
     progress.v["pod_created_at"] = json!(now_unix());
     progress.v["pod_status"] = json!(pod.desired_status);
@@ -992,12 +1048,27 @@ pub fn lane_busy(
             return Err(busy(&name, Some(p.id)));
         }
     }
+    let launching_plan = open.iter().find(|p| p.id == launching);
     for pod in pods {
         if cfg.owns_pod(&pod.name) && pod.desired_status != "TERMINATED" {
             let plan = open
                 .iter()
                 .find(|p| p.pod_id.as_deref() == Some(pod.id.as_str()))
                 .map(|p| p.id);
+            if plan == Some(launching) {
+                continue;
+            }
+            if plan.is_none()
+                && let Some(lp) = launching_plan
+                && lp.pod_id.is_none()
+                && ensure_plan_pod(cfg, lp, pod).is_ok()
+                && pod
+                    .env
+                    .get(spec::ENV_PLAN)
+                    .is_none_or(|v| v == &launching.to_string())
+            {
+                continue;
+            }
             return Err(busy(&pod.name, plan));
         }
     }
@@ -1818,5 +1889,24 @@ mod tests {
         assert_eq!(rented["measured_gpu_count"], 0);
         assert_eq!(rented["gpu_mismatch"], true);
         assert_eq!(rented["gpu_mismatch_source"], "measured");
+    }
+
+    #[test]
+    fn committed_podless_plan_may_reuse_its_own_unattached_pod_in_lane_busy() {
+        let f = Fixture::new("relaunch-busy");
+        let id = f.planned("job");
+        f.store.commit_plan(id).expect("commit");
+        let cfg = f.ctx.own_cfg().expect("cfg");
+        let mut own = named_pod("p-own", &format!("offrig-{}-job", f.tag));
+        own.env.insert(spec::ENV_PLAN.into(), id.to_string());
+        lane_busy(&f.ctx, &f.store, &cfg, id, &[own]).expect("own unattached pod allowed");
+
+        let other_plan = named_pod("p-other", &format!("offrig-{}-job", f.tag));
+        let mut other_marked = other_plan;
+        other_marked.env.insert(spec::ENV_PLAN.into(), "999".into());
+        assert!(
+            lane_busy(&f.ctx, &f.store, &cfg, id, &[other_marked]).is_err(),
+            "a pod marked for another plan still blocks"
+        );
     }
 }

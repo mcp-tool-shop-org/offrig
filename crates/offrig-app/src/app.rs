@@ -15,6 +15,7 @@ use offrig_core::ollama::{ChatCheck, Tag};
 use offrig_core::remote::{GpuStat, PullState};
 use offrig_core::runpod::{Account, GpuOffer, Pod};
 use offrig_core::spec;
+use offrig_core::watchdog::UnguardedPlan;
 
 use crate::worker::{self, Cmd, Outbox, Update, ZedStatus};
 
@@ -40,6 +41,7 @@ pub struct State {
     pub gpus: Vec<GpuStat>,
     pub idle: Option<Idle>,
     pub zed: ZedStatus,
+    pub watchdog: Vec<UnguardedPlan>,
 }
 
 impl State {
@@ -78,6 +80,7 @@ impl State {
             Update::Gpu(g) => self.gpus = g,
             Update::Idle(i) => self.idle = Some(i),
             Update::Zed(z) => self.zed = z,
+            Update::Watchdog(w) => self.watchdog = w,
         }
     }
 
@@ -265,6 +268,15 @@ impl App {
                 }
             });
         }
+        for w in &self.st.watchdog {
+            ui.label(
+                RichText::new(format!(
+                    "Watchdog not guarding: {} plan {} ({}) — {}",
+                    w.project, w.plan_id, w.profile, w.error
+                ))
+                .color(BAD),
+            );
+        }
     }
 
     fn log_panel(&mut self, ui: &mut egui::Ui) {
@@ -382,7 +394,14 @@ impl App {
             }
         }
         ui.add_space(6.0);
-        let can_launch = self.st.current_pod().is_none() && self.st.busy.is_none();
+        let can_launch = self.st.current_pod().is_none()
+            && self.st.busy.is_none()
+            && self.st.watchdog.is_empty()
+            && !self
+                .st
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("missing API key"));
         if ui
             .add_enabled(
                 can_launch,
@@ -1136,6 +1155,26 @@ mod ui_tests {
         h.get_by_label("No pod running");
         h.get_by_label_contains("ai-playtest-personas");
         assert!(h.query_by_label("Shut down").is_none());
+    }
+
+    #[test]
+    fn unguarded_watchdog_shows_warning_and_blocks_launch() {
+        let (mut h, _cmds) = harness(vec![Update::Watchdog(vec![UnguardedPlan {
+            project: "demo".into(),
+            lane: Some("demo".into()),
+            plan_id: 7,
+            profile: "small".into(),
+            pod_id: Some("p1".into()),
+            error: "cannot guard without RUNPOD_API_KEY".into(),
+        }])]);
+        h.run();
+        h.get_by_label_contains("Watchdog not guarding: demo plan 7 (small)");
+        h.get_by_label("Launch pod").click();
+        h.run();
+        assert!(
+            h.query_by_label("Launch pod?").is_none(),
+            "launch must be disabled when watchdog is not guarding"
+        );
     }
 }
 

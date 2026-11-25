@@ -179,6 +179,19 @@ plan's deadline (the time the plan was committed, plus its max hours), even if t
 the session and the side-car are all gone.
 
 - It never acts on a failed lookup.
+- Before closing a committed plan that has no `pod_id` (and on every step while `pod_id`
+  is unset), it checks the plan's `create_pod` journal and the lane's live pods (by
+  `OFFRIG_PLAN` marker and lane pod name), attaches any matching pod, and terminates it at
+  the deadline. A relaunch probes the lane first and re-attaches that pod instead of
+  creating a second.
+- Every planned pod starts a background on-pod deadline timer (`deadline + 120s`) using
+  RunPod's preinstalled `runpodctl` and the container's pod-scoped `RUNPOD_POD_ID` /
+  `RUNPOD_API_KEY` (no host API key is placed on the pod), as a backstop if the host
+  watchdog is lost.
+- Without `RUNPOD_API_KEY`, the watchdog exits non-zero and records the failure in the
+  store (surfaced by `offrig_status`, `offrig_job`, and the desktop app), and
+  `offrig_launch` refuses to start a paid pod if the key is missing or the watchdog fails
+  to start.
 - It terminates exactly once, then closes the books.
 - It logs to `.offrig/watchdog-<plan>.log`.
 

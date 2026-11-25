@@ -352,6 +352,7 @@ fn worker(cfg: Config, rp: &Mock) -> (Worker, mpsc::Receiver<Update>) {
         idle: None,
         previous_default: None,
         cancel: Arc::new(AtomicBool::new(false)),
+        had_watchdog_alerts: false,
     };
     (w, rx)
 }
@@ -399,6 +400,7 @@ fn kind(u: &Update) -> &'static str {
         Update::Gpu(_) => "Gpu",
         Update::Idle(_) => "Idle",
         Update::Zed(_) => "Zed",
+        Update::Watchdog(_) => "Watchdog",
     }
 }
 

@@ -2037,6 +2037,13 @@ impl Store {
             .map_err(db("reading a setting"))
     }
 
+    pub fn clear_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .map_err(db("clearing a setting"))?;
+        Ok(())
+    }
+
     // ---- lanes (which project lane a plan's pod lives in)
 
     /// The lane a plan recorded (`offrig_plan` or the launch writes it). `None` is the
@@ -2482,6 +2489,40 @@ impl Store {
         .map_err(db("reading the journal"))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db("reading the journal"))
+    }
+
+    /// The pod id recorded in the `create_pod` journal outcome for `plan_id`, if any.
+    /// Bridges a crash between `create_when_free` and `attach_pod`.
+    pub fn journaled_pod_id(&self, plan_id: i64) -> Result<Option<String>> {
+        let outcome: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT outcome FROM journal
+                 WHERE plan_id = ?1 AND action = 'create_pod' AND outcome LIKE 'created pod %'
+                 ORDER BY id DESC LIMIT 1",
+                params![plan_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db("reading a journaled pod id"))?;
+        Ok(outcome
+            .and_then(|s| {
+                s.strip_prefix("created pod ")
+                    .map(|id| id.trim().to_string())
+            })
+            .filter(|id| !id.is_empty()))
+    }
+
+    /// Every journal entry recorded for `plan_id` in order: `(action, intent, outcome)`.
+    pub fn journal_for_plan(&self, plan_id: i64) -> Result<Vec<(String, String, Option<String>)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT action, intent, outcome FROM journal WHERE plan_id = ?1 ORDER BY id")
+            .map_err(db("preparing a plan journal read"))?;
+        st.query_map(params![plan_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(db("reading a plan's journal"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db("reading a plan's journal"))
     }
 
     // ---- handoffs
@@ -3052,6 +3093,9 @@ mod tests {
         assert_eq!(s.unfinished_journal().expect("read").len(), 1);
         s.journal_outcome(j, "created pod abc").expect("outcome");
         assert!(s.unfinished_journal().expect("read").is_empty());
+        assert_eq!(s.journaled_pod_id(1).expect("read").as_deref(), Some("abc"));
+        assert_eq!(s.journaled_pod_id(2).expect("read"), None);
+        assert_eq!(s.journal_for_plan(1).expect("read").len(), 1);
     }
 
     fn hand(s: &Store, deps: Vec<i64>) -> i64 {

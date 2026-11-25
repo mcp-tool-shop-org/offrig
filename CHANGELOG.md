@@ -6,6 +6,22 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+- **Orphan-pod recovery and on-pod deadline backstop:**
+  - Before closing a pod-less committed plan (and on each step while `pod_id` is unset),
+    the watchdog now checks the plan's journal (`created pod <id>`) and the lane's live
+    pods (by `OFFRIG_PLAN` marker and lane pod name) so a pod created just before a host
+    crash is attached and terminated at the plan's deadline (`Unknown` lookups still never
+    act).
+  - `offrig_launch` now probes the lane before creating a pod and attaches an existing
+    live pod belonging to the plan instead of creating a second one.
+  - Every planned pod launch (model and job profiles) wires a background self-stop timer
+    at `deadline + 120s` (`SELF_STOP_MARGIN_SECS`) using RunPod's preinstalled `runpodctl`
+    with the container's injected `RUNPOD_POD_ID` and pod-scoped `RUNPOD_API_KEY` (no
+    studio/host API key is placed on the pod).
+  - Watchdog startup without `RUNPOD_API_KEY` now exits non-zero and records the failure
+    in the project store so `offrig_status`, `offrig_job`, and the desktop app surface the
+    unguarded plan loudly, and `offrig_launch` refuses to start a paid pod when the key
+    is missing or the watchdog cannot start.
 - Dependency lockfile bump (`Cargo.lock`): `url` 2.5.8 -> 2.5.9 (with `form_urlencoded` 1.2.2 -> 1.2.3) for RUSTSEC-2026-0592, and `cookie` -> 0.18.3 for RUSTSEC-2026-0594.
 
 ## [1.3.0] - 2026-11-05

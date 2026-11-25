@@ -16,8 +16,9 @@ use offrig_core::remote::{self, GpuStat, PullState};
 use offrig_core::runpod::{Account, GpuOffer, Pod, RunPod};
 use offrig_core::session::{Event, Session, Wait};
 use offrig_core::tunnel::Tunnel;
+use offrig_core::watchdog::{self, UnguardedPlan};
 use offrig_core::zed::{self, DefaultModel};
-use offrig_core::{Error, Result, spec};
+use offrig_core::{Error, Result, account, spec};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
@@ -53,6 +54,7 @@ pub enum Update {
     Gpu(Vec<GpuStat>),
     Idle(Idle),
     Zed(ZedStatus),
+    Watchdog(Vec<UnguardedPlan>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -94,6 +96,17 @@ pub struct Worker {
     previous_default: Option<DefaultModel>,
     /// Set by the window's Cancel button; stops a wait for GPUs.
     cancel: Arc<AtomicBool>,
+    had_watchdog_alerts: bool,
+}
+
+fn read_watchdog_alerts() -> Vec<UnguardedPlan> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Vec::new();
+    };
+    let Ok(scope) = account::Scope::default_for(&cwd) else {
+        return Vec::new();
+    };
+    watchdog::unguarded_in_scope(&scope)
 }
 
 const REFRESH_EVERY: Duration = Duration::from_secs(15);
@@ -112,6 +125,10 @@ pub fn spawn(cfg: Config, out: Outbox, rx: Receiver<Cmd>, cancel: Arc<AtomicBool
             Err(e) => {
                 out.send(Update::Error(chain(&e)));
                 out.send(Update::Config(Box::new(cfg)));
+                let alerts = read_watchdog_alerts();
+                if !alerts.is_empty() {
+                    out.send(Update::Watchdog(alerts));
+                }
                 return;
             }
         };
@@ -126,6 +143,7 @@ pub fn spawn(cfg: Config, out: Outbox, rx: Receiver<Cmd>, cancel: Arc<AtomicBool
             idle,
             previous_default: None,
             cancel,
+            had_watchdog_alerts: false,
         };
         w.run(rx);
     });
@@ -237,6 +255,11 @@ impl Worker {
                 // not hide the other.
                 self.out.send(Update::Pods(self.session.rp.list_pods()?));
                 self.out.send(Update::Zed(zed_status(&self.session.cfg)?));
+                let alerts = read_watchdog_alerts();
+                if !alerts.is_empty() || self.had_watchdog_alerts {
+                    self.had_watchdog_alerts = !alerts.is_empty();
+                    self.out.send(Update::Watchdog(alerts));
+                }
                 match self.session.rp.account() {
                     Ok(a) => self.out.send(Update::Account(a)),
                     Err(e) => self.out.log(format!("balance unavailable: {}", chain(&e))),
