@@ -334,12 +334,12 @@ mod tests {
             (p.plan_id, p.note.as_deref()),
             (id, Some("render the trailer"))
         );
-        assert_eq!(p.committed_worst_case, 4.07);
+        assert_eq!(p.committed_worst_case, 4.44);
         assert!(p.deadline.is_some());
         let j = out.siblings[0].to_json();
         assert_eq!(j["lane"], "alpha");
         assert_eq!(j["plan"]["plan_id"], id);
-        assert_eq!(j["plan"]["committed_worst_case"], 4.07);
+        assert_eq!(j["plan"]["committed_worst_case"], 4.44);
         assert!(
             j["plan"]["deadline"]
                 .as_str()
@@ -356,7 +356,7 @@ mod tests {
         assert!(
             line.starts_with("lane alpha, project ")
                 && line.contains(&format!("plan {id} (render the trailer), ends 20"))
-                && line.ends_with("worst case $4.07"),
+                && line.ends_with("worst case $4.44"),
             "{line}"
         );
         assert!(out.siblings[1].summary().contains("could not be read"));

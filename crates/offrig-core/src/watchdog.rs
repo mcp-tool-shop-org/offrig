@@ -307,9 +307,11 @@ pub fn spend(plan: &Plan, rate_per_hr: f64, now: i64) -> f64 {
     (rate_per_hr * hours * 100.0).ceil() / 100.0
 }
 
-/// Spend when the pod is already gone: clamp at `max(min(now, deadline + SELF_STOP_MARGIN_SECS), last_seen)`
-/// only when the plan's stored self-stop status proves the on-pod backstop timer armed;
-/// otherwise (UNAVAILABLE, unknown, or STOPPED NOT TERMINATED) book up to `now`.
+/// Spend when the pod is already gone: clamp at
+/// `max(min(now, fire_at + SELF_STOP_MAX_RETRY_SECS), last_seen)` (where
+/// `fire_at = deadline + SELF_STOP_MARGIN_SECS`) only when the plan's stored self-stop
+/// status proves the on-pod backstop timer armed; otherwise (UNAVAILABLE, unknown, or
+/// STOPPED NOT TERMINATED) book up to `now`.
 pub fn spend_when_gone(
     plan: &Plan,
     rate_per_hr: f64,
@@ -319,7 +321,8 @@ pub fn spend_when_gone(
 ) -> f64 {
     let end = match plan.deadline() {
         Some(d) if crate::spec::self_stop_is_armed(self_stop) => {
-            let clamped = now.min(d.saturating_add(crate::spec::SELF_STOP_MARGIN_SECS));
+            let fire_at = d.saturating_add(crate::spec::SELF_STOP_MARGIN_SECS);
+            let clamped = now.min(fire_at.saturating_add(crate::spec::SELF_STOP_MAX_RETRY_SECS));
             last_seen.map_or(clamped, |ls| clamped.max(ls))
         }
         _ => now,
@@ -1037,37 +1040,40 @@ mod tests {
 
     #[test]
     fn spend_when_gone_caps_at_deadline_plus_self_stop_margin() {
-        // committed_at = 0, started_at = 60, max_hours = 0.0834 (~300s deadline) -> fire_at = 420.
+        // committed_at = 0, started_at = 60, max_hours = 0.0834 (~300s deadline) ->
+        // fire_at = 420, clamp = fire_at + SELF_STOP_MAX_RETRY_SECS (660) = 1080.
         let p = plan("committed", Some("p1"), Some(0), 0.0834);
         assert_eq!(p.deadline(), Some(300));
         let armed = Some("offrig self-stop: armed fire_at=420 via python3");
-        // Armed + late close books to deadline + 120s (360s from start = $0.15).
-        assert_eq!(spend_when_gone(&p, 1.44, 1020, armed, None), 0.15);
+        // Armed + late close (now = 3660) clamps at 1080 (1020s from start = $0.41).
+        assert_eq!(spend_when_gone(&p, 1.44, 3660, armed, None), 0.41);
+        // Inside retry window [fire_at, fire_at + 660]: books elapsed 720s = $0.29 (not clamped to fire_at $0.15).
+        assert_eq!(spend_when_gone(&p, 1.44, 780, armed, None), 0.29);
         // Before fire_at still books only elapsed runtime.
         assert_eq!(spend_when_gone(&p, 1.44, 210, armed, None), 0.06);
-        // last_seen later than fire_at wins (660s from start = $0.27).
-        assert_eq!(spend_when_gone(&p, 1.44, 1020, armed, Some(720)), 0.27);
-        // UNAVAILABLE, STOPPED NOT TERMINATED, or unknown books to `now` (960s from start = $0.39).
+        // last_seen later than fire_at + 660 wins (1800s from start = $0.72).
+        assert_eq!(spend_when_gone(&p, 1.44, 3660, armed, Some(1860)), 0.72);
+        // UNAVAILABLE, STOPPED NOT TERMINATED, or unknown books to `now` (3600s from start = $1.44).
         assert_eq!(
             spend_when_gone(
                 &p,
                 1.44,
-                1020,
+                3660,
                 Some("offrig self-stop: UNAVAILABLE"),
                 Some(120)
             ),
-            0.39
+            1.44
         );
-        assert_eq!(spend_when_gone(&p, 1.44, 1020, None, Some(120)), 0.39);
+        assert_eq!(spend_when_gone(&p, 1.44, 3660, None, Some(120)), 1.44);
         assert_eq!(
             spend_when_gone(
                 &p,
                 1.44,
-                1020,
+                3660,
                 Some(crate::spec::SELF_STOP_STOPPED_LINE),
                 Some(120)
             ),
-            0.39
+            1.44
         );
     }
 

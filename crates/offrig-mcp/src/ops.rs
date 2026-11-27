@@ -1276,9 +1276,12 @@ pub fn shutdown_with_override(
     // Look the pod up and check its lane before anything is cancelled, closed or
     // journaled: a refusal leaves the session exactly as it was.
     let mut rate = store
-        .plan_cost_per_hr(plan_id)?
+        .plan_cost_per_hr(plan_id)
+        .ok()
+        .flatten()
         .unwrap_or(plan.max_price_hr);
     let mut pod_gone = false;
+    let mut seen_alive_at: Option<i64> = None;
     let rp = match plan.pod_id.as_deref() {
         Some(_) => Some(RunPod::from_env()?),
         None => None,
@@ -1293,6 +1296,10 @@ pub fn shutdown_with_override(
                 }
                 if p.desired_status == "TERMINATED" {
                     pod_gone = true;
+                } else {
+                    let seen_now = now_unix();
+                    seen_alive_at = Some(seen_now);
+                    let _ = store.set_plan_last_seen(plan_id, seen_now);
                 }
             }
             Err(Error::Api { status: 404, .. } | Error::PodNotFound(_)) => {
@@ -1339,7 +1346,10 @@ pub fn shutdown_with_override(
         let now = now_unix();
         if pod_gone {
             let self_stop = store.plan_self_stop(plan_id).ok().flatten();
-            let last_seen = store.plan_last_seen(plan_id).ok().flatten();
+            let last_seen = match (store.plan_last_seen(plan_id).ok().flatten(), seen_alive_at) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
             watchdog::spend_when_gone(&plan, rate, now, self_stop.as_deref(), last_seen)
         } else {
             watchdog::spend(&plan, rate, now)

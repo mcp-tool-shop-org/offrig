@@ -893,9 +893,11 @@ pub struct NewOutput<'a> {
 }
 
 /// Worst-case RunPod spend for a planned session: `max_price_hr` over `max_hours` plus
-/// [`crate::spec::SELF_STOP_MARGIN_SECS`] (until the on-pod backstop fires), rounded up to cents.
+/// [`crate::spec::SELF_STOP_MARGIN_SECS`] and [`crate::spec::SELF_STOP_MAX_RETRY_SECS`]
+/// (until the armed on-pod backstop finishes firing), rounded up to cents.
 pub fn plan_worst_case(max_price_hr: f64, max_hours: f64) -> f64 {
-    let hours = max_hours + crate::spec::SELF_STOP_MARGIN_SECS as f64 / 3600.0;
+    let tail_secs = crate::spec::SELF_STOP_MARGIN_SECS + crate::spec::SELF_STOP_MAX_RETRY_SECS;
+    let hours = max_hours + tail_secs as f64 / 3600.0;
     (max_price_hr * hours * 100.0).ceil() / 100.0
 }
 
@@ -1879,7 +1881,7 @@ impl Store {
                 "worst case ${worst:.2} ({}h + {}s margin at ${:.2}/hr) exceeds the ${:.2} left of the ${:.2} budget ({}); \
                  shorten max_hours, pick a cheaper profile, or raise that cap",
                 p.max_hours,
-                crate::spec::SELF_STOP_MARGIN_SECS,
+                crate::spec::SELF_STOP_MARGIN_SECS + crate::spec::SELF_STOP_MAX_RETRY_SECS,
                 p.max_price_hr,
                 r.remaining,
                 r.cap,
@@ -3458,7 +3460,7 @@ mod tests {
                 note: None,
             })
             .expect("fits");
-        assert!((p.worst_case - 12.82).abs() < 1e-9);
+        assert!((p.worst_case - 14.36).abs() < 1e-9);
         assert_eq!(p.state, "planned");
         assert!(
             (s.budget().expect("b").remaining - 15.0).abs() < 1e-9,
@@ -3475,7 +3477,7 @@ mod tests {
                 note: None,
             }
         };
-        let err = s.create_plan(too_big).expect_err("17.00 > 15");
+        let err = s.create_plan(too_big).expect_err("18.54 > 15");
         assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
@@ -3496,8 +3498,8 @@ mod tests {
         s.commit_plan(p.id).expect("commit");
         s.commit_plan(p.id).expect("commit again is a no-op");
         let b = s.budget().expect("b");
-        assert!((b.committed - 6.34).abs() < 1e-9, "{b:?}");
-        assert!((b.remaining - 8.66).abs() < 1e-9, "{b:?}");
+        assert!((b.committed - 6.73).abs() < 1e-9, "{b:?}");
+        assert!((b.remaining - 8.27).abs() < 1e-9, "{b:?}");
         // A second plan cannot spend the committed part.
         let second = s.create_plan(NewPlan {
             profile: "medium".into(),
@@ -3507,7 +3509,7 @@ mod tests {
             max_price_hr: 2.09,
             note: None,
         });
-        assert!(second.is_err(), "10.52 > 8.66 left");
+        assert!(second.is_err(), "10.91 > 8.27 left");
         let after = s.close_plan(p.id, 1.10).expect("close");
         assert!((after.spent - 1.10).abs() < 1e-9);
         assert!((after.committed).abs() < 1e-9);
@@ -3534,9 +3536,9 @@ mod tests {
             .expect("plan");
         s.commit_plan(p.id).expect("commit");
         let b = s.budget().expect("b");
-        assert!((b.floor() - 6.34).abs() < 1e-9, "{b:?}");
+        assert!((b.floor() - 6.73).abs() < 1e-9, "{b:?}");
         let low = s.set_budget_cap(0.0).expect_err("below the committed run");
-        assert!(low.to_string().contains("can't go below $6.34"), "{low}");
+        assert!(low.to_string().contains("can't go below $6.73"), "{low}");
         assert!(s.set_budget_cap(5.0).is_err());
         assert_eq!(
             s.budget().expect("b").cap,
@@ -3547,7 +3549,7 @@ mod tests {
         s.set_budget_cap(b.floor()).expect("the floor");
         let at = s.budget().expect("b");
         assert!(
-            at.remaining.abs() < 1e-9 && (at.committed - 6.34).abs() < 1e-9,
+            at.remaining.abs() < 1e-9 && (at.committed - 6.73).abs() < 1e-9,
             "{at:?}"
         );
         // After the run closes, only what it actually spent holds the floor up.
@@ -3755,8 +3757,8 @@ mod tests {
         let back = s.plan(p.id).expect("read").expect("plan");
         assert_eq!(back.gpu_types, p.gpu_types);
         assert_eq!(
-            back.worst_case, 7.39,
-            "3.5h + 120s margin at the plan's own 2.09"
+            back.worst_case, 7.77,
+            "3.5h + 780s margin+retry at the plan's own 2.09"
         );
     }
 
@@ -3959,7 +3961,7 @@ mod tests {
             s.budget_for(Provider::RunPod).expect("rp"),
             s.budget_for(Provider::OpenRouter).expect("or"),
         );
-        assert!((rp.committed - 2.04).abs() < 1e-9, "{rp:?}");
+        assert!((rp.committed - 2.22).abs() < 1e-9, "{rp:?}");
         assert!((or.committed - 3.01).abs() < 1e-9, "{or:?}");
         s.close_plan(p.id, 0.5).expect("close");
         let rp = s.budget_for(Provider::RunPod).expect("rp");
@@ -4006,7 +4008,7 @@ mod tests {
         assert_eq!(s.budget().expect("b").cap, 38.0, "sum of the provider caps");
         s.commit_completion(new_completion(3.01)).expect("fits");
         let p = jam_plan(&s, 10.0, 2.0);
-        assert!((p.worst_case - 20.07).abs() < 1e-9);
+        assert!((p.worst_case - 20.44).abs() < 1e-9);
     }
 
     #[test]
@@ -4028,14 +4030,14 @@ mod tests {
             .expect_err("provider cap");
         assert!(matches!(err, Error::Budget(_)), "{err}");
         assert!(err.to_string().contains("runpod cap"), "{err}");
-        // The overall ceiling refuses: 5.04 fits OpenRouter's 8, then 5.01 more does not fit 10.
+        // The overall ceiling refuses: 5.22 fits OpenRouter's 8, then 5.01 more does not fit 10.
         let p = jam_plan(&s, 5.0, 1.0);
-        s.commit_plan(p.id).expect("5.04 of 6 and of 10");
+        s.commit_plan(p.id).expect("5.22 of 6 and of 10");
         let err = s
             .commit_completion(new_completion(5.01))
             .expect_err("overall cap");
         assert!(err.to_string().contains("overall cap"), "{err}");
-        assert!(err.to_string().contains("$4.96 left"), "{err}");
+        assert!(err.to_string().contains("$4.78 left"), "{err}");
         assert!(s.open_completions().expect("open").is_empty());
         // OpenRouter's own cap refuses when it is the tighter one.
         s.set_provider_cap(Provider::OpenRouter, 2.0)
@@ -4065,9 +4067,9 @@ mod tests {
         );
         s.set_provider_cap(Provider::OpenRouter, 3.01)
             .expect("at floor");
-        s.set_provider_cap(Provider::RunPod, 2.04)
-            .expect("runpod floor is 2.04, not 5.05");
-        assert!(s.set_provider_cap(Provider::RunPod, 2.03).is_err());
+        s.set_provider_cap(Provider::RunPod, 2.22)
+            .expect("runpod floor is 2.22, not 5.23");
+        assert!(s.set_provider_cap(Provider::RunPod, 2.21).is_err());
         for bad in [-1.0, f64::NAN, f64::INFINITY] {
             assert!(matches!(
                 s.set_provider_cap(Provider::RunPod, bad),

@@ -858,6 +858,7 @@ fn duplicate_sweep_and_closed_plan_journal_branches() {
 fn vanished_pod_past_margin_books_persisted_real_rate_capped_at_deadline_plus_margin() {
     fn setup_backdated(
         name: &str,
+        age_secs: i64,
         self_stop: Option<&str>,
         last_seen_offset: Option<i64>,
     ) -> (std::path::PathBuf, Store, i64, Mock) {
@@ -867,7 +868,7 @@ fn vanished_pod_past_margin_books_persisted_real_rate_capped_at_deadline_plus_ma
         std::fs::create_dir_all(&dir).expect("dir");
         let db = dir.join("offrig.db");
         let now = offrig_core::cost::now_unix();
-        let commit = now - 1020;
+        let commit = now - age_secs;
         let plan_id = {
             let store = Store::open(&db).expect("store");
             store.set_budget_cap(50.0).expect("cap");
@@ -909,41 +910,126 @@ fn vanished_pod_past_margin_books_persisted_real_rate_capped_at_deadline_plus_ma
         (dir, store, plan_id, m)
     }
 
-    // (a) Armed + absent past deadline -> books to deadline + 120s (420s * $1.44/hr = $0.17).
+    // (a) Armed + absent past fire_at + SELF_STOP_MAX_RETRY_SECS -> clamps at 1080s * $1.44/hr = $0.44.
     let (d1, s1, id1, m1) = setup_backdated(
         "armed",
+        3610,
         Some("offrig self-stop: armed fire_at=420 via python3"),
         Some(120),
     );
     let v1 = watchdog::step(&s1, &rp(&m1), id1).expect("step armed");
     assert!(matches!(v1, Verdict::Close { .. }), "{v1:?}");
     assert_eq!(m1.count("GET /pods"), 1);
-    assert!((s1.budget().expect("b1").spent - 0.17).abs() < 1e-9);
+    assert!((s1.budget().expect("b1").spent - 0.44).abs() < 1e-9);
     let _ = std::fs::remove_dir_all(&d1);
 
-    // (b) UNAVAILABLE + absent past deadline -> books to `now` (1020s * $1.44/hr = $0.41).
+    // (b) UNAVAILABLE + absent past deadline -> books to `now` (3610s * $1.44/hr = $1.45).
     let (d2, s2, id2, m2) = setup_backdated(
         "unavail",
+        3610,
         Some("offrig self-stop: UNAVAILABLE (runpodctl/python3/curl)"),
         Some(120),
     );
     let v2 = watchdog::step(&s2, &rp(&m2), id2).expect("step unavail");
     assert!(matches!(v2, Verdict::Close { .. }), "{v2:?}");
     assert_eq!(m2.count("GET /pods"), 1);
-    assert!((s2.budget().expect("b2").spent - 0.41).abs() < 1e-9);
+    assert!((s2.budget().expect("b2").spent - 1.45).abs() < 1e-9);
     let _ = std::fs::remove_dir_all(&d2);
 
-    // (c) Armed + last_seen later than deadline + 120s -> last_seen wins (750s * $1.44/hr = $0.30).
+    // (c) Armed + last_seen later than fire_at + 660s -> last_seen wins (1800s * $1.44/hr = $0.72).
     let (d3, s3, id3, m3) = setup_backdated(
         "lastseen",
+        3610,
         Some("offrig self-stop: armed fire_at=420 via python3"),
-        Some(750),
+        Some(1800),
     );
     let v3 = watchdog::step(&s3, &rp(&m3), id3).expect("step last_seen");
     assert!(matches!(v3, Verdict::Close { .. }), "{v3:?}");
     assert_eq!(m3.count("GET /pods"), 1);
-    assert!((s3.budget().expect("b3").spent - 0.30).abs() < 1e-9);
+    assert!((s3.budget().expect("b3").spent - 0.72).abs() < 1e-9);
     let _ = std::fs::remove_dir_all(&d3);
+
+    // (d) Armed + absent inside retry window (fire_at=420 < 760 < 1080) -> books full 760s = $0.31.
+    let (d4, s4, id4, m4) = setup_backdated(
+        "inretry",
+        760,
+        Some("offrig self-stop: armed fire_at=420 via python3"),
+        Some(120),
+    );
+    let v4 = watchdog::step(&s4, &rp(&m4), id4).expect("step inretry");
+    assert!(matches!(v4, Verdict::Close { .. }), "{v4:?}");
+    assert_eq!(m4.count("GET /pods"), 1);
+    assert!((s4.budget().expect("b4").spent - 0.31).abs() < 1e-9);
+    let _ = std::fs::remove_dir_all(&d4);
+}
+
+#[test]
+fn armed_dead_host_booking_never_exceeds_plan_worst_case() {
+    for (idx, (max_hours, max_price_hr, saved_rate)) in [
+        (1.0, 1.00, None),
+        (1.0, 1.00, Some(1.00)),
+        (0.0834, 2.09, None),
+        (0.0834, 2.09, Some(1.44)),
+        (3.5, 3.49, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = std::env::temp_dir().join(format!("offrig-wd-cap-{idx}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let db = dir.join("offrig.db");
+        let now = offrig_core::cost::now_unix();
+        let commit = now - 86_400; // Host dead for 24h after launch.
+        let (plan_id, worst_case) = {
+            let store = Store::open(&db).expect("store");
+            store.set_budget_cap(50.0).expect("cap");
+            let p = store
+                .create_plan(NewPlan {
+                    profile: "job".into(),
+                    gpu_count: 1,
+                    gpu_types: vec!["NVIDIA RTX A4000".into()],
+                    max_hours,
+                    max_price_hr,
+                    note: None,
+                })
+                .expect("plan");
+            store.commit_plan(p.id).expect("commit");
+            store.attach_pod(p.id, "p1").expect("attach");
+            store
+                .set_plan_self_stop(p.id, "offrig self-stop: armed fire_at=99999 via python3")
+                .expect("ss");
+            if let Some(rate) = saved_rate {
+                store.set_plan_cost_per_hr(p.id, rate).expect("rate");
+            }
+            (p.id, p.worst_case)
+        };
+        let conn = rusqlite::Connection::open(&db).expect("conn");
+        conn.execute(
+            "UPDATE plans SET committed_at = ?1, started_at = ?1 WHERE id = ?2",
+            rusqlite::params![commit, plan_id],
+        )
+        .expect("backdate");
+        drop(conn);
+
+        let store = Store::open(&db).expect("reopen");
+        let m = serve(|req, _| match req.route().as_str() {
+            "GET /pods" => (200, "[]".to_string()),
+            _ => (404, "{}".to_string()),
+        });
+        let verdict = watchdog::step(&store, &rp(&m), plan_id).expect("step");
+        assert!(matches!(verdict, Verdict::Close { .. }), "{verdict:?}");
+        let spent = store.budget().expect("budget").spent;
+        assert!(
+            spent <= worst_case + 1e-9,
+            "case {idx}: armed dead-host booking ${spent:.2} exceeded worst_case ${worst_case:.2}"
+        );
+        if (max_hours - 1.0).abs() < 1e-9 && (max_price_hr - 1.0).abs() < 1e-9 {
+            assert_eq!(worst_case, 1.22);
+            assert_eq!(spent, 1.22);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

@@ -304,22 +304,22 @@ fn the_budget_cap_and_plan_prices_must_be_sane() {
 #[test]
 fn a_plan_commits_once_and_only_while_the_budget_has_room() {
     let s = store();
-    s.set_budget_cap(10.0).expect("cap");
-    let a = s.create_plan(plan(2.0, 3.0)).expect("a: $6.10");
+    s.set_budget_cap(11.5).expect("cap");
+    let a = s.create_plan(plan(2.0, 3.0)).expect("a: $6.65");
     let b = s
         .create_plan(plan(1.0, 3.5))
-        .expect("b: $3.62, fits while a is only planned");
+        .expect("b: $4.26, fits while a is only planned");
     let committed = s.commit_plan(a.id).expect("commit a");
     assert_eq!(committed.state, "committed");
     assert_eq!(
         s.commit_plan(a.id).expect("idempotent").committed_at,
         committed.committed_at
     );
-    // $10 - $6.10 committed leaves $3.90; b needs $3.62 and fits, a second 3.62 would not.
+    // $11.50 - $6.65 committed leaves $4.85; b needs $4.26 and fits, leaving $0.59.
     s.commit_plan(b.id).expect("commit b");
     let c = s
         .create_plan(plan(0.2, 3.0))
-        .expect_err("only $0.28 is left for planning");
+        .expect_err("only $0.59 is left for planning $1.25");
     assert!(matches!(c, Error::Budget(_)));
     assert!(refused(
         &s.commit_plan(404).expect_err("unknown"),
@@ -334,13 +334,13 @@ fn a_plan_commits_once_and_only_while_the_budget_has_room() {
 fn a_commit_that_no_longer_fits_is_refused_at_commit_time() {
     let s = store();
     s.set_budget_cap(10.0).expect("cap");
-    let a = s.create_plan(plan(2.0, 3.0)).expect("a: $6.10");
+    let a = s.create_plan(plan(2.0, 3.0)).expect("a: $6.65");
     let b = s
         .create_plan(plan(2.0, 3.0))
-        .expect("b: $6.10, both only planned");
+        .expect("b: $6.65, both only planned");
     s.commit_plan(a.id).expect("commit a");
-    let err = s.commit_plan(b.id).expect_err("$3.90 left, b needs $6.10");
-    assert!(refused(&err, "only $3.90 of the budget is left"), "{err}");
+    let err = s.commit_plan(b.id).expect_err("$3.35 left, b needs $6.65");
+    assert!(refused(&err, "only $3.35 of the budget is left"), "{err}");
 }
 
 #[test]

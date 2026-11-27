@@ -173,7 +173,7 @@ async fn a_sibling_lanes_pod_appears_with_its_plan_and_foreign_pods_are_only_cou
     let plan = &s["plan"];
     assert_eq!(plan["plan_id"], sib_plan);
     assert_eq!(plan["note"], "cut 40 clips for the trailer");
-    assert_eq!(plan["committed_worst_case"], 4.25);
+    assert_eq!(plan["committed_worst_case"], 4.64);
     let deadline = plan["deadline"].as_str().expect("deadline");
     assert!(
         deadline.len() == 20 && deadline.ends_with('Z') && deadline.as_bytes()[10] == b'T',

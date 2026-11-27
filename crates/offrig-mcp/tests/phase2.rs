@@ -117,7 +117,7 @@ async fn launch_job_ask_and_shutdown_against_a_mock_runpod() {
     let plan = call("offrig_plan", json!({"profile": "small", "max_hours": 1.0})).await;
     assert_eq!(plan.is_error, Some(false), "{:?}", body(&plan));
     let plan_id = body(&plan)["plan_id"].as_i64().expect("plan id");
-    assert_eq!(body(&plan)["worst_case"], 0.26);
+    assert_eq!(body(&plan)["worst_case"], 0.31);
     // The project got its own lane (named for its folder), recorded on the plan.
     let tag = body(&plan)["lane"].as_str().expect("lane tag").to_string();
     assert!(tag.starts_with("offrig-phase2"), "{tag}");
@@ -131,7 +131,7 @@ async fn launch_job_ask_and_shutdown_against_a_mock_runpod() {
     let launch = call("offrig_launch", json!({"plan_id": plan_id})).await;
     assert_eq!(launch.is_error, Some(false), "{:?}", body(&launch));
     let job_id = body(&launch)["job_id"].as_i64().expect("job id");
-    assert_eq!(body(&launch)["budget"]["committed"], 0.26);
+    assert_eq!(body(&launch)["budget"]["committed"], 0.31);
 
     let again = call("offrig_launch", json!({"plan_id": plan_id})).await;
     assert_eq!(body(&again)["already_launched"], true, "{:?}", body(&again));

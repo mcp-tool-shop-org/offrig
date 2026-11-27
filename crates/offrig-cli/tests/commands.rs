@@ -195,7 +195,7 @@ fn status_names_another_lanes_pod_with_its_plan_read_from_that_projects_store() 
     assert!(
         text.contains(&format!("lane {tag}, project "))
             && text.contains("plan 1 (cut the trailer), ends 20")
-            && text.contains("worst case $4.07"),
+            && text.contains("worst case $4.44"),
         "{text}"
     );
     // A lane-shaped pod the registry does not know stays a bare "lane" pod.

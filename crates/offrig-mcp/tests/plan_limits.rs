@@ -97,7 +97,11 @@ async fn plan_limits_narrow_the_gpu_list_and_the_worst_case() {
     .await;
     assert_eq!(p.is_error, Some(false), "{:?}", body(&p));
     assert_eq!(body(&p)["max_price_hr"], 3.49);
-    assert_eq!(body(&p)["worst_case"], 12.34, "includes self-stop margin");
+    assert_eq!(
+        body(&p)["worst_case"],
+        12.98,
+        "includes margin and retry tail"
+    );
     assert_eq!(body(&p)["min_cuda"], "13.0", "the job profile's floor");
 
     // max_price_hr: the H100s are left out and the worst case follows the cap's side.
@@ -116,7 +120,7 @@ async fn plan_limits_narrow_the_gpu_list_and_the_worst_case() {
     );
     assert!(!gpus.contains("H100"), "{gpus}");
     assert_eq!(b["max_price_hr"], 2.09);
-    assert_eq!(b["worst_case"], 7.39);
+    assert_eq!(b["worst_case"], 7.77);
     assert!(
         b["left_out"]
             .as_array()

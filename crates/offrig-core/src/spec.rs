@@ -187,6 +187,17 @@ pub const ENV_DEADLINE: &str = "OFFRIG_DEADLINE";
 /// The host watchdog polls every 60s, so 120s gives it first turn to terminate
 /// the pod and close the plan's books while bounding spend if the host dies.
 pub const SELF_STOP_MARGIN_SECS: i64 = 120;
+/// Worst-case wall time after `fire_at` (`deadline + SELF_STOP_MARGIN_SECS`) for an
+/// armed on-pod timer's termination sequence (`self_stop_timer`) to finish:
+/// - per HTTP pass (`python3`, then `curl` fallthrough = 2 passes):
+///   4 `DELETE` requests x 30s timeout (120s)
+///   + 3 inter-retry sleeps x 60s `Retry-After` cap (180s, dominating 2+4+8=14s backoff)
+///   + 1 `POST .../action {"action":"terminate"}` x 30s timeout (30s) = 330s per pass;
+/// - across both `python3` and `curl` passes: 2 x 330s = 660s.
+///
+/// (`runpodctl` has no 60s `Retry-After` sleeps and finishes within its 4 rounds;
+/// the subsequent `{"action":"stop"}` fallback only stops rather than deletes the pod.)
+pub const SELF_STOP_MAX_RETRY_SECS: i64 = 2 * (4 * 30 + 3 * 60 + 30);
 /// Path on the pod where bootstrap records whether the on-pod self-stop backstop armed.
 pub const SELF_STOP_STATUS_FILE: &str = "/workspace/offrig/self-stop.status";
 /// Line prefix written by bootstrap and read over SSH after pod boot.
