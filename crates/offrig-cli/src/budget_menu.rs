@@ -374,13 +374,13 @@ y
 y
 ",
         );
-        assert!(text.contains("can't go below $10.00"), "{text}");
+        assert!(text.contains("can't go below $10.55"), "{text}");
         assert!(text.contains("live: plan"), "{text}");
         assert!(text.contains("keep the money they were given"), "{text}");
         let b = s.budget().expect("b");
-        assert_eq!(b.cap, 10.0, "stopped at the floor, not zero");
+        assert_eq!(b.cap, 10.55, "stopped at the floor, not zero");
         assert!(
-            (b.committed - 10.0).abs() < 1e-9 && b.remaining.abs() < 1e-9,
+            (b.committed - 10.55).abs() < 1e-9 && b.remaining.abs() < 1e-9,
             "{b:?}"
         );
     }

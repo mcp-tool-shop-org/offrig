@@ -5,15 +5,15 @@
       "job_id": 1,
       "plan_id": 1,
       "lane": "<LANE>",
-      "worst_case": 0.5,
+      "worst_case": 0.61,
       "deadline": "<DEADLINE>",
       "capacity_wait_minutes": 0,
       "watchdog": "started",
       "budget": {
         "cap": 50.0,
-        "committed": 0.5,
+        "committed": 0.61,
         "spent": 0.0,
-        "remaining": 49.5
+        "remaining": 49.39
       },
       "account_notes": [],
       "next_action": "follow the launch with offrig_job {\"job_id\": 1} or {\"plan_id\": 1} every minute or two (job_id 1 is the launch's, not the plan's 1); nothing is ready until it says so",

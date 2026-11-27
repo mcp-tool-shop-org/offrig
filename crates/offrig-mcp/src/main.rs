@@ -637,7 +637,14 @@ impl Sidecar {
             .with_store(|s| watchdog::failure(s, job.plan_id))
             .ok()
             .flatten();
-        let rate = job.progress["cost_per_hr"].as_f64();
+        let rate = job.progress["cost_per_hr"]
+            .as_f64()
+            .filter(|&r| r > 0.0 && r.is_finite())
+            .or_else(|| {
+                self.with_store(|s| s.plan_cost_per_hr(job.plan_id))
+                    .ok()
+                    .flatten()
+            });
         // A stopped launch recorded its own cost when it closed the plan; the
         // time-based figure below would keep growing after the pod was terminated.
         let failure = job.progress["failure"].clone();
@@ -939,8 +946,12 @@ impl Sidecar {
                 "held": s.open_completions()?.iter().map(complete::completion_json).collect::<Vec<_>>(),
                 "recent": s.recent_completions(5)?.iter().map(complete::completion_json).collect::<Vec<_>>(),
             });
-            let plans: Vec<Value> = s
-                .open_plans()?
+            let open = s.open_plans()?;
+            let plan_deadlines: std::collections::BTreeMap<i64, i64> = open
+                .iter()
+                .filter_map(|p| p.deadline().map(|d| (p.id, d)))
+                .collect();
+            let plans: Vec<Value> = open
                 .iter()
                 .map(|p| {
                     let cfg = self.ctx.cfg_for_plan(s, p).ok();
@@ -998,6 +1009,7 @@ impl Sidecar {
                 s.unfinished_journal()?,
                 s.ready()?,
                 plans,
+                plan_deadlines,
                 !s.active(Kind::Brief)?.is_empty(),
                 completions,
                 s.unresolved_duplicate_pods()?,
@@ -1016,6 +1028,7 @@ impl Sidecar {
             journal,
             ready,
             open_plans,
+            plan_deadlines,
             has_brief,
             completions,
             unresolved_dups,
@@ -1042,6 +1055,34 @@ impl Sidecar {
             Ok(Err(e)) => (None, Vec::new(), Some(chain(&e))),
             Err(e) => (None, Vec::new(), Some(e.to_string())),
         };
+        let mut open_plans = open_plans;
+        if remote_note.is_none() {
+            for p in &mut open_plans {
+                let Some(pid) = p["plan_id"].as_i64() else {
+                    continue;
+                };
+                let Some(pod_id) = p["pod_id"].as_str() else {
+                    continue;
+                };
+                if let Some(pod) = pods
+                    .iter()
+                    .find(|pod| pod.id == pod_id && pod.desired_status != "TERMINATED")
+                {
+                    let stopped_past_deadline = plan_deadlines.get(&pid).is_some_and(|&d| now >= d)
+                        && offrig_core::spec::pod_is_stopped(&pod.desired_status);
+                    if stopped_past_deadline {
+                        p["self_stop"] = json!(offrig_core::spec::SELF_STOP_STOPPED_LINE);
+                    }
+                    let _ = self.with_store(|s| {
+                        let _ = s.set_plan_last_seen(pid, now);
+                        if stopped_past_deadline {
+                            s.set_plan_self_stop(pid, offrig_core::spec::SELF_STOP_STOPPED_LINE)?;
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
         // Only this project's pods are "ours": the lane's own names, and the pod of any
         // open plan (a plan from before lanes holds a plain-lane `offrig-<profile>` pod).
         // Another lane's pods are another project's, and count as other pods.
@@ -1184,6 +1225,14 @@ impl Sidecar {
             .collect();
         let next = if self_stop_warnings.is_empty() {
             next
+        } else if self_stop_warnings
+            .iter()
+            .any(|w| w.contains("STOPPED NOT TERMINATED"))
+        {
+            format!(
+                "WARNING, pod STOPPED NOT TERMINATED (volume still billing): {}. Run offrig_shutdown to terminate the pod. Then: {next}",
+                self_stop_warnings.join("; ")
+            )
         } else if self_stop_warnings.iter().any(|w| w.contains("UNAVAILABLE")) {
             format!(
                 "WARNING, on-pod self-stop is unavailable: {}. Keep the host watchdog running until offrig_shutdown. Then: {next}",
@@ -1441,7 +1490,7 @@ impl Sidecar {
 
     #[tool(
         name = "offrig_plan",
-        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x max_hours). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Optional container_disk_gb overrides the profile's container disk size for this plan (not priced into the worst case). The reply names the lane's ssh alias and the pod name the launch will create, and min_cuda or cuda_versions when the profile sets one (cuda_versions is the exact host CUDA list the create will send). When the profile sets cuda_runtime, the reply also names it and a cuda_note. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
+        description = "Price a session before any money is spent: takes a profile and max_hours, reads the live price for the profile's GPUs, and records a plan at its worst case (price x (max_hours + (120s self-stop margin + 660s retry span)/3600)). Optional max_price_hr leaves out offers above that total $/hr and prices the worst case from it; optional no_fallback keeps only the profile's first GPU family; the profile's min_vram_gb drops cards with less memory. The plan stores the GPU list left and the launch rents only from it; refused if nothing is left. Refused if the worst case exceeds the budget left. Optional wait_minutes sets how long the launch retries quietly when the narrowed list has no capacity (default: the profile's; the job profile waits 20 minutes). Optional container_disk_gb overrides the profile's container disk size for this plan (not priced into the worst case). The reply names the lane's ssh alias and the pod name the launch will create, and min_cuda or cuda_versions when the profile sets one (cuda_versions is the exact host CUDA list the create will send). When the profile sets cuda_runtime, the reply also names it and a cuda_note. Returns plan_id, which launching will require. Writes a plan; spends nothing.",
         annotations(
             title = "Plan a session",
             read_only_hint = false,

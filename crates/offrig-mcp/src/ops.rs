@@ -664,7 +664,11 @@ pub fn claim_or_terminate_duplicate_pod(
     plan_id: i64,
     pod: &Pod,
 ) -> Result<()> {
-    claim_or_terminate_with(store, rp, plan_id, pod, |pid, id| store.attach_pod(pid, id))
+    claim_or_terminate_with(store, rp, plan_id, pod, |pid, id| store.attach_pod(pid, id))?;
+    if pod.desired_status.eq_ignore_ascii_case("RUNNING") {
+        store.set_plan_cost_per_hr(plan_id, pod.cost_per_hr)?;
+    }
+    Ok(())
 }
 
 fn probe_existing_plan_pod(
@@ -939,14 +943,19 @@ fn launch(
             .filter(|p| p.gpu_type().is_some())
             .unwrap_or_else(|| pod.clone())
     };
+    if seen.desired_status.eq_ignore_ascii_case("RUNNING") {
+        let _ = store.set_plan_cost_per_hr(plan_id, seen.cost_per_hr);
+    }
     progress.v["rented"] = progress.rented(&seen);
     // offrig_job derives the step from the pod itself while the pod boots, so a
     // slow host never leaves a stale "waiting for the address" line behind.
     progress.v["phase"] = json!("pod_boot");
-    progress.v["cost_per_hr"] = json!(pod.cost_per_hr);
+    if seen.cost_per_hr > 0.0 && seen.cost_per_hr.is_finite() {
+        progress.v["cost_per_hr"] = json!(seen.cost_per_hr);
+    }
     progress.step(format!(
         "pod {} created at ${:.2}/hr",
-        pod.id, pod.cost_per_hr
+        pod.id, seen.cost_per_hr
     ));
 
     // From here the pod bills. If getting it ready fails, terminate it rather than
@@ -955,6 +964,12 @@ fn launch(
     // reported and left running. Shutting it down stays with the person.
     let ready = (|| -> Result<Value> {
         let up = session.wait_ready(&pod.id, &mut |e| progress.event(e))?;
+        if up.desired_status.eq_ignore_ascii_case("RUNNING") {
+            let _ = store.set_plan_cost_per_hr(plan_id, up.cost_per_hr);
+        }
+        if up.cost_per_hr > 0.0 && up.cost_per_hr.is_finite() {
+            progress.v["cost_per_hr"] = json!(up.cost_per_hr);
+        }
         progress.v["phase"] = json!("after_ssh");
         progress.step(format!("ssh is up through the alias {}", cfg.ssh_alias));
         if cancel.load(Ordering::SeqCst) {
@@ -1260,17 +1275,38 @@ pub fn shutdown_with_override(
     }
     // Look the pod up and check its lane before anything is cancelled, closed or
     // journaled: a refusal leaves the session exactly as it was.
-    let mut rate = plan.max_price_hr;
+    let mut rate = store
+        .plan_cost_per_hr(plan_id)
+        .ok()
+        .flatten()
+        .unwrap_or(plan.max_price_hr);
+    let mut pod_gone = false;
+    let mut seen_alive_at: Option<i64> = None;
     let rp = match plan.pod_id.as_deref() {
         Some(_) => Some(RunPod::from_env()?),
         None => None,
     };
-    if let (Some(rp), Some(id)) = (&rp, plan.pod_id.as_deref())
-        && let Ok(p) = rp.get_pod(id)
-    {
-        // Never terminate a pod this plan's lane did not name, whatever id the plan holds.
-        ensure_owned(&cfg, &p)?;
-        rate = p.cost_per_hr;
+    if let (Some(rp), Some(id)) = (&rp, plan.pod_id.as_deref()) {
+        match rp.get_pod(id) {
+            Ok(p) => {
+                // Never terminate a pod this plan's lane did not name, whatever id the plan holds.
+                ensure_owned(&cfg, &p)?;
+                if p.cost_per_hr > 0.0 && p.cost_per_hr.is_finite() {
+                    rate = rate.max(p.cost_per_hr);
+                }
+                if p.desired_status == "TERMINATED" {
+                    pod_gone = true;
+                } else {
+                    let seen_now = now_unix();
+                    seen_alive_at = Some(seen_now);
+                    let _ = store.set_plan_last_seen(plan_id, seen_now);
+                }
+            }
+            Err(Error::Api { status: 404, .. } | Error::PodNotFound(_)) => {
+                pod_gone = true;
+            }
+            Err(_) => {}
+        }
     }
     if let Some(c) = lock(&shared.cancels).get(&plan_id) {
         c.store(true, Ordering::SeqCst);
@@ -1286,7 +1322,10 @@ pub fn shutdown_with_override(
         (Some(rp), Some(id)) => match rp.delete_pod(id) {
             Ok(()) => format!("terminated {id}"),
             // Already gone is the state we want.
-            Err(Error::Api { status: 404, .. }) => format!("{id} was already gone"),
+            Err(Error::Api { status: 404, .. }) => {
+                pod_gone = true;
+                format!("{id} was already gone")
+            }
             Err(e) => return Err(e),
         },
         _ if pending_create => {
@@ -1304,7 +1343,17 @@ pub fn shutdown_with_override(
         .and_then(|id| offrig_core::sshconfig::remove_for_pod(&cfg.ssh_alias, id).ok())
         .unwrap_or(false);
     let spent = if plan.pod_id.is_some() {
-        watchdog::spend(&plan, rate, now_unix())
+        let now = now_unix();
+        if pod_gone {
+            let self_stop = store.plan_self_stop(plan_id).ok().flatten();
+            let last_seen = match (store.plan_last_seen(plan_id).ok().flatten(), seen_alive_at) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            watchdog::spend_when_gone(&plan, rate, now, self_stop.as_deref(), last_seen)
+        } else {
+            watchdog::spend(&plan, rate, now)
+        }
     } else {
         0.0
     };

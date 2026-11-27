@@ -2384,3 +2384,365 @@ async fn slow_ten_second_liveness_probe_does_not_hold_sqlite_write_lock() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn shutdown_after_self_delete_books_persisted_real_rate_capped_at_deadline_plus_margin() {
+    let pods: Pods = Arc::default();
+    let self_deleted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let deleted_flag = Arc::clone(&self_deleted);
+    let pods_c = Arc::clone(&pods);
+    let ids = Config::default()
+        .profile("job")
+        .expect("job")
+        .gpu_type_ids
+        .clone();
+    let types: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id, "name": id, "memory": 80, "secure": true,
+                "price": {"secure": 2.09}, "maxCount": {"secure": 8}, "availability": "HIGH"
+            })
+        })
+        .collect();
+    let offers_209 = json!({"gpus": types}).to_string();
+    let (url, _hits): (_, Hits) = mock(move |route, b, _| {
+        let mut list = pods_c.lock().expect("pods");
+        match route {
+            "POST /graphql" if b.contains("myself") => (
+                200,
+                r#"{"data":{"myself":{"clientBalance":40.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#.into(),
+            ),
+            "GET /catalog/gpus" => (200, offers_209.clone()),
+            "GET /pods" => (200, Value::Array(list.clone()).to_string()),
+            "POST /pods" => {
+                let want: Value = serde_json::from_str(b).unwrap_or_default();
+                let p_created = json!({
+                    "id": "pod-selfdel",
+                    "name": want["name"],
+                    "status": "RUNNING",
+                    "cost": 0.0,
+                    "ports": ["22/tcp"],
+                    "env": want["env"],
+                    "ssh": { "direct": { "host": "203.0.113.9", "port": 40022 } },
+                    "gpu": { "id": "NVIDIA A100-SXM4-80GB", "count": 1 },
+                    "cudaVersion": "13.0"
+                });
+                let mut p_ready = p_created.clone();
+                p_ready["cost"] = json!(1.44);
+                list.push(p_ready);
+                (200, p_created.to_string())
+            }
+            "GET /pods/pod-selfdel" | "DELETE /pods/pod-selfdel"
+                if deleted_flag.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
+                (404, r#"{"error":"not found"}"#.into())
+            }
+            "GET /pods/pod-selfdel" => match list.first() {
+                Some(p) => (200, p.to_string()),
+                None => (404, "{}".into()),
+            },
+            _ => (404, "{}".into()),
+        }
+    });
+
+    let dir = temp("shutdown-selfdel");
+    let db = dir.join(".offrig").join("offrig.db");
+    {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+    }
+    let (bin, fake) = install_fake_tools(&dir);
+    std::fs::write(
+        fake.join("rules.json"),
+        json!([
+            {
+                "contains": "nvidia-smi",
+                "stdout": "| NVIDIA-SMI 570.1 Driver Version: 570.1 CUDA Version: 13.0 |\n|   0  NVIDIA A100-SXM4-80GB  Off |\n"
+            },
+            {
+                "contains": "self-stop.status",
+                "stdout": "offrig self-stop: armed fire_at=1900000120 via python3\n"
+            }
+        ])
+        .to_string(),
+    )
+    .expect("rules");
+    let client = connect_mcp_extra(
+        &dir,
+        &url,
+        Some("test-key"),
+        Some(&bin),
+        Some(&fake),
+        true,
+        &[],
+    )
+    .await;
+
+    // 5-min plan with max_price_hr 2.09 -> worst_case includes 120s margin + 660s retry tail ($0.63); pod rents at $1.44/hr.
+    let plan = call(
+        &client,
+        "offrig_plan",
+        json!({"profile": "job", "max_hours": 0.0834, "max_price_hr": 2.09}),
+    )
+    .await;
+    assert_eq!(plan.is_error, Some(false), "{:?}", body(&plan));
+    let plan_id = body(&plan)["plan_id"].as_i64().expect("plan_id");
+    assert_eq!(body(&plan)["worst_case"], 0.63);
+
+    let launch = call(&client, "offrig_launch", json!({"plan_id": plan_id})).await;
+    assert_eq!(launch.is_error, Some(false), "{:?}", body(&launch));
+    let job_id = body(&launch)["job_id"].as_i64().expect("job_id");
+    let started = Instant::now();
+    loop {
+        let j = call(&client, "offrig_job", json!({"job_id": job_id})).await;
+        if body(&j)["state"] == "done" {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            body(&j)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Pod self-deletes (GET/DELETE 404) and host shutdown runs 1h after launch (3610s after commit).
+    self_deleted.store(true, std::sync::atomic::Ordering::SeqCst);
+    {
+        let s = Store::open(&db).expect("store");
+        assert_eq!(s.plan_cost_per_hr(plan_id).expect("rate"), Some(1.44));
+        drop(s);
+        let past = offrig_core::cost::now_unix() - 3610;
+        let conn = rusqlite::Connection::open(&db).expect("conn");
+        conn.execute(
+            "UPDATE plans SET committed_at = ?1, started_at = ?1 WHERE id = ?2",
+            rusqlite::params![past, plan_id],
+        )
+        .expect("backdate");
+    }
+
+    let shut = call(
+        &client,
+        "offrig_shutdown",
+        json!({"plan_id": plan_id, "reason": "fire-test cleanup"}),
+    )
+    .await;
+    assert_eq!(shut.is_error, Some(false), "{:?}", body(&shut));
+    // 1080s (300s max_hours + 120s margin + 660s retry span) at real rate $1.44/hr = $0.432 -> $0.44 (<= $0.63 worst_case, not $1.45).
+    assert_eq!(body(&shut)["spent"], 0.44, "{:?}", body(&shut));
+    assert!(
+        body(&shut)["outcome"]
+            .as_str()
+            .is_some_and(|s| s.contains("already gone")),
+        "{:?}",
+        body(&shut)
+    );
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn shutdown_running_get_pod_then_404_delete_books_to_now() {
+    let dir = temp("shutdown-race");
+    let db = dir.join(".offrig").join("offrig.db");
+    let reg = Registry::at(dir.join("cfg"));
+    let lane = reg
+        .lane_for_project(&dir, &Config::default())
+        .expect("lane");
+    let lane_cfg = Config::default().in_lane(&lane).expect("lane cfg");
+    let pod_name = lane_cfg.pod_name(lane_cfg.profile("job").expect("job"));
+
+    let pod_json = serde_json::json!({
+        "id": "pod-race",
+        "name": pod_name,
+        "status": "RUNNING",
+        "cost": 1.44
+    })
+    .to_string();
+    let (url, _hits): (_, Hits) = mock(move |route, b, _| match route {
+        "POST /graphql" if b.contains("myself") => (
+            200,
+            r#"{"data":{"myself":{"clientBalance":40.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#
+                .into(),
+        ),
+        "GET /catalog/gpus" => (200, offers_json()),
+        "GET /pods/pod-race" => (200, pod_json.clone()),
+        "DELETE /pods/pod-race" => (404, r#"{"error":"not found"}"#.into()),
+        _ => (404, "{}".into()),
+    });
+
+    let plan_id = {
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 0.0834,
+                max_price_hr: 2.09,
+                note: None,
+            })
+            .expect("plan");
+        if let Some(tag) = lane.tag {
+            s.set_plan_lane(p.id, &tag).expect("lane");
+        }
+        s.commit_plan(p.id).expect("commit");
+        s.attach_pod(p.id, "pod-race").expect("attach");
+        s.set_plan_cost_per_hr(p.id, 1.44).expect("rate");
+        s.set_plan_self_stop(p.id, "offrig self-stop: armed fire_at=99999 via python3")
+            .expect("ss");
+        drop(s);
+        let past = offrig_core::cost::now_unix() - 3610;
+        let conn = rusqlite::Connection::open(&db).expect("conn");
+        conn.execute(
+            "UPDATE plans SET committed_at = ?1, started_at = ?1 WHERE id = ?2",
+            rusqlite::params![past, p.id],
+        )
+        .expect("backdate");
+        p.id
+    };
+
+    let client = connect_mcp_extra(&dir, &url, Some("test-key"), None, None, true, &[]).await;
+    let shut = call(
+        &client,
+        "offrig_shutdown",
+        json!({"plan_id": plan_id, "reason": "race test"}),
+    )
+    .await;
+    assert_eq!(shut.is_error, Some(false), "{:?}", body(&shut));
+    // GET returned RUNNING just before DELETE 404 -> last_seen updated before delete -> books to now ($1.45, not $0.44).
+    assert_eq!(body(&shut)["spent"], 1.45, "{:?}", body(&shut));
+    assert!(
+        body(&shut)["outcome"]
+            .as_str()
+            .is_some_and(|s| s.contains("already gone")),
+        "{:?}",
+        body(&shut)
+    );
+    assert!(
+        Store::open(&db)
+            .expect("reopen")
+            .plan_last_seen(plan_id)
+            .expect("ls")
+            .is_some(),
+        "shutdown must record plan_last_seen on non-TERMINATED get_pod"
+    );
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn status_raises_stopped_not_terminated_warning_when_pod_exited_past_deadline() {
+    let pods_state = Arc::new(Mutex::new("TERMINATED"));
+    let pods_c = Arc::clone(&pods_state);
+    let (url, _hits): (_, Hits) = mock(move |route, b, _| match route {
+        "POST /graphql" if b.contains("myself") => (
+            200,
+            r#"{"data":{"myself":{"clientBalance":40.0,"currentSpendPerHr":0.0,"spendLimit":80}}}"#
+                .into(),
+        ),
+        "GET /catalog/gpus" => (200, offers_json()),
+        "GET /pods" => {
+            let st = *pods_c.lock().expect("state");
+            (
+                200,
+                serde_json::json!([{
+                    "id": "pod-exited",
+                    "name": "offrig-stopped-status-job",
+                    "status": st,
+                    "cost": 1.44
+                }])
+                .to_string(),
+            )
+        }
+        _ => (404, "{}".into()),
+    });
+
+    let dir = temp("stopped-status");
+    let db = dir.join(".offrig").join("offrig.db");
+    let plan_id = {
+        let reg = Registry::at(dir.join("cfg"));
+        let lane = reg
+            .lane_for_project(&dir, &Config::default())
+            .expect("lane");
+        let s = Store::open(&db).expect("store");
+        s.set_budget_cap(50.0).expect("cap");
+        let p = s
+            .create_plan(NewPlan {
+                profile: "job".into(),
+                gpu_count: 1,
+                gpu_types: vec!["NVIDIA A100-SXM4-80GB".into()],
+                max_hours: 0.0834,
+                max_price_hr: 2.09,
+                note: None,
+            })
+            .expect("plan");
+        if let Some(tag) = lane.tag {
+            s.set_plan_lane(p.id, &tag).expect("lane");
+        }
+        s.commit_plan(p.id).expect("commit");
+        s.attach_pod(p.id, "pod-exited").expect("attach");
+        s.set_plan_self_stop(p.id, "offrig self-stop: armed fire_at=9999999 via python3")
+            .expect("self stop");
+        drop(s);
+        let past = offrig_core::cost::now_unix() - 600;
+        let conn = rusqlite::Connection::open(&db).expect("conn");
+        conn.execute(
+            "UPDATE plans SET committed_at = ?1, started_at = ?1 WHERE id = ?2",
+            rusqlite::params![past, p.id],
+        )
+        .expect("backdate");
+        p.id
+    };
+
+    let client = connect_mcp_extra(&dir, &url, Some("test-key"), None, None, true, &[]).await;
+
+    // Poll 1: TERMINATED pod must NOT record plan_last_seen.
+    let st_term = call(&client, "offrig_status", json!({})).await;
+    assert_eq!(st_term.is_error, Some(false), "{:?}", body(&st_term));
+    assert_eq!(
+        Store::open(&db)
+            .expect("reopen")
+            .plan_last_seen(plan_id)
+            .expect("ls_term"),
+        None,
+        "TERMINATED pod in offrig_status must not update plan_last_seen"
+    );
+
+    // Poll 2: EXITED pod past deadline raises warning and records plan_last_seen.
+    *pods_state.lock().expect("state") = "EXITED";
+    let st = call(&client, "offrig_status", json!({})).await;
+    assert_eq!(st.is_error, Some(false), "{:?}", body(&st));
+    let b = body(&st);
+    assert_eq!(
+        b["open_plans"][0]["self_stop"],
+        offrig_core::spec::SELF_STOP_STOPPED_LINE,
+        "{b:?}"
+    );
+    let warns = b["self_stop_warnings"].as_array().expect("warnings");
+    assert!(
+        warns.iter().any(|w| {
+            w.as_str()
+                .is_some_and(|s| s.contains("STOPPED NOT TERMINATED: volume still billing"))
+        }),
+        "{b:?}"
+    );
+    assert!(
+        b["next_action"]
+            .as_str()
+            .is_some_and(|s| s.contains("STOPPED NOT TERMINATED (volume still billing)")),
+        "{b:?}"
+    );
+    let ls = Store::open(&db)
+        .expect("reopen")
+        .plan_last_seen(plan_id)
+        .expect("last_seen");
+    assert!(ls.is_some(), "offrig_status must record plan_last_seen");
+
+    client.cancel().await.ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
