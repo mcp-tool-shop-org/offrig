@@ -217,31 +217,95 @@ pub fn self_stop_warning(status: Option<&str>) -> Option<String> {
 /// Background timer placed in a planned pod's bootstrap script as a backstop
 /// beneath the host watchdog.
 ///
-/// Uses Runpod's preinstalled `runpodctl` CLI and the pod-scoped `RUNPOD_POD_ID`
-/// and `RUNPOD_API_KEY` that Runpod injects into every Pod container
-/// (`https://docs.runpod.io/pods/manage-pods` sections "Stop a Pod" and
-/// "Terminate a Pod", `https://docs.runpod.io/pods/templates/environment-variables`
-/// section "Runpod-provided variables", and `https://docs.runpod.io/runpodctl/overview`
-/// section "Install Runpod CLI locally"). No studio/host API key is placed on the pod.
+/// Prefers Runpod's preinstalled `runpodctl` CLI when present, and falls back to
+/// calling Runpod's REST API v2 directly via `python3` (`urllib.request`) first or
+/// `curl` second, using the container's pod-injected `RUNPOD_POD_ID` and
+/// pod-scoped `RUNPOD_API_KEY` (`https://docs.runpod.io/pods/references/environment-variables`
+/// and `https://docs.runpod.io/pods/templates/environment-variables`, section
+/// "Runpod-provided variables"; `https://docs.runpod.io/pods/manage-pods`, sections
+/// "Stop a Pod" and "Terminate a Pod"; `https://docs.runpod.io/api-reference-v2/pods/terminate-a-pod`,
+/// section "Terminate a pod"; `https://docs.runpod.io/runpodctl/overview`, section
+/// "Install Runpod CLI locally"). Arms only when one of those tools is available
+/// and both `RUNPOD_POD_ID` and `RUNPOD_API_KEY` are set; otherwise writes
+/// `UNAVAILABLE (<missing>)`. Never prints or logs `RUNPOD_API_KEY`, and never
+/// places a host/studio API key on the pod.
 pub fn self_stop_timer(deadline: i64) -> String {
+    self_stop_timer_in(
+        deadline,
+        STATE_DIR,
+        SELF_STOP_STATUS_FILE,
+        crate::runpod::REST_BASE,
+    )
+}
+
+fn self_stop_timer_in(deadline: i64, state_dir: &str, status_file: &str, api_base: &str) -> String {
     let fire_at = deadline.saturating_add(SELF_STOP_MARGIN_SECS);
+    // Single-quote-free Python script so it sits inside `'...'` cleanly under `sh`.
+    let py_stop = r#"import json, os, sys, urllib.parse, urllib.request
+base = sys.argv[1].rstrip("/")
+pod = urllib.parse.quote(os.environ["RUNPOD_POD_ID"], safe="")
+key = os.environ["RUNPOD_API_KEY"]
+hdrs = {"Authorization": "Bearer " + key, "User-Agent": "offrig-self-stop"}
+def call(method, suffix, payload=None):
+    data = None if payload is None else json.dumps(payload).encode()
+    h = dict(hdrs)
+    if data is not None:
+        h["Content-Type"] = "application/json"
+    req = urllib.request.Request(base + suffix, data=data, headers=h, method=method)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.status
+try:
+    call("DELETE", "/pods/" + pod)
+except Exception as exc:
+    code = getattr(exc, "code", type(exc).__name__)
+    sys.stderr.write("[offrig] self-stop DELETE failed (" + str(code) + "); trying stop\n")
+    try:
+        call("POST", "/pods/" + pod + "/action", {"action": "stop"})
+    except Exception as exc2:
+        code2 = getattr(exc2, "code", type(exc2).__name__)
+        sys.stderr.write("[offrig] self-stop stop failed (" + str(code2) + ")\n")
+        sys.exit(1)"#;
     format!(
         "{SELF_STOP_START}\
+         _offrig_ss_tool=\"\"; \
+         if command -v runpodctl >/dev/null 2>&1; then _offrig_ss_tool=\"runpodctl\"; \
+         elif command -v python3 >/dev/null 2>&1 && python3 -c \"import urllib.request\" >/dev/null 2>&1; then _offrig_ss_tool=\"python3\"; \
+         elif command -v curl >/dev/null 2>&1; then _offrig_ss_tool=\"curl\"; fi; \
          _offrig_ss_missing=\"\"; \
-         if ! command -v runpodctl >/dev/null 2>&1; then _offrig_ss_missing=\"runpodctl\"; fi; \
+         if [ -z \"$_offrig_ss_tool\" ]; then _offrig_ss_missing=\"runpodctl/python3/curl\"; fi; \
          if [ -z \"${{RUNPOD_POD_ID:-}}\" ]; then _offrig_ss_missing=\"${{_offrig_ss_missing:+$_offrig_ss_missing, }}RUNPOD_POD_ID\"; fi; \
-         mkdir -p {STATE_DIR}; \
+         if [ -z \"${{RUNPOD_API_KEY:-}}\" ]; then _offrig_ss_missing=\"${{_offrig_ss_missing:+$_offrig_ss_missing, }}RUNPOD_API_KEY\"; fi; \
+         mkdir -p \"{state_dir}\"; \
          if [ -z \"$_offrig_ss_missing\" ]; then \
-           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at}\" | tee {SELF_STOP_STATUS_FILE}; \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at}\" | tee \"{status_file}\"; \
            (now=$(date -u +%s); wait=$(({fire_at} - now)); \
            if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
-           echo \"[offrig] on-pod deadline {fire_at} reached; stopping ${{RUNPOD_POD_ID}}\" >> {STATE_DIR}/bootstrap.log 2>&1; \
-           runpodctl pod delete \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1 \
-           || runpodctl remove pod \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1 \
-           || runpodctl pod stop \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1 \
-           || runpodctl stop pod \"$RUNPOD_POD_ID\" >> {STATE_DIR}/bootstrap.log 2>&1) </dev/null >/dev/null 2>&1 & \
+           echo \"[offrig] on-pod deadline {fire_at} reached; stopping ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+           case \"$_offrig_ss_tool\" in \
+             runpodctl) \
+               runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
+               || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
+               || runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
+               || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 ;; \
+             python3) \
+               python3 -c '{py_stop}' \"{api_base}\" >> \"{state_dir}/bootstrap.log\" 2>&1 ;; \
+             curl) \
+               _offrig_code=$(printf 'header = \"Authorization: Bearer %s\"\\n' \"$RUNPOD_API_KEY\" \
+                 | curl -s -o /dev/null -w '%{{http_code}}' --max-time 30 -X DELETE -K - \"{api_base}/pods/${{RUNPOD_POD_ID}}\" 2>/dev/null || true); \
+               case \"${{_offrig_code:-000}}\" in \
+                 2*) ;; \
+                 *) \
+                   echo \"[offrig] self-stop DELETE failed (${{_offrig_code:-000}}); trying stop\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+                   _offrig_code=$(printf 'header = \"Authorization: Bearer %s\"\\n' \"$RUNPOD_API_KEY\" \
+                     | curl -s -o /dev/null -w '%{{http_code}}' --max-time 30 -X POST -H 'Content-Type: application/json' --data '{{\"action\":\"stop\"}}' -K - \"{api_base}/pods/${{RUNPOD_POD_ID}}/action\" 2>/dev/null || true); \
+                   case \"${{_offrig_code:-000}}\" in \
+                     2*) ;; \
+                     *) echo \"[offrig] self-stop stop failed (${{_offrig_code:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; \
+                   esac ;; \
+               esac ;; \
+           esac) </dev/null >/dev/null 2>&1 & \
          else \
-           printf '%s\\n' \"{SELF_STOP_PREFIX}UNAVAILABLE ($_offrig_ss_missing)\" | tee {SELF_STOP_STATUS_FILE}; \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}UNAVAILABLE ($_offrig_ss_missing)\" | tee \"{status_file}\"; \
          fi\n\
          {SELF_STOP_END}"
     )
@@ -939,5 +1003,552 @@ mod tests {
         ))
         .expect("unknown must warn");
         assert!(unk.contains(SELF_STOP_UNKNOWN_PREFIX), "{unk}");
+    }
+
+    const TEST_KEY: &str = "rpa_synthetic_unit_test_secret_99";
+
+    #[derive(Clone, Debug)]
+    struct RecordedReq {
+        method: String,
+        path: String,
+        auth: Option<String>,
+        body: String,
+    }
+
+    struct LocalMock {
+        url: String,
+        reqs: std::sync::Arc<std::sync::Mutex<Vec<RecordedReq>>>,
+    }
+
+    impl LocalMock {
+        fn start(handler: impl Fn(&RecordedReq) -> (u16, String) + Send + Sync + 'static) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let url = format!("http://{}", listener.local_addr().expect("addr"));
+            let reqs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = std::sync::Arc::clone(&reqs);
+            let handler = std::sync::Arc::new(handler);
+            std::thread::spawn(move || {
+                use std::io::{BufRead, BufReader, Read, Write};
+                for stream in listener.incoming().map_while(std::result::Result::ok) {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        continue;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let method = parts.next().unwrap_or("").to_string();
+                    let path = parts.next().unwrap_or("").to_string();
+                    let mut len = 0usize;
+                    let mut auth = None;
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                            break;
+                        }
+                        if let Some((k, v)) = h.split_once(':') {
+                            if k.trim().eq_ignore_ascii_case("content-length") {
+                                len = v.trim().parse().unwrap_or(0);
+                            } else if k.trim().eq_ignore_ascii_case("authorization") {
+                                auth = Some(v.trim().to_string());
+                            }
+                        }
+                    }
+                    let mut raw = vec![0u8; len];
+                    let _ = reader.read_exact(&mut raw);
+                    let rec = RecordedReq {
+                        method,
+                        path,
+                        auth,
+                        body: String::from_utf8_lossy(&raw).into_owned(),
+                    };
+                    log.lock().expect("lock").push(rec.clone());
+                    let (status, resp_body) = handler(&rec);
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                        resp_body.len()
+                    );
+                    let _ = reader.get_mut().write_all(reply.as_bytes());
+                }
+            });
+            Self { url, reqs }
+        }
+
+        fn requests(&self) -> Vec<RecordedReq> {
+            self.reqs.lock().expect("lock").clone()
+        }
+    }
+
+    fn find_sh() -> std::path::PathBuf {
+        #[cfg(windows)]
+        for candidate in [
+            r"C:\Program Files\Git\bin\sh.exe",
+            r"C:\Program Files\Git\usr\bin\sh.exe",
+        ] {
+            let p = std::path::Path::new(candidate);
+            if p.exists() {
+                return p.to_path_buf();
+            }
+        }
+        std::path::PathBuf::from("sh")
+    }
+
+    fn posix_dir(sh: &std::path::Path, dir: &std::path::Path) -> String {
+        #[cfg(windows)]
+        {
+            let mut cmd = std::process::Command::new(sh);
+            cmd.arg("-c").arg("cd \"$1\" && pwd").arg("sh").arg(dir);
+            let out = crate::proc::run_with_timeout(
+                &mut cmd,
+                std::time::Duration::from_secs(5),
+                "posix_dir",
+            )
+            .expect("posix_dir");
+            assert!(out.success(), "posix_dir failed: {}", out.stderr);
+            out.stdout.trim().to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = sh;
+            dir.to_str().expect("utf8 path").to_string()
+        }
+    }
+
+    fn discover_tool(sh: &std::path::Path, tool: &str) -> String {
+        let mut cmd = std::process::Command::new(sh);
+        cmd.arg("-c").arg("command -v \"$1\"").arg("sh").arg(tool);
+        let out = crate::proc::run_with_timeout(
+            &mut cmd,
+            std::time::Duration::from_secs(5),
+            "discover_tool",
+        )
+        .expect("discover_tool");
+        assert!(
+            out.success(),
+            "tool {tool} missing on host PATH: {}",
+            out.stderr
+        );
+        out.stdout.trim().to_string()
+    }
+
+    fn write_shim(bin_dir: &std::path::Path, name: &str, body: &str) {
+        let p = bin_dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).expect("write shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+
+    fn populate_coreutils(sh: &std::path::Path, bin_dir: &std::path::Path) {
+        for tool in ["mkdir", "tee", "date", "sleep"] {
+            let real = discover_tool(sh, tool);
+            write_shim(bin_dir, tool, &format!("exec '{real}' \"$@\""));
+        }
+    }
+
+    struct SnippetRun {
+        status: String,
+        bootstrap_log: String,
+        stdout: String,
+    }
+
+    fn run_snippet(
+        sh: &std::path::Path,
+        case_dir: &std::path::Path,
+        bin_dir: &std::path::Path,
+        api_base: &str,
+        pod_id: Option<&str>,
+        api_key: Option<&str>,
+    ) -> SnippetRun {
+        let state_dir = case_dir.join("state");
+        std::fs::create_dir_all(&state_dir).expect("state_dir");
+        let state_posix = posix_dir(sh, &state_dir);
+        let status_posix = format!("{state_posix}/self-stop.status");
+        let bin_posix = posix_dir(sh, bin_dir);
+
+        let snippet = self_stop_timer_in(0, &state_posix, &status_posix, api_base);
+        assert!(
+            !snippet.contains(TEST_KEY),
+            "snippet must never embed secret"
+        );
+        let mut syntax = std::process::Command::new(sh);
+        syntax.arg("-n").arg("-c").arg(&snippet);
+        let syntax_out =
+            crate::proc::run_with_timeout(&mut syntax, std::time::Duration::from_secs(5), "sh -n")
+                .expect("sh -n");
+        assert!(
+            syntax_out.success(),
+            "sh -n failed: {}\nsnippet:\n{snippet}",
+            syntax_out.stderr
+        );
+
+        let script = format!("PATH='{bin_posix}'; export PATH\n{snippet}\nwait\n");
+        let mut cmd = std::process::Command::new(sh);
+        cmd.arg("-c").arg(&script).env("PATH", &bin_posix);
+        match pod_id {
+            Some(v) => {
+                cmd.env("RUNPOD_POD_ID", v);
+            }
+            None => {
+                cmd.env_remove("RUNPOD_POD_ID");
+            }
+        }
+        match api_key {
+            Some(v) => {
+                cmd.env("RUNPOD_API_KEY", v);
+            }
+            None => {
+                cmd.env_remove("RUNPOD_API_KEY");
+            }
+        }
+        let out = crate::proc::run_with_timeout(
+            &mut cmd,
+            std::time::Duration::from_secs(15),
+            "run self_stop snippet",
+        )
+        .expect("run snippet");
+        assert!(
+            out.success(),
+            "snippet exited {:?}: stdout={:?} stderr={:?}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
+
+        let status = std::fs::read_to_string(state_dir.join("self-stop.status"))
+            .expect("self-stop.status written");
+        let bootstrap_log =
+            std::fs::read_to_string(state_dir.join("bootstrap.log")).unwrap_or_default();
+
+        for (label, text) in [
+            ("stdout", &out.stdout),
+            ("stderr", &out.stderr),
+            ("self-stop.status", &status),
+            ("bootstrap.log", &bootstrap_log),
+        ] {
+            assert!(
+                !text.contains(TEST_KEY),
+                "secret leaked into {label}: {text}"
+            );
+        }
+
+        SnippetRun {
+            status,
+            bootstrap_log,
+            stdout: out.stdout,
+        }
+    }
+
+    fn temp_case_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("offrig-self-stop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp_case_dir");
+        dir
+    }
+
+    #[test]
+    fn self_stop_snippet_passes_sh_syntax_check_and_embeds_no_secret() {
+        let sh = find_sh();
+        let snippet = self_stop_timer(1_900_000_000);
+        assert!(snippet.contains(crate::runpod::REST_BASE));
+        assert!(snippet.contains(STATE_DIR));
+        assert!(snippet.contains(SELF_STOP_STATUS_FILE));
+        assert!(!snippet.contains(TEST_KEY));
+
+        let mut cmd = std::process::Command::new(sh);
+        cmd.arg("-n").arg("-c").arg(&snippet);
+        let out = crate::proc::run_with_timeout(
+            &mut cmd,
+            std::time::Duration::from_secs(5),
+            "sh -n prod snippet",
+        )
+        .expect("sh -n");
+        assert!(out.success(), "sh -n failed: {}", out.stderr);
+        assert!(out.stderr.is_empty(), "unexpected stderr: {}", out.stderr);
+    }
+
+    #[test]
+    fn self_stop_snippet_prefers_runpodctl_when_present() {
+        let sh = find_sh();
+        let dir = temp_case_dir("runpodctl");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        populate_coreutils(&sh, &bin);
+        let calls_file = dir.join("runpodctl.calls");
+        let calls_posix = posix_dir(&sh, &dir) + "/runpodctl.calls";
+        write_shim(
+            &bin,
+            "runpodctl",
+            &format!("printf '%s\\n' \"$*\" >> '{calls_posix}'\nexit 0"),
+        );
+        // Also provide python3 and curl so preference order is proven.
+        let py = discover_tool(&sh, "python3");
+        write_shim(&bin, "python3", &format!("exec '{py}' \"$@\""));
+        let cu = discover_tool(&sh, "curl");
+        write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+
+        let mock = LocalMock::start(|_| (204, String::new()));
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+        assert_eq!(res.status, "offrig self-stop: armed fire_at=120\n");
+        assert_eq!(
+            std::fs::read_to_string(&calls_file).expect("calls"),
+            "pod delete pod_abc\n"
+        );
+        assert!(mock.requests().is_empty(), "runpodctl must win over HTTP");
+        assert!(res.bootstrap_log.contains("via runpodctl"));
+        assert!(!res.stdout.is_empty());
+
+        // Fallback chain inside runpodctl (delete -> remove -> pod stop -> stop pod)
+        let dir2 = temp_case_dir("runpodctl-chain");
+        let bin2 = dir2.join("bin");
+        std::fs::create_dir_all(&bin2).expect("bin2");
+        populate_coreutils(&sh, &bin2);
+        let calls2 = dir2.join("runpodctl.calls");
+        let calls2_posix = posix_dir(&sh, &dir2) + "/runpodctl.calls";
+        write_shim(
+            &bin2,
+            "runpodctl",
+            &format!(
+                "printf '%s\\n' \"$*\" >> '{calls2_posix}'\ncase \"$1 $2\" in 'stop pod') exit 0;; *) exit 1;; esac"
+            ),
+        );
+        let res2 = run_snippet(
+            &sh,
+            &dir2,
+            &bin2,
+            &mock.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(res2.status, "offrig self-stop: armed fire_at=120\n");
+        assert_eq!(
+            std::fs::read_to_string(&calls2).expect("calls2"),
+            "pod delete pod_abc\nremove pod pod_abc\npod stop pod_abc\nstop pod pod_abc\n"
+        );
+        assert!(mock.requests().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn self_stop_snippet_uses_python_urllib_fallback_before_curl() {
+        let sh = find_sh();
+        let dir = temp_case_dir("python-ok");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        populate_coreutils(&sh, &bin);
+        let py = discover_tool(&sh, "python3");
+        write_shim(&bin, "python3", &format!("exec '{py}' \"$@\""));
+        let curl_marker = dir.join("curl.called");
+        let curl_marker_posix = posix_dir(&sh, &dir) + "/curl.called";
+        write_shim(
+            &bin,
+            "curl",
+            &format!("printf 'curl_called\\n' > '{curl_marker_posix}'\nexit 0"),
+        );
+
+        let mock = LocalMock::start(|_| (204, String::new()));
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+        assert_eq!(res.status, "offrig self-stop: armed fire_at=120\n");
+        assert!(!curl_marker.exists(), "python3 must run before curl");
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 1, "expected 1 DELETE request, got {reqs:?}");
+        assert_eq!(reqs[0].method, "DELETE");
+        assert_eq!(reqs[0].path, "/pods/pod_abc");
+        assert_eq!(
+            reqs[0].auth.as_deref(),
+            Some(&format!("Bearer {TEST_KEY}")[..])
+        );
+        assert!(res.bootstrap_log.contains("via python3"));
+
+        // DELETE fails -> falls back to POST /pods/{id}/action {"action":"stop"}; echoed secret never logged.
+        let dir2 = temp_case_dir("python-stop-fallback");
+        let bin2 = dir2.join("bin");
+        std::fs::create_dir_all(&bin2).expect("bin2");
+        populate_coreutils(&sh, &bin2);
+        write_shim(&bin2, "python3", &format!("exec '{py}' \"$@\""));
+        let mock2 = LocalMock::start(|req| {
+            if req.method == "DELETE" {
+                (500, format!("echoed {TEST_KEY}"))
+            } else {
+                (403, format!("echoed {TEST_KEY}"))
+            }
+        });
+        let res2 = run_snippet(
+            &sh,
+            &dir2,
+            &bin2,
+            &mock2.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(res2.status, "offrig self-stop: armed fire_at=120\n");
+        let reqs2 = mock2.requests();
+        assert_eq!(reqs2.len(), 2, "expected DELETE then POST stop: {reqs2:?}");
+        assert_eq!(reqs2[0].method, "DELETE");
+        assert_eq!(reqs2[0].path, "/pods/pod_abc");
+        assert_eq!(reqs2[1].method, "POST");
+        assert_eq!(reqs2[1].path, "/pods/pod_abc/action");
+        assert_eq!(
+            reqs2[1].auth.as_deref(),
+            Some(&format!("Bearer {TEST_KEY}")[..])
+        );
+        let body_json: serde_json::Value =
+            serde_json::from_str(&reqs2[1].body).expect("stop body json");
+        assert_eq!(body_json, serde_json::json!({"action": "stop"}));
+        assert!(
+            res2.bootstrap_log
+                .contains("DELETE failed (500); trying stop")
+        );
+        assert!(res2.bootstrap_log.contains("stop failed (403)"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn self_stop_snippet_uses_curl_fallback_when_runpodctl_and_python_urllib_absent() {
+        let sh = find_sh();
+        let cu = discover_tool(&sh, "curl");
+
+        // Case A: curl only, DELETE returns 204
+        let dir = temp_case_dir("curl-only");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        populate_coreutils(&sh, &bin);
+        write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+        let mock = LocalMock::start(|_| (204, String::new()));
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+        assert_eq!(res.status, "offrig self-stop: armed fire_at=120\n");
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 1, "expected 1 DELETE request, got {reqs:?}");
+        assert_eq!(reqs[0].method, "DELETE");
+        assert_eq!(reqs[0].path, "/pods/pod_abc");
+        assert_eq!(
+            reqs[0].auth.as_deref(),
+            Some(&format!("Bearer {TEST_KEY}")[..])
+        );
+        assert!(res.bootstrap_log.contains("via curl"));
+
+        // Case B: python3 present without urllib, curl runs DELETE (500) then POST stop (401).
+        let dir2 = temp_case_dir("curl-after-broken-py");
+        let bin2 = dir2.join("bin");
+        std::fs::create_dir_all(&bin2).expect("bin2");
+        populate_coreutils(&sh, &bin2);
+        write_shim(&bin2, "python3", "exit 1");
+        write_shim(&bin2, "curl", &format!("exec '{cu}' \"$@\""));
+        let mock2 = LocalMock::start(|req| {
+            if req.method == "DELETE" {
+                (500, format!("echoed {TEST_KEY}"))
+            } else {
+                (401, format!("echoed {TEST_KEY}"))
+            }
+        });
+        let res2 = run_snippet(
+            &sh,
+            &dir2,
+            &bin2,
+            &mock2.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(res2.status, "offrig self-stop: armed fire_at=120\n");
+        let reqs2 = mock2.requests();
+        assert_eq!(reqs2.len(), 2, "expected DELETE then POST stop: {reqs2:?}");
+        assert_eq!(reqs2[0].method, "DELETE");
+        assert_eq!(reqs2[0].path, "/pods/pod_abc");
+        assert_eq!(reqs2[1].method, "POST");
+        assert_eq!(reqs2[1].path, "/pods/pod_abc/action");
+        assert_eq!(
+            reqs2[1].auth.as_deref(),
+            Some(&format!("Bearer {TEST_KEY}")[..])
+        );
+        let body_json: serde_json::Value =
+            serde_json::from_str(&reqs2[1].body).expect("stop body json");
+        assert_eq!(body_json, serde_json::json!({"action": "stop"}));
+        assert!(
+            res2.bootstrap_log
+                .contains("DELETE failed (500); trying stop")
+        );
+        assert!(res2.bootstrap_log.contains("stop failed (401)"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn self_stop_snippet_reports_unavailable_when_no_tool_or_vars_missing() {
+        let sh = find_sh();
+        let cu = discover_tool(&sh, "curl");
+        let mock = LocalMock::start(|_| (204, String::new()));
+
+        let cases = [
+            (
+                "no-tool",
+                false,
+                Some("pod_abc"),
+                Some(TEST_KEY),
+                "offrig self-stop: UNAVAILABLE (runpodctl/python3/curl)\n",
+            ),
+            (
+                "missing-key",
+                true,
+                Some("pod_abc"),
+                None,
+                "offrig self-stop: UNAVAILABLE (RUNPOD_API_KEY)\n",
+            ),
+            (
+                "empty-key",
+                true,
+                Some("pod_abc"),
+                Some(""),
+                "offrig self-stop: UNAVAILABLE (RUNPOD_API_KEY)\n",
+            ),
+            (
+                "missing-pod-id",
+                true,
+                None,
+                Some(TEST_KEY),
+                "offrig self-stop: UNAVAILABLE (RUNPOD_POD_ID)\n",
+            ),
+            (
+                "missing-both-vars",
+                true,
+                None,
+                None,
+                "offrig self-stop: UNAVAILABLE (RUNPOD_POD_ID, RUNPOD_API_KEY)\n",
+            ),
+            (
+                "missing-all",
+                false,
+                None,
+                None,
+                "offrig self-stop: UNAVAILABLE (runpodctl/python3/curl, RUNPOD_POD_ID, RUNPOD_API_KEY)\n",
+            ),
+        ];
+
+        for (name, with_curl, pod_id, api_key, expected) in cases {
+            let dir = temp_case_dir(name);
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).expect("bin");
+            populate_coreutils(&sh, &bin);
+            if with_curl {
+                write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+            }
+            let res = run_snippet(&sh, &dir, &bin, &mock.url, pod_id, api_key);
+            assert_eq!(res.status, expected, "{name}");
+            assert!(
+                self_stop_warning(Some(&res.status)).is_some(),
+                "{name}: UNAVAILABLE line must trigger self_stop_warning"
+            );
+            assert!(
+                mock.requests().is_empty(),
+                "{name}: unavailable branch must not fire HTTP"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

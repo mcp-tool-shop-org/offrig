@@ -6,6 +6,12 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **On-pod self-stop API fallback when `runpodctl` is missing (`crates/offrig-core/src/spec.rs`):**
+  - When a planned pod's image lacks `runpodctl`, `self_stop_timer` now falls back to calling RunPod's REST API v2 (`DELETE https://api.runpod.io/v2/pods/$RUNPOD_POD_ID`, with `POST .../action` `{"action":"stop"}` fallback) via `python3` (`urllib.request`) first and `curl` second, authenticating with the pod-injected `RUNPOD_POD_ID` and pod-scoped `RUNPOD_API_KEY` without downloading anything or changing any image.
+  - `offrig self-stop: armed fire_at=<n>` is written only when `runpodctl`, `python3` (`urllib.request`), or `curl` is present **and** both `RUNPOD_POD_ID` and `RUNPOD_API_KEY` are set; otherwise bootstrap writes `offrig self-stop: UNAVAILABLE (<missing>)` as before. `RUNPOD_API_KEY` is never printed or written to `self-stop.status` or `bootstrap.log`.
+
 ## [1.4.0] - 2026-11-25
 
 **A pod offrig launches from a plan is never left running unseen, and MCP clients can follow a launch as a task.** For planned launches, the watchdog now finds pods whose launching process died before the pod was recorded and terminates them (or, when it cannot tell, flags them in `offrig_status` as `unknown_create_pods`), a launch probes before it creates, and the pod carries an on-pod deadline timer. Pods started by hand with `offrig up` or from the app are not covered. The side-car also serves `offrig_launch` as an MCP task and the `offrig-session` procedure as an MCP skill.

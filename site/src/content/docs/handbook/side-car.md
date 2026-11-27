@@ -201,9 +201,11 @@ the session and the side-car are all gone.
   the watchdog alive until the arriving pod is terminated or the launcher is proven dead.
 - Every planned pod writes `offrig self-stop: armed fire_at=<n>` or
   `offrig self-stop: UNAVAILABLE (<missing>)` during bootstrap and starts the background
-  on-pod deadline timer (`deadline + 120s`) using RunPod's preinstalled `runpodctl` and the
-  container's pod-scoped `RUNPOD_POD_ID` / `RUNPOD_API_KEY` (no host API key is placed on
-  the pod), as a backstop if the host watchdog is lost; launch reads this status over SSH
+  on-pod deadline timer (`deadline + 120s`) using RunPod's preinstalled `runpodctl` when present
+  or RunPod's REST API v2 via `python3` (`urllib`) or `curl` with the container's pod-scoped
+  `RUNPOD_POD_ID` / `RUNPOD_API_KEY` (arming only when one of those tools and both variables are
+  set; no host API key is placed on the pod and `RUNPOD_API_KEY` is never printed or logged), as a
+  backstop if the host watchdog is lost; launch reads this status over SSH
   into `offrig_job` and `offrig_status` and warns loudly both when `UNAVAILABLE` and when
   status cannot be read (`self-stop status unknown`).
 - Without `RUNPOD_API_KEY`, the watchdog exits non-zero and records the failure in the

@@ -45,7 +45,9 @@ sidebar:
   pod also checks prerequisites during bootstrap, writes `offrig self-stop: armed fire_at=<n>` or
   `offrig self-stop: UNAVAILABLE (<missing>)` (surfaced over SSH into `offrig_job` and
   `offrig_status`, warning on both `UNAVAILABLE` and `self-stop status unknown`), and starts the on-pod deadline timer (`deadline + 120s`) using RunPod's
-  preinstalled `runpodctl` and pod-scoped credentials (never the host's `RUNPOD_API_KEY`). If `RUNPOD_API_KEY` is missing or the
+  preinstalled `runpodctl` when present or RunPod's REST API v2 via `python3` (`urllib`) or `curl`
+  with the container's pod-scoped `RUNPOD_POD_ID` and `RUNPOD_API_KEY` (never the host's key, and
+  never printing or logging `RUNPOD_API_KEY`). If `RUNPOD_API_KEY` is missing or the
   watchdog cannot start, `offrig_launch` refuses to rent a paid pod and any unguarded
   plan is flagged in `offrig_status` and the desktop app. A recipe that hangs after startup, or that cannot answer one
   completion, is reported and left running, so it keeps billing until you shut it down
