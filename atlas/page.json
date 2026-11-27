@@ -42,24 +42,38 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 10,
+      "added": 1,
+      "changed": 33,
       "moved": 0,
-      "parts": 1,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
+        "kind": "sequence",
+        "sentence": "In crates/offrig-core/src/watchdog.rs, `step_with_config` gained a step, `pod_is_stopped`, before `self_stop_is_armed`.",
+        "subjects": [
+          "crates/offrig-core/src/watchdog.rs"
+        ]
+      },
+      {
+        "kind": "sequence",
+        "sentence": "In crates/offrig-core/src/watchdog.rs, `step_with_config` gained a step, `self_stop_is_armed`, after `pod_is_stopped`.",
+        "subjects": [
+          "crates/offrig-core/src/watchdog.rs"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-25; 10 files changed content.",
+        "sentence": "1 file added and 33 changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "d8bf0bd283f4dbf3607587f8cf304b79b0e4e48b",
-      "generatedAt": "2026-11-25T06:35:58.574Z"
+      "commit": "d11665b1c3655f59f559d957b3b50807208c6e4e",
+      "generatedAt": "2026-11-25T18:14:59.634Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -95,7 +109,7 @@
     {
       "a": "crates/offrig-mcp/src/main.rs",
       "b": "crates/offrig-mcp/src/ops.rs",
-      "either": 34,
+      "either": 35,
       "partLabels": [
         "offrig-mcp",
         "offrig-mcp"
@@ -105,22 +119,7 @@
         "offrig-mcp"
       ],
       "relation": "inside",
-      "shared": 17
-    },
-    {
-      "a": "crates/offrig-core/src/lib.rs",
-      "b": "crates/offrig-core/src/store.rs",
-      "either": 24,
-      "partLabels": [
-        "offrig-core",
-        "offrig-core"
-      ],
-      "parts": [
-        "offrig-core",
-        "offrig-core"
-      ],
-      "relation": "inside",
-      "shared": 12
+      "shared": 18
     },
     {
       "a": "crates/offrig-core/src/calibrate_run.rs",
@@ -140,10 +139,10 @@
   ],
   "changesTogetherNote": [
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 11 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "d11665b1c3655f59f559d957b3b50807208c6e4e",
+  "commit": "d8511484c084bcfc5433ced4527f32eb7440a76a",
   "defaultBranch": "main",
   "derived": "6 parts, mostly Rust (90 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.",
   "doors": [
@@ -512,7 +511,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-25T18:14:59.634Z",
+  "generatedAt": "2026-11-27T19:52:44.147Z",
   "limits": [
     "14 writes and 8 reads use paths built at run time and are not named here.",
     "11 writes and 13 reads go to a path their caller passes, not to this repository.",

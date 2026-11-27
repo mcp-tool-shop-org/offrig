@@ -87,7 +87,7 @@ an agent's shell), `offrig budget` prints the one-line budget as before.
    and the handoff queue. It also names other projects' offrig pods, with each one's plan,
    note and deadline (see [Lanes](../lanes-and-jobs/#seeing-other-lanes-pods)). Call it
    first in any session.
-2. **`offrig_plan`.** Prices a session at its worst case: live price × max hours. It is
+2. **`offrig_plan`.** Prices a session at its worst case: live price × (max hours + 780 s self-stop tail), rounded up to cents. It is
    refused if the worst case is over what's left of the cap. Planning costs nothing.
 3. **`offrig_launch`.** Takes only a `plan_id`, so an agent cannot name its own price. It
    commits the worst case, waits for GPUs (renting nothing while it waits), boots the pod,

@@ -48,7 +48,7 @@ unknown tool name, is a structured result:
 {
   "ok": false,
   "code": "budget_exceeded",
-  "error": "worst case $12.22 (3.5h at $3.49/hr) exceeds the $9.11 left of the $20.00 budget; shorten max_hours, pick a cheaper profile, or raise the cap",
+  "error": "worst case $12.98 (3.5h + 780s margin at $3.49/hr) exceeds the $9.11 left of the $20.00 budget (overall cap); shorten max_hours, pick a cheaper profile, or raise that cap",
   "next_action": "shorten max_hours or choose a cheaper profile; the cap itself is the human's to change",
   "retryable": false
 }

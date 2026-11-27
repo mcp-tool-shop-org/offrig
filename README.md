@@ -176,7 +176,7 @@ so a session survives compaction or a restart without re-explaining anything.
 |---|---|
 | `offrig_status` | The project, budget, RunPod balance and runway, offrig's pods, each open plan with its `plan_id`, lane and pod name, the handoff queue with stale work flagged. Each pod includes `gpu_count` and `gpus` (`2x <type>`) from the RunPod record, beside the plan's `planned_gpu_count` |
 | `offrig_offers` | Live GPU offers for a GPU count |
-| `offrig_plan` | Prices a session at its worst case (live price x max hours); refused over the budget left. The reply names the lane's `ssh_alias` and the `pod_name` the launch will create, and the `container_disk_gb` it will ask for (optional `container_disk_gb` overrides the profile's; see "Container disk"). Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan"); optional `wait_minutes` sets how long the launch retries when they have no capacity (see "Waiting for capacity") |
+| `offrig_plan` | Prices a session at its worst case (live price x (max hours + 780 s self-stop tail), rounded up to cents); refused over the budget left. The reply names the lane's `ssh_alias` and the `pod_name` the launch will create, and the `container_disk_gb` it will ask for (optional `container_disk_gb` overrides the profile's; see "Container disk"). Optional `max_price_hr` and `no_fallback` narrow which GPUs it may rent (see "Pinning the hardware of a plan"); optional `wait_minutes` sets how long the launch retries when they have no capacity (see "Waiting for capacity") |
 | `offrig_memory_search` | Searches active project memory, each result with source and date |
 | `offrig_memory_record` | Adds a brief, constraint, decision, fact or checkpoint; changes are supersessions with a reason |
 | `offrig_handoffs` | Queues role-headed handoffs (each needs an acceptance check; optional deterministic checks), lists them, previews role blocks, shows a handoff's best output (also written to `.offrig/out/`), records outcomes (complete, invalid, violation, fail, retry with feedback) |
@@ -416,7 +416,7 @@ stops at 13.0). They are listed because a writer pod on 2026-10-11 was placed on
 13.2 host. A floor still sends only `gpu.minCudaVersion`.
 
 `offrig_plan` prices the worst case from what is left:
-`max_hours x min(max_price_hr, the dearest listed price among the remaining GPUs)`. Without
+`(max_hours + 780 s) x min(max_price_hr, the dearest listed price among the remaining GPUs)` (rounded up to cents; 780 s is the 120 s on-pod self-stop margin plus 660 s retry span). Without
 `max_price_hr` that is the dearest listed price in the profile, as before. A plan with
 nothing left is refused with the reason for every dropped GPU, and nothing is written.
 
@@ -530,7 +530,7 @@ offrig stage frontier --remove --yes         deletes the volume (the undo)
   touches another lane's pods, the plain lane's, or any other pod; those are listed,
   never changed.
 - For agent sessions, the cap is enforced before any spend: a plan's worst case (live
-  price × max hours) is committed against the human-set budget and refused over it, and
+  price × (max hours + 780 s self-stop tail), rounded up to cents) is committed against the human-set budget and refused over it, and
   a launch takes only a plan id, so an agent cannot name its own price.
 - Every side-car launch has a watchdog that terminates the pod at the plan's deadline,
   and the runner shuts the pod down as soon as its queue is empty.

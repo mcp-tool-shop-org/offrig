@@ -26,7 +26,7 @@ export const config: SiteConfig = {
       },
       {
         label: 'For agents',
-        code: '# An agent plans, then launches only by plan id\noffrig_plan  profile=job max_hours=3.5\n             no_fallback=true max_price_hr=2.2\n  -> worst case $7.32, committed against the cap\noffrig_launch   plan_id=<id>\noffrig_shutdown plan_id=<id>',
+        code: '# An agent plans, then launches only by plan id\noffrig_plan  profile=job max_hours=3.5\n             no_fallback=true max_price_hr=2.2\n  -> worst case $7.77, committed against the cap\noffrig_launch   plan_id=<id>\noffrig_shutdown plan_id=<id>',
       },
     ],
   },
@@ -60,7 +60,7 @@ export const config: SiteConfig = {
       features: [
         {
           title: 'Priced before it spends',
-          desc: 'A plan commits its worst case (live price × max hours) against the cap before anything is rented, and a launch takes only a plan id. Plans can pin the GPU family, a top hourly price, a host CUDA floor, or an exact CUDA version list.',
+          desc: 'A plan commits its worst case (live price × (max hours + 780 s self-stop tail), rounded up to cents) against the cap before anything is rented, and a launch takes only a plan id. Plans can pin the GPU family, a top hourly price, a host CUDA floor, or an exact CUDA version list.',
         },
         {
           title: 'A watchdog on every pod',

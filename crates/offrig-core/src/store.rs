@@ -4,7 +4,7 @@
 //! Rules this module enforces (see docs/sidecar-design.md for the evidence):
 //! - records are never edited or deleted; a new record supersedes an old one through
 //!   an explicit edge with a reason, and search returns active records only;
-//! - spend is committed against a hard cap before a launch, from price x max hours;
+//! - spend is committed against a hard cap before a launch, from price x (max hours + self-stop tail);
 //! - every handoff state change goes through one transition law and is logged;
 //! - liveness is computed by one predicate that status and the reaper both use.
 
