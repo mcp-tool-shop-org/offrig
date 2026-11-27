@@ -199,15 +199,17 @@ the session and the side-car are all gone.
   When `offrig_shutdown` closes a pod-less plan while a `create_pod` is still in flight, it
   records a warning, preserves the open `create_pod` entry across `offrig_status`, and keeps
   the watchdog alive until the arriving pod is terminated or the launcher is proven dead.
-- Every planned pod writes `offrig self-stop: armed fire_at=<n>` or
+- Every planned pod writes `offrig self-stop: armed fire_at=<n> via <tool>` or
   `offrig self-stop: UNAVAILABLE (<missing>)` during bootstrap and starts the background
   on-pod deadline timer (`deadline + 120s`) using RunPod's preinstalled `runpodctl` when present
-  or RunPod's REST API v2 via `python3` (`urllib`) or `curl` with the container's pod-scoped
-  `RUNPOD_POD_ID` / `RUNPOD_API_KEY` (arming only when one of those tools and both variables are
-  set; no host API key is placed on the pod and `RUNPOD_API_KEY` is never printed or logged), as a
+  or RunPod's REST API v2 via `python3` (`import ssl, urllib.request` preflight, falling through
+  to `curl` on fire-time failure) or `curl` with the container's pod-scoped `RUNPOD_POD_ID` /
+  `RUNPOD_API_KEY` (retrying delete and `terminate` before any last-resort stop, writing
+  `STOPPED NOT TERMINATED: volume still billing` to `self-stop.status` if only stop could run,
+  and never printing or logging `RUNPOD_API_KEY`), as a
   backstop if the host watchdog is lost; launch reads this status over SSH
-  into `offrig_job` and `offrig_status` and warns loudly both when `UNAVAILABLE` and when
-  status cannot be read (`self-stop status unknown`).
+  into `offrig_job` and `offrig_status` and warns loudly on `UNAVAILABLE`,
+  `STOPPED NOT TERMINATED: volume still billing`, and `self-stop status unknown`.
 - Without `RUNPOD_API_KEY`, the watchdog exits non-zero and records the failure in the
   store (surfaced by `offrig_status`, `offrig_job`, and the desktop app), and
   `offrig_launch` refuses to start a paid pod if the key is missing or the watchdog fails

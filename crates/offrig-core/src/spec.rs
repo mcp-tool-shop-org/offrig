@@ -193,17 +193,23 @@ pub const SELF_STOP_STATUS_FILE: &str = "/workspace/offrig/self-stop.status";
 pub const SELF_STOP_PREFIX: &str = "offrig self-stop: ";
 /// Status recorded when bootstrap's self-stop status cannot be read over SSH.
 pub const SELF_STOP_UNKNOWN_PREFIX: &str = "self-stop status unknown";
+const SELF_STOP_STOPPED_LINE: &str =
+    "offrig self-stop: STOPPED NOT TERMINATED: volume still billing";
 
 const SELF_STOP_START: &str = "# offrig-self-stop-begin\n";
 const SELF_STOP_END: &str = "# offrig-self-stop-end\n";
 
-/// Build a warning message when the pod's self-stop status line reports `UNAVAILABLE`
-/// or could not be read (`self-stop status unknown`).
+/// Build a warning message when the pod's self-stop status line reports `UNAVAILABLE`,
+/// `STOPPED NOT TERMINATED`, or could not be read (`self-stop status unknown`).
 pub fn self_stop_warning(status: Option<&str>) -> Option<String> {
     let line = status?.trim();
     if line.contains("UNAVAILABLE") {
         Some(format!(
             "{line}; on-pod backstop is not armed, so keep the host watchdog running until offrig_shutdown"
+        ))
+    } else if line.contains("STOPPED NOT TERMINATED") {
+        Some(format!(
+            "{line}; on-pod backstop could only stop the pod, so terminate it to stop volume billing"
         ))
     } else if line.starts_with(SELF_STOP_UNKNOWN_PREFIX) {
         Some(format!(
@@ -218,34 +224,44 @@ pub fn self_stop_warning(status: Option<&str>) -> Option<String> {
 /// beneath the host watchdog.
 ///
 /// Prefers Runpod's preinstalled `runpodctl` CLI when present, and falls back to
-/// calling Runpod's REST API v2 directly via `python3` (`urllib.request`) first or
-/// `curl` second, using the container's pod-injected `RUNPOD_POD_ID` and
-/// pod-scoped `RUNPOD_API_KEY` (`https://docs.runpod.io/pods/references/environment-variables`
-/// and `https://docs.runpod.io/pods/templates/environment-variables`, section
+/// calling Runpod's REST API v2 directly via `python3` (`ssl` + `urllib.request`)
+/// first (falling through to `curl` at fire time if Python fails) or `curl` second,
+/// using the container's pod-injected `RUNPOD_POD_ID` and pod-scoped `RUNPOD_API_KEY`
+/// (`https://docs.runpod.io/pods/references/environment-variables` and
+/// `https://docs.runpod.io/pods/templates/environment-variables`, section
 /// "Runpod-provided variables"; `https://docs.runpod.io/pods/manage-pods`, sections
-/// "Stop a Pod" and "Terminate a Pod"; `https://docs.runpod.io/api-reference-v2/pods/terminate-a-pod`,
-/// section "Terminate a pod"; `https://docs.runpod.io/runpodctl/overview`, section
+/// "Stop a Pod" and "Terminate a Pod";
+/// `https://docs.runpod.io/api-reference-v2/pods/terminate-a-pod`, section
+/// "Terminate a pod"; `https://docs.runpod.io/runpodctl/overview`, section
 /// "Install Runpod CLI locally"). Arms only when one of those tools is available
 /// and both `RUNPOD_POD_ID` and `RUNPOD_API_KEY` are set; otherwise writes
-/// `UNAVAILABLE (<missing>)`. Never prints or logs `RUNPOD_API_KEY`, and never
-/// places a host/studio API key on the pod.
+/// `UNAVAILABLE (<missing>)`. Retries delete/termination before ever attempting a
+/// last-resort stop, writes `STOPPED NOT TERMINATED: volume still billing` to the
+/// status file before any last-resort stop, never prints or logs `RUNPOD_API_KEY`,
+/// and never places a host/studio API key on the pod.
 pub fn self_stop_timer(deadline: i64) -> String {
     self_stop_timer_in(
         deadline,
         STATE_DIR,
         SELF_STOP_STATUS_FILE,
         crate::runpod::REST_BASE,
+        2,
     )
 }
 
-fn self_stop_timer_in(deadline: i64, state_dir: &str, status_file: &str, api_base: &str) -> String {
+fn self_stop_timer_in(
+    deadline: i64,
+    state_dir: &str,
+    status_file: &str,
+    api_base: &str,
+    retry_base_secs: u64,
+) -> String {
     let fire_at = deadline.saturating_add(SELF_STOP_MARGIN_SECS);
     // Single-quote-free Python script so it sits inside `'...'` cleanly under `sh`.
-    let py_stop = r#"import json, os, sys, urllib.parse, urllib.request
-base = sys.argv[1].rstrip("/")
+    let py_api = r#"import json, os, ssl, sys, time, urllib.parse, urllib.request
+mode, base, base_sleep = sys.argv[1], sys.argv[2].rstrip("/"), float(sys.argv[3])
 pod = urllib.parse.quote(os.environ["RUNPOD_POD_ID"], safe="")
-key = os.environ["RUNPOD_API_KEY"]
-hdrs = {"Authorization": "Bearer " + key, "User-Agent": "offrig-self-stop"}
+hdrs = {"Authorization": "Bearer " + os.environ["RUNPOD_API_KEY"], "User-Agent": "offrig-self-stop"}
 def call(method, suffix, payload=None):
     data = None if payload is None else json.dumps(payload).encode()
     h = dict(hdrs)
@@ -254,22 +270,49 @@ def call(method, suffix, payload=None):
     req = urllib.request.Request(base + suffix, data=data, headers=h, method=method)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.status
-try:
-    call("DELETE", "/pods/" + pod)
-except Exception as exc:
-    code = getattr(exc, "code", type(exc).__name__)
-    sys.stderr.write("[offrig] self-stop DELETE failed (" + str(code) + "); trying stop\n")
+if mode == "probe":
+    try:
+        st = call("GET", "/pods/" + pod)
+    except Exception as exc:
+        st = getattr(exc, "code", type(exc).__name__)
+    sys.stderr.write("[offrig] self-stop boot GET /pods/" + pod + ": " + str(st) + "\n")
+    sys.exit(0)
+if mode == "stop":
     try:
         call("POST", "/pods/" + pod + "/action", {"action": "stop"})
-    except Exception as exc2:
-        code2 = getattr(exc2, "code", type(exc2).__name__)
-        sys.stderr.write("[offrig] self-stop stop failed (" + str(code2) + ")\n")
-        sys.exit(1)"#;
+        sys.exit(0)
+    except Exception as exc:
+        sys.stderr.write("[offrig] self-stop stop failed (" + str(getattr(exc, "code", type(exc).__name__)) + ")\n")
+        sys.exit(1)
+for i in range(4):
+    try:
+        call("DELETE", "/pods/" + pod)
+        sys.exit(0)
+    except Exception as exc:
+        code = getattr(exc, "code", type(exc).__name__)
+        sys.stderr.write("[offrig] self-stop DELETE " + str(i + 1) + "/4 failed (" + str(code) + ")\n")
+        if i < 3:
+            w = base_sleep * (2 ** i)
+            hdr = getattr(exc, "headers", None)
+            ra = hdr.get("Retry-After") if code == 429 and hdr is not None else None
+            if ra is not None:
+                try:
+                    w = max(0.0, min(float(ra.strip()), 60.0))
+                except Exception:
+                    pass
+            if w > 0:
+                time.sleep(w)
+try:
+    call("POST", "/pods/" + pod + "/action", {"action": "terminate"})
+    sys.exit(0)
+except Exception as exc:
+    sys.stderr.write("[offrig] self-stop terminate action failed (" + str(getattr(exc, "code", type(exc).__name__)) + ")\n")
+    sys.exit(1)"#;
     format!(
         "{SELF_STOP_START}\
          _offrig_ss_tool=\"\"; \
          if command -v runpodctl >/dev/null 2>&1; then _offrig_ss_tool=\"runpodctl\"; \
-         elif command -v python3 >/dev/null 2>&1 && python3 -c \"import urllib.request\" >/dev/null 2>&1; then _offrig_ss_tool=\"python3\"; \
+         elif command -v python3 >/dev/null 2>&1 && python3 -c \"import ssl, urllib.request\" >/dev/null 2>&1; then _offrig_ss_tool=\"python3\"; \
          elif command -v curl >/dev/null 2>&1; then _offrig_ss_tool=\"curl\"; fi; \
          _offrig_ss_missing=\"\"; \
          if [ -z \"$_offrig_ss_tool\" ]; then _offrig_ss_missing=\"runpodctl/python3/curl\"; fi; \
@@ -277,33 +320,89 @@ except Exception as exc:
          if [ -z \"${{RUNPOD_API_KEY:-}}\" ]; then _offrig_ss_missing=\"${{_offrig_ss_missing:+$_offrig_ss_missing, }}RUNPOD_API_KEY\"; fi; \
          mkdir -p \"{state_dir}\"; \
          if [ -z \"$_offrig_ss_missing\" ]; then \
-           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at}\" | tee \"{status_file}\"; \
-           (now=$(date -u +%s); wait=$(({fire_at} - now)); \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at} via $_offrig_ss_tool\" | tee \"{status_file}\"; \
+           (_offrig_py_api() {{ \
+             python3 -c '{py_api}' \"$1\" \"{api_base}\" \"$2\"; \
+           }}; \
+           _offrig_curl_req() {{ \
+             if [ -n \"$3\" ]; then \
+               printf 'header = \"Authorization: Bearer %s\"\\n' \"$RUNPOD_API_KEY\" | curl -s -D - -o /dev/null -w '\\n__CODE__:%{{http_code}}' --max-time 30 -X \"$1\" -H 'Content-Type: application/json' --data \"$3\" -K - \"{api_base}/pods/${{RUNPOD_POD_ID}}$2\" 2>/dev/null || true; \
+             else \
+               printf 'header = \"Authorization: Bearer %s\"\\n' \"$RUNPOD_API_KEY\" | curl -s -D - -o /dev/null -w '\\n__CODE__:%{{http_code}}' --max-time 30 -X \"$1\" -K - \"{api_base}/pods/${{RUNPOD_POD_ID}}$2\" 2>/dev/null || true; \
+             fi; \
+           }}; \
+           _offrig_curl_term() {{ \
+             _d={retry_base_secs}; \
+             for _i in 1 2 3 4; do \
+               _out=$(_offrig_curl_req DELETE \"\" \"\"); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in [0-9][0-9][0-9]) ;; *) _c=\"000\" ;; esac; \
+               case \"$_c\" in 2*) return 0 ;; esac; \
+               echo \"[offrig] self-stop DELETE $_i/4 failed ($_c)\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+               if [ \"$_i\" -lt 4 ]; then \
+                 _w=$_d; _d=$((_d * 2)); \
+                 if [ \"$_c\" = \"429\" ]; then \
+                   case \"$_out\" in *[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:*) \
+                     _ra=\"${{_out#*[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:}}\"; \
+                     _ra=\"${{_ra%%[! 0-9]*}}\"; \
+                     while [ \"${{_ra# }}\" != \"$_ra\" ]; do _ra=\"${{_ra# }}\"; done; \
+                     _ra=\"${{_ra%%[!0-9]*}}\"; \
+                     case \"$_ra\" in \"\"|*[!0-9]*) ;; *) [ \"$_ra\" -gt 60 ] && _ra=60; _w=$_ra ;; esac ;; \
+                   esac; \
+                 fi; \
+                 if [ \"$_w\" -gt 0 ]; then sleep \"$_w\"; fi; \
+               fi; \
+             done; \
+             _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"terminate\"}}'); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in 2*) return 0 ;; esac; \
+             echo \"[offrig] self-stop terminate action failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+             return 1; \
+           }}; \
+           if [ \"$_offrig_ss_tool\" = \"python3\" ]; then \
+             _offrig_py_api probe {retry_base_secs} >> \"{state_dir}/bootstrap.log\" 2>&1 || true; \
+           elif [ \"$_offrig_ss_tool\" = \"curl\" ]; then \
+             _out=$(_offrig_curl_req GET \"\" \"\"); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in [0-9][0-9][0-9]) ;; *) _c=\"000\" ;; esac; \
+             echo \"[offrig] self-stop boot GET /pods/${{RUNPOD_POD_ID}}: $_c\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+           fi; \
+           now=$(date -u +%s); wait=$(({fire_at} - now)); \
            if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
-           echo \"[offrig] on-pod deadline {fire_at} reached; stopping ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+           echo \"[offrig] on-pod deadline {fire_at} reached; terminating ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+           _offrig_term=0; \
            case \"$_offrig_ss_tool\" in \
              runpodctl) \
-               runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
-               || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
-               || runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
-               || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 ;; \
+               _d={retry_base_secs}; \
+               for _i in 1 2 3 4; do \
+                 if runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1; then \
+                   _offrig_term=1; break; \
+                 fi; \
+                 if [ \"$_i\" -lt 4 ] && [ \"$_d\" -gt 0 ]; then sleep \"$_d\"; _d=$((_d * 2)); fi; \
+               done ;; \
              python3) \
-               python3 -c '{py_stop}' \"{api_base}\" >> \"{state_dir}/bootstrap.log\" 2>&1 ;; \
+               if _offrig_py_api terminate {retry_base_secs} >> \"{state_dir}/bootstrap.log\" 2>&1; then \
+                 _offrig_term=1; \
+               elif command -v curl >/dev/null 2>&1; then \
+                 echo \"[offrig] self-stop python3 failed; falling through to curl\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+                 if _offrig_curl_term; then _offrig_term=1; fi; \
+               fi ;; \
              curl) \
-               _offrig_code=$(printf 'header = \"Authorization: Bearer %s\"\\n' \"$RUNPOD_API_KEY\" \
-                 | curl -s -o /dev/null -w '%{{http_code}}' --max-time 30 -X DELETE -K - \"{api_base}/pods/${{RUNPOD_POD_ID}}\" 2>/dev/null || true); \
-               case \"${{_offrig_code:-000}}\" in \
-                 2*) ;; \
-                 *) \
-                   echo \"[offrig] self-stop DELETE failed (${{_offrig_code:-000}}); trying stop\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
-                   _offrig_code=$(printf 'header = \"Authorization: Bearer %s\"\\n' \"$RUNPOD_API_KEY\" \
-                     | curl -s -o /dev/null -w '%{{http_code}}' --max-time 30 -X POST -H 'Content-Type: application/json' --data '{{\"action\":\"stop\"}}' -K - \"{api_base}/pods/${{RUNPOD_POD_ID}}/action\" 2>/dev/null || true); \
-                   case \"${{_offrig_code:-000}}\" in \
-                     2*) ;; \
-                     *) echo \"[offrig] self-stop stop failed (${{_offrig_code:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; \
-                   esac ;; \
-               esac ;; \
-           esac) </dev/null >/dev/null 2>&1 & \
+               if _offrig_curl_term; then _offrig_term=1; fi ;; \
+           esac; \
+           if [ \"$_offrig_term\" -ne 1 ]; then \
+             printf '%s\\n' \"{SELF_STOP_STOPPED_LINE}\" >> \"{status_file}\"; \
+             echo \"[offrig] {SELF_STOP_STOPPED_LINE}\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+             case \"$_offrig_ss_tool\" in \
+               runpodctl) \
+                 runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
+                 || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 || exit 1 ;; \
+               python3) \
+                 if ! _offrig_py_api stop 0 >> \"{state_dir}/bootstrap.log\" 2>&1; then \
+                   if command -v curl >/dev/null 2>&1; then \
+                     _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"stop\"}}'); _c=\"${{_out##*__CODE__:}}\"; \
+                     case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; esac; \
+                   else exit 1; fi; \
+                 fi ;; \
+               curl) \
+                 _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"stop\"}}'); _c=\"${{_out##*__CODE__:}}\"; \
+                 case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; esac ;; \
+             esac; \
+           fi) </dev/null >/dev/null 2>&1 & \
          else \
            printf '%s\\n' \"{SELF_STOP_PREFIX}UNAVAILABLE ($_offrig_ss_missing)\" | tee \"{status_file}\"; \
          fi\n\
@@ -992,12 +1091,22 @@ mod tests {
     fn self_stop_warning_triggers_only_on_unavailable() {
         assert_eq!(self_stop_warning(None), None);
         assert_eq!(
-            self_stop_warning(Some("offrig self-stop: armed fire_at=1900000120")),
+            self_stop_warning(Some(
+                "offrig self-stop: armed fire_at=1900000120 via python3"
+            )),
             None
         );
         let warn = self_stop_warning(Some("offrig self-stop: UNAVAILABLE (runpodctl)"))
             .expect("must warn");
         assert!(warn.contains("UNAVAILABLE (runpodctl)"), "{warn}");
+        let stopped = self_stop_warning(Some(
+            "offrig self-stop: STOPPED NOT TERMINATED: volume still billing",
+        ))
+        .expect("stopped-not-terminated must warn");
+        assert!(
+            stopped.contains("STOPPED NOT TERMINATED: volume still billing"),
+            "{stopped}"
+        );
         let unk = self_stop_warning(Some(
             "self-stop status unknown: bootstrap wrote no self-stop status line",
         ))
@@ -1013,6 +1122,7 @@ mod tests {
         path: String,
         auth: Option<String>,
         body: String,
+        at: std::time::Instant,
     }
 
     struct LocalMock {
@@ -1022,12 +1132,25 @@ mod tests {
 
     impl LocalMock {
         fn start(handler: impl Fn(&RecordedReq) -> (u16, String) + Send + Sync + 'static) -> Self {
+            Self::start_with_headers(move |req| {
+                let (status, body) = handler(req);
+                (status, Vec::new(), body)
+            })
+        }
+
+        fn start_with_headers(
+            handler: impl Fn(&RecordedReq) -> (u16, Vec<(String, String)>, String)
+            + Send
+            + Sync
+            + 'static,
+        ) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             let url = format!("http://{}", listener.local_addr().expect("addr"));
             let reqs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let log = std::sync::Arc::clone(&reqs);
             let handler = std::sync::Arc::new(handler);
             std::thread::spawn(move || {
+                use std::fmt::Write as _;
                 use std::io::{BufRead, BufReader, Read, Write};
                 for stream in listener.incoming().map_while(std::result::Result::ok) {
                     let mut reader = BufReader::new(stream);
@@ -1060,11 +1183,16 @@ mod tests {
                         path,
                         auth,
                         body: String::from_utf8_lossy(&raw).into_owned(),
+                        at: std::time::Instant::now(),
                     };
                     log.lock().expect("lock").push(rec.clone());
-                    let (status, resp_body) = handler(&rec);
+                    let (status, extra_headers, resp_body) = handler(&rec);
+                    let mut extra = String::new();
+                    for (hk, hv) in extra_headers {
+                        let _ = write!(extra, "{hk}: {hv}\r\n");
+                    }
                     let reply = format!(
-                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{resp_body}",
                         resp_body.len()
                     );
                     let _ = reader.get_mut().write_all(reply.as_bytes());
@@ -1174,7 +1302,7 @@ mod tests {
         let status_posix = format!("{state_posix}/self-stop.status");
         let bin_posix = posix_dir(sh, bin_dir);
 
-        let snippet = self_stop_timer_in(0, &state_posix, &status_posix, api_base);
+        let snippet = self_stop_timer_in(0, &state_posix, &status_posix, api_base, 0);
         assert!(
             !snippet.contains(TEST_KEY),
             "snippet must never embed secret"
@@ -1298,7 +1426,10 @@ mod tests {
 
         let mock = LocalMock::start(|_| (204, String::new()));
         let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
-        assert_eq!(res.status, "offrig self-stop: armed fire_at=120\n");
+        assert_eq!(
+            res.status,
+            "offrig self-stop: armed fire_at=120 via runpodctl\n"
+        );
         assert_eq!(
             std::fs::read_to_string(&calls_file).expect("calls"),
             "pod delete pod_abc\n"
@@ -1307,7 +1438,7 @@ mod tests {
         assert!(res.bootstrap_log.contains("via runpodctl"));
         assert!(!res.stdout.is_empty());
 
-        // Fallback chain inside runpodctl (delete -> remove -> pod stop -> stop pod)
+        // Fallback chain inside runpodctl (4x delete/remove retries -> loud warning -> stop)
         let dir2 = temp_case_dir("runpodctl-chain");
         let bin2 = dir2.join("bin");
         std::fs::create_dir_all(&bin2).expect("bin2");
@@ -1329,10 +1460,19 @@ mod tests {
             Some("pod_abc"),
             Some(TEST_KEY),
         );
-        assert_eq!(res2.status, "offrig self-stop: armed fire_at=120\n");
+        assert_eq!(
+            res2.status,
+            format!(
+                "offrig self-stop: armed fire_at=120 via runpodctl\n{SELF_STOP_STOPPED_LINE}\n"
+            )
+        );
+        let parsed2 = crate::remote::parse_self_stop(&res2.status);
+        assert_eq!(parsed2.as_deref(), Some(SELF_STOP_STOPPED_LINE));
+        assert!(self_stop_warning(parsed2.as_deref()).is_some());
+        let expected_delete_rounds = "pod delete pod_abc\nremove pod pod_abc\n".repeat(4);
         assert_eq!(
             std::fs::read_to_string(&calls2).expect("calls2"),
-            "pod delete pod_abc\nremove pod pod_abc\npod stop pod_abc\nstop pod pod_abc\n"
+            format!("{expected_delete_rounds}pod stop pod_abc\nstop pod pod_abc\n")
         );
         assert!(mock.requests().is_empty());
 
@@ -1357,63 +1497,39 @@ mod tests {
             &format!("printf 'curl_called\\n' > '{curl_marker_posix}'\nexit 0"),
         );
 
-        let mock = LocalMock::start(|_| (204, String::new()));
-        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
-        assert_eq!(res.status, "offrig self-stop: armed fire_at=120\n");
-        assert!(!curl_marker.exists(), "python3 must run before curl");
-        let reqs = mock.requests();
-        assert_eq!(reqs.len(), 1, "expected 1 DELETE request, got {reqs:?}");
-        assert_eq!(reqs[0].method, "DELETE");
-        assert_eq!(reqs[0].path, "/pods/pod_abc");
-        assert_eq!(
-            reqs[0].auth.as_deref(),
-            Some(&format!("Bearer {TEST_KEY}")[..])
-        );
-        assert!(res.bootstrap_log.contains("via python3"));
-
-        // DELETE fails -> falls back to POST /pods/{id}/action {"action":"stop"}; echoed secret never logged.
-        let dir2 = temp_case_dir("python-stop-fallback");
-        let bin2 = dir2.join("bin");
-        std::fs::create_dir_all(&bin2).expect("bin2");
-        populate_coreutils(&sh, &bin2);
-        write_shim(&bin2, "python3", &format!("exec '{py}' \"$@\""));
-        let mock2 = LocalMock::start(|req| {
-            if req.method == "DELETE" {
-                (500, format!("echoed {TEST_KEY}"))
+        let mock = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (200, "{}".into())
             } else {
-                (403, format!("echoed {TEST_KEY}"))
+                (204, String::new())
             }
         });
-        let res2 = run_snippet(
-            &sh,
-            &dir2,
-            &bin2,
-            &mock2.url,
-            Some("pod_abc"),
-            Some(TEST_KEY),
-        );
-        assert_eq!(res2.status, "offrig self-stop: armed fire_at=120\n");
-        let reqs2 = mock2.requests();
-        assert_eq!(reqs2.len(), 2, "expected DELETE then POST stop: {reqs2:?}");
-        assert_eq!(reqs2[0].method, "DELETE");
-        assert_eq!(reqs2[0].path, "/pods/pod_abc");
-        assert_eq!(reqs2[1].method, "POST");
-        assert_eq!(reqs2[1].path, "/pods/pod_abc/action");
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
         assert_eq!(
-            reqs2[1].auth.as_deref(),
+            res.status,
+            "offrig self-stop: armed fire_at=120 via python3\n"
+        );
+        assert!(!curl_marker.exists(), "python3 must run before curl");
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 2, "expected boot GET + DELETE, got {reqs:?}");
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[0].path, "/pods/pod_abc");
+        assert_eq!(reqs[1].method, "DELETE");
+        assert_eq!(reqs[1].path, "/pods/pod_abc");
+        assert_eq!(
+            reqs[1].auth.as_deref(),
             Some(&format!("Bearer {TEST_KEY}")[..])
         );
-        let body_json: serde_json::Value =
-            serde_json::from_str(&reqs2[1].body).expect("stop body json");
-        assert_eq!(body_json, serde_json::json!({"action": "stop"}));
         assert!(
-            res2.bootstrap_log
-                .contains("DELETE failed (500); trying stop")
+            res.bootstrap_log
+                .contains("[offrig] self-stop boot GET /pods/pod_abc: 200"),
+            "{}",
+            res.bootstrap_log
         );
-        assert!(res2.bootstrap_log.contains("stop failed (403)"));
+        assert!(!res.status.contains("boot GET"));
+        assert!(res.bootstrap_log.contains("via python3"));
 
         let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]
@@ -1421,37 +1537,100 @@ mod tests {
         let sh = find_sh();
         let cu = discover_tool(&sh, "curl");
 
-        // Case A: curl only, DELETE returns 204
+        // curl only: boot GET 403 (with echoed secret) logged without gating, DELETE 204
         let dir = temp_case_dir("curl-only");
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).expect("bin");
         populate_coreutils(&sh, &bin);
         write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
-        let mock = LocalMock::start(|_| (204, String::new()));
+        let mock = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (403, format!("forbidden {TEST_KEY}"))
+            } else {
+                (204, String::new())
+            }
+        });
         let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
-        assert_eq!(res.status, "offrig self-stop: armed fire_at=120\n");
+        assert_eq!(res.status, "offrig self-stop: armed fire_at=120 via curl\n");
         let reqs = mock.requests();
-        assert_eq!(reqs.len(), 1, "expected 1 DELETE request, got {reqs:?}");
-        assert_eq!(reqs[0].method, "DELETE");
+        assert_eq!(reqs.len(), 2, "expected boot GET + DELETE, got {reqs:?}");
+        assert_eq!(reqs[0].method, "GET");
         assert_eq!(reqs[0].path, "/pods/pod_abc");
+        assert_eq!(reqs[1].method, "DELETE");
+        assert_eq!(reqs[1].path, "/pods/pod_abc");
         assert_eq!(
-            reqs[0].auth.as_deref(),
+            reqs[1].auth.as_deref(),
             Some(&format!("Bearer {TEST_KEY}")[..])
         );
+        assert!(
+            res.bootstrap_log
+                .contains("[offrig] self-stop boot GET /pods/pod_abc: 403"),
+            "{}",
+            res.bootstrap_log
+        );
+        assert!(!res.status.contains("boot GET"));
         assert!(res.bootstrap_log.contains("via curl"));
 
-        // Case B: python3 present without urllib, curl runs DELETE (500) then POST stop (401).
-        let dir2 = temp_case_dir("curl-after-broken-py");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn self_stop_snippet_preflights_python_ssl_and_falls_through_to_curl_at_fire_time() {
+        let sh = find_sh();
+        let py = discover_tool(&sh, "python3");
+        let cu = discover_tool(&sh, "curl");
+
+        // Case A: broken ssl import fails preflight even though urllib.request alone imports -> arms via curl.
+        let dir = temp_case_dir("broken-ssl");
+        let bin = dir.join("bin");
+        let badpy = dir.join("badpy");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&badpy).expect("badpy");
+        std::fs::write(badpy.join("ssl.py"), "raise ImportError('broken ssl')\n").expect("ssl.py");
+        let badpy_posix = posix_dir(&sh, &badpy);
+        populate_coreutils(&sh, &bin);
+        write_shim(
+            &bin,
+            "python3",
+            &format!("PYTHONPATH='{badpy_posix}' exec '{py}' \"$@\""),
+        );
+        write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+        let mock = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (200, "{}".into())
+            } else {
+                (204, String::new())
+            }
+        });
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+        assert_eq!(res.status, "offrig self-stop: armed fire_at=120 via curl\n");
+        let reqs = mock.requests();
+        assert_eq!(
+            reqs.len(),
+            2,
+            "expected boot GET + DELETE via curl: {reqs:?}"
+        );
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[1].method, "DELETE");
+
+        // Case B: python3 passes preflight (arms via python3) but crashes at fire time -> falls through to curl.
+        let dir2 = temp_case_dir("py-fire-fallthrough");
         let bin2 = dir2.join("bin");
         std::fs::create_dir_all(&bin2).expect("bin2");
         populate_coreutils(&sh, &bin2);
-        write_shim(&bin2, "python3", "exit 1");
+        write_shim(
+            &bin2,
+            "python3",
+            &format!(
+                "case \"$*\" in *\"import ssl, urllib.request\"*) exec '{py}' \"$@\" ;; *) exit 1 ;; esac"
+            ),
+        );
         write_shim(&bin2, "curl", &format!("exec '{cu}' \"$@\""));
         let mock2 = LocalMock::start(|req| {
-            if req.method == "DELETE" {
-                (500, format!("echoed {TEST_KEY}"))
+            if req.method == "GET" {
+                (200, "{}".into())
             } else {
-                (401, format!("echoed {TEST_KEY}"))
+                (204, String::new())
             }
         });
         let res2 = run_snippet(
@@ -1462,28 +1641,173 @@ mod tests {
             Some("pod_abc"),
             Some(TEST_KEY),
         );
-        assert_eq!(res2.status, "offrig self-stop: armed fire_at=120\n");
-        let reqs2 = mock2.requests();
-        assert_eq!(reqs2.len(), 2, "expected DELETE then POST stop: {reqs2:?}");
-        assert_eq!(reqs2[0].method, "DELETE");
-        assert_eq!(reqs2[0].path, "/pods/pod_abc");
-        assert_eq!(reqs2[1].method, "POST");
-        assert_eq!(reqs2[1].path, "/pods/pod_abc/action");
         assert_eq!(
-            reqs2[1].auth.as_deref(),
-            Some(&format!("Bearer {TEST_KEY}")[..])
+            res2.status,
+            "offrig self-stop: armed fire_at=120 via python3\n"
         );
-        let body_json: serde_json::Value =
-            serde_json::from_str(&reqs2[1].body).expect("stop body json");
-        assert_eq!(body_json, serde_json::json!({"action": "stop"}));
         assert!(
             res2.bootstrap_log
-                .contains("DELETE failed (500); trying stop")
+                .contains("python3 failed; falling through to curl"),
+            "{}",
+            res2.bootstrap_log
         );
-        assert!(res2.bootstrap_log.contains("stop failed (401)"));
+        let reqs2 = mock2.requests();
+        assert_eq!(
+            reqs2.len(),
+            1,
+            "expected curl DELETE 204 after py crash: {reqs2:?}"
+        );
+        assert_eq!(reqs2[0].method, "DELETE");
+        assert_eq!(reqs2[0].path, "/pods/pod_abc");
+        assert_eq!(
+            reqs2[0].auth.as_deref(),
+            Some(&format!("Bearer {TEST_KEY}")[..])
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn self_stop_snippet_retries_delete_honours_429_tries_terminate_and_warns_on_stop() {
+        let sh = find_sh();
+        let py = discover_tool(&sh, "python3");
+        let cu = discover_tool(&sh, "curl");
+
+        // Case A: 429 with Retry-After: 1 then 204, across both python3 and curl.
+        for (tool, with_py) in [("python3", true), ("curl", false)] {
+            let dir = temp_case_dir(&format!("retry-429-{tool}"));
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).expect("bin");
+            populate_coreutils(&sh, &bin);
+            if with_py {
+                write_shim(&bin, "python3", &format!("exec '{py}' \"$@\""));
+            } else {
+                write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+            }
+            let del_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let del_hits_c = std::sync::Arc::clone(&del_hits);
+            let mock = LocalMock::start_with_headers(move |req| {
+                if req.method == "GET" {
+                    return (200, Vec::new(), "{}".into());
+                }
+                let n = del_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    (
+                        429,
+                        vec![("Retry-After".into(), "1".into())],
+                        format!("rate limited {TEST_KEY}"),
+                    )
+                } else {
+                    (204, Vec::new(), String::new())
+                }
+            });
+            let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+            assert_eq!(
+                res.status,
+                format!("offrig self-stop: armed fire_at=120 via {tool}\n")
+            );
+            let reqs = mock.requests();
+            let deletes: Vec<&RecordedReq> = reqs.iter().filter(|r| r.method == "DELETE").collect();
+            assert_eq!(deletes.len(), 2, "{tool}: {reqs:?}");
+            assert!(
+                deletes[1].at.duration_since(deletes[0].at)
+                    >= std::time::Duration::from_millis(800),
+                "{tool}: must honour Retry-After: 1"
+            );
+            assert!(
+                reqs.iter().all(|r| r.method != "POST"),
+                "{tool}: 204 delete must not call action"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // Case B: 5xx x4 on DELETE -> POST /action {"action":"terminate"} 200, across python3 and curl.
+        for (tool, with_py) in [("python3", true), ("curl", false)] {
+            let dir = temp_case_dir(&format!("term-action-{tool}"));
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).expect("bin");
+            populate_coreutils(&sh, &bin);
+            if with_py {
+                write_shim(&bin, "python3", &format!("exec '{py}' \"$@\""));
+            } else {
+                write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+            }
+            let mock = LocalMock::start(|req| match req.method.as_str() {
+                "GET" => (200, "{}".into()),
+                "DELETE" => (502, format!("err {TEST_KEY}")),
+                "POST" => (200, "{}".into()),
+                _ => (400, String::new()),
+            });
+            let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+            assert_eq!(
+                res.status,
+                format!("offrig self-stop: armed fire_at=120 via {tool}\n")
+            );
+            let reqs = mock.requests();
+            let deletes = reqs.iter().filter(|r| r.method == "DELETE").count();
+            let posts: Vec<&RecordedReq> = reqs.iter().filter(|r| r.method == "POST").collect();
+            assert_eq!(deletes, 4, "{tool}: expected 4 DELETE retries: {reqs:?}");
+            assert_eq!(
+                posts.len(),
+                1,
+                "{tool}: expected 1 terminate POST: {reqs:?}"
+            );
+            assert_eq!(posts[0].path, "/pods/pod_abc/action");
+            let body_json: serde_json::Value =
+                serde_json::from_str(&posts[0].body).expect("terminate body json");
+            assert_eq!(body_json, serde_json::json!({"action": "terminate"}));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // Case C: all terminate paths fail (python3 -> curl -> last-resort stop) -> loud status line.
+        let dir3 = temp_case_dir("all-fail-stop");
+        let bin3 = dir3.join("bin");
+        std::fs::create_dir_all(&bin3).expect("bin3");
+        populate_coreutils(&sh, &bin3);
+        write_shim(&bin3, "python3", &format!("exec '{py}' \"$@\""));
+        write_shim(&bin3, "curl", &format!("exec '{cu}' \"$@\""));
+        let mock3 = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (200, "{}".into())
+            } else {
+                (500, format!("echoed {TEST_KEY}"))
+            }
+        });
+        let res3 = run_snippet(
+            &sh,
+            &dir3,
+            &bin3,
+            &mock3.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(
+            res3.status,
+            format!("offrig self-stop: armed fire_at=120 via python3\n{SELF_STOP_STOPPED_LINE}\n")
+        );
+        let parsed3 = crate::remote::parse_self_stop(&res3.status);
+        assert_eq!(parsed3.as_deref(), Some(SELF_STOP_STOPPED_LINE));
+        assert!(self_stop_warning(parsed3.as_deref()).is_some());
+        let reqs3 = mock3.requests();
+        let dels3 = reqs3.iter().filter(|r| r.method == "DELETE").count();
+        let posts3: Vec<serde_json::Value> = reqs3
+            .iter()
+            .filter(|r| r.method == "POST")
+            .map(|r| serde_json::from_str(&r.body).expect("action json"))
+            .collect();
+        assert_eq!(dels3, 8, "4 python3 + 4 curl DELETE retries: {reqs3:?}");
+        assert_eq!(
+            posts3,
+            vec![
+                serde_json::json!({"action": "terminate"}),
+                serde_json::json!({"action": "terminate"}),
+                serde_json::json!({"action": "stop"}),
+                serde_json::json!({"action": "stop"}),
+            ],
+            "expected python terminate -> curl terminate -> last-resort stop (python -> curl): {reqs3:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir3);
     }
 
     #[test]
