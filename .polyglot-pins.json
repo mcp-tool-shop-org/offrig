@@ -1,6 +1,108 @@
 {
   "version": 1,
   "pins": {
+    "1583afbd4960918a:pt": {
+      "lang": "pt",
+      "source": "frontier-mini",
+      "translation": "frontier-mini",
+      "pinnedAt": "2026-11-27T20:53:21.722Z"
+    },
+    "2859fe14a7fe944d:es": {
+      "lang": "es",
+      "source": "1. Download `offrig-<version>-windows-x64.zip` from\n   [Releases](https://github.com/mcp-tool-shop-org/offrig/releases), check it against the\n   release's `SHA256SUMS`, and unzip it onto your `PATH`. It holds `offrig.exe` (the CLI),\n   `offrig-app.exe` (the app) and `offrig-mcp.exe` (the side-car).\n   To build from source instead: `cargo build --release`, with Rust 1.98.1 (pinned in\n   `rust-toolchain.toml`).\n2. Put your RunPod API key in the user environment variable `RUNPOD_API_KEY`.\n3. Add your SSH public key in RunPod's account settings. offrig uses\n   `~/.ssh/runpod_rustline` if present, then `~/.ssh/id_ed25519`.\n4. For agents, register the side-car with Claude Code at user scope:\n   `claude mcp add --scope user offrig -- <path>\\offrig-mcp.exe`. It opens a project's\n   store only on first use, so it is harmless in projects that never use it.",
+      "translation": "1. Descargue `offrig-<version>-windows-x64.zip` de\n[Releases](https://github.com/mcp-tool-shop-org/offrig/releases), verifíquelo con la\n`SHA256SUMS` de la publicación y descomprímalo en su `PATH`. Contiene `offrig.exe` (la CLI),\n`offrig-app.exe` (la aplicación) y `offrig-mcp.exe` (el componente secundario).\nPara compilar desde el código fuente: `cargo build --release`, con Rust 1.98.1 (fijado en\n`rust-toolchain.toml`).\n2. Coloque su clave de API RunPod en la variable de entorno del usuario `RUNPOD_API_KEY`.\n3. Agregue su clave pública SSH en la configuración de la cuenta de RunPod. offrig utiliza\n`~/.ssh/runpod_rustline` si está presente, luego `~/.ssh/id_ed25519`.\n4. Para los agentes, registre el componente secundario con Claude Code en el ámbito del usuario:\n`claude mcp add --scope user offrig -- <path>\\offrig-mcp.exe`. Abre el\nalmacén de un proyecto solo en el primer uso, por lo que es inofensivo en los proyectos que nunca lo utilizan.",
+      "pinnedAt": "2026-11-27T20:53:21.189Z"
+    },
+    "2859fe14a7fe944d:ja": {
+      "lang": "ja",
+      "source": "1. Download `offrig-<version>-windows-x64.zip` from\n   [Releases](https://github.com/mcp-tool-shop-org/offrig/releases), check it against the\n   release's `SHA256SUMS`, and unzip it onto your `PATH`. It holds `offrig.exe` (the CLI),\n   `offrig-app.exe` (the app) and `offrig-mcp.exe` (the side-car).\n   To build from source instead: `cargo build --release`, with Rust 1.98.1 (pinned in\n   `rust-toolchain.toml`).\n2. Put your RunPod API key in the user environment variable `RUNPOD_API_KEY`.\n3. Add your SSH public key in RunPod's account settings. offrig uses\n   `~/.ssh/runpod_rustline` if present, then `~/.ssh/id_ed25519`.\n4. For agents, register the side-car with Claude Code at user scope:\n   `claude mcp add --scope user offrig -- <path>\\offrig-mcp.exe`. It opens a project's\n   store only on first use, so it is harmless in projects that never use it.",
+      "translation": "1. `offrig-<version>-windows-x64.zip` を [リリース](https://github.com/mcp-tool-shop-org/offrig/releases) からダウンロードし、リリースの `SHA256SUMS` と照合して、`PATH` に解凍します。これには、`offrig.exe` (CLI)、`offrig-app.exe` (アプリ)、および `offrig-mcp.exe` (サイドカー) が含まれます。\nソースコードからビルドする場合は、次のコマンドを実行します: `cargo build --release`。Rust 1.98.1 を使用します (`rust-toolchain.toml` で固定)。\n2. RunPod API キーをユーザー環境変数 `RUNPOD_API_KEY` に設定します。\n3. SSH 公開キーを RunPod のアカウント設定に追加します。offrig は、利用可能な場合は `~/.ssh/runpod_rustline`、そうでない場合は `~/.ssh/id_ed25519` を使用します。\n4. エージェントの場合、サイドカーをユーザーレベルで Claude Code に登録します: `claude mcp add --scope user offrig -- <path>\\offrig-mcp.exe`。これにより、プロジェクトのストアが初回使用時にのみ開かれるため、使用しないプロジェクトでは問題ありません。",
+      "pinnedAt": "2026-11-27T20:53:21.330Z"
+    },
+    "48443571ef31de81:pt": {
+      "lang": "pt",
+      "source": "about $1.7/hr",
+      "translation": "aproximadamente US$ 1,7/hora",
+      "pinnedAt": "2026-11-27T20:53:21.723Z"
+    },
+    "4f3af8bd04c37a4b:ja": {
+      "lang": "ja",
+      "source": "The plan stores the GPU list that is left, and either the CUDA floor or the exact CUDA\nlist, and `offrig_launch` rents only from what the plan stored, never from a later edit\nof the profile. `offrig_job` and the side-car's launch result\nreport the GPU type and the host's CUDA version actually rented, in a `rented` object. The\npod API does not report the host's CUDA version, so once ssh is up the launch runs\n`nvidia-smi` once through the lane and reads it from the header (`CUDA Version: 12.8`, or\n`CUDA UMD Version: 13.4` on newer drivers); `rented.cuda_source` says `nvidia-smi` or\n`pod API`. If the host's CUDA is older than the plan's floor, the GPU is\nnot one the plan listed, or the price is above the plan's, `offrig_job` returns a `warnings`\nentry and starts `next_action` with `WARNING`. Nothing is terminated automatically: stopping\nthe rent is the caller's call (`offrig_shutdown`). If neither the pod API nor `nvidia-smi`\ngives a CUDA version, `rented.notes` says so and the floor is unchecked.",
+      "translation": "プランは残った GPU リストと、CUDA の下限または正確な CUDA リストのいずれかを保存し、\n`offrig_launch` はプランが保存したものからのみレンタルし、後からプロファイルを編集しても使いません。`offrig_job` とサイドカーの起動結果は、\n実際にレンタルした GPU の種類とホストの CUDA バージョンを `rented` オブジェクトで報告します。\nポッド API はホストの CUDA バージョンを報告しないため、ssh が上がると起動処理はレーン経由で\n`nvidia-smi` を 1 回実行し、ヘッダー（`CUDA Version: 12.8`、新しいドライバーでは\n`CUDA UMD Version: 13.4`）から読み取ります。`rented.cuda_source` は `nvidia-smi` か\n`pod API` を示します。ホストの CUDA がプランの下限より古い場合、GPU が\nプランに含まれないものだった場合、または価格がプランを上回る場合、`offrig_job` は `warnings`\nの項目を返し、`next_action` を `WARNING` で始めます。自動では何も終了しません。レンタルを止めるかどうかは\n呼び出し側の判断です（`offrig_shutdown`）。ポッド API も `nvidia-smi` も CUDA バージョンを返さない場合は、\n`rented.notes` にそう記され、下限は未確認のままです。",
+      "pinnedAt": "2026-11-27T20:53:21.336Z"
+    },
+    "58e25b455e1415c4:ja": {
+      "lang": "ja",
+      "source": "- Before a launch, offrig shows the cheapest free match and your runway with the pod\n  running. Under one hour of runway it refuses unless you override, because at zero\n  RunPod stops every pod on the account, including ones offrig does not manage.\n- Auto-stop terminates the pod after 30 minutes with every GPU under 5% (configurable,\n  or off).\n- Closing the app with a pod running asks whether to terminate it or keep it running.\n- offrig only touches pods it named: `offrig-<profile>` for the CLI and the app,\n  `offrig-<tag>-<profile>` for a project's side-car lane (see Lanes). A side-car never\n  touches another lane's pods, the plain lane's, or any other pod; those are listed,\n  never changed.\n- For agent sessions, the cap is enforced before any spend: a plan's worst case (live\n  price × (max hours + 780 s self-stop tail), rounded up to cents) is committed against the human-set budget and refused over it, and\n  a launch takes only a plan id, so an agent cannot name its own price.\n- Every side-car launch has a watchdog that terminates the pod at the plan's deadline,\n  and the runner shuts the pod down as soon as its queue is empty.",
+      "translation": "- 起動前に、offrig は最も安い空きの候補と、ポッドを動かした場合の残り稼働時間（ランウェイ）を表示します。\n  ランウェイが 1 時間未満なら、上書きしない限り起動を拒否します。残高がゼロになると、\n  RunPod は offrig が管理していないものも含め、アカウント上のすべてのポッドを停止するためです。\n- 自動停止は、すべての GPU の使用率が 5% 未満の状態が 30 分続くとポッドを終了します（設定変更可能、\n  またはオフ）。\n- ポッドが動いている状態でアプリを閉じると、終了するか動かし続けるかを確認します。\n- offrig は自分で名前を付けたポッドだけを操作します。CLI とアプリでは `offrig-<profile>`、\n  プロジェクトのサイドカーレーンでは `offrig-<tag>-<profile>` です（「レーン」を参照）。サイドカーは\n  他のレーンのポッド、プレーンレーンのポッド、その他のポッドには決して触れません。それらは一覧に表示されるだけで、\n  変更されることはありません。\n- エージェントのセッションでは、支出の前に上限が適用されます。プランの最悪ケース（現在の\n  価格 ×（最大時間 + 780 秒の自己停止テール）、セント単位で切り上げ）が人間の設定した予算に対してコミットされ、超える場合は拒否されます。\n  起動はプラン ID だけを受け取るため、エージェントが自分で価格を決めることはできません。\n- サイドカーの起動にはすべてウォッチドッグが付き、プランの期限にポッドを終了します。\n  ランナーはキューが空になるとすぐにポッドを停止します。",
+      "pinnedAt": "2026-11-27T20:53:21.337Z"
+    },
+    "6c390ff70bad22a4:ja": {
+      "lang": "ja",
+      "source": "`offrig index` embeds with **EmbeddingGemma 2** by Google DeepMind (Apache-2.0, not gated),\nserved on the CPU by [`tools/embed-serve`](tools/embed-serve/) (`embed_url`, default\n`http://127.0.0.1:11490`), never the shared server on 11434 and never a GPU. It replaced\nnomic-embed-text in 1.2.0 after a pre-registered benchmark on the studio's own queries\n(dense nDCG@10 +0.112); a nomic-built index is refused until `offrig index --rebuild`. Once the\nproject has an index, `offrig_memory_search` defaults to hybrid (keyword plus meaning).\n`offrig verify calibrate` scores a local loopback model as a verifier, one gold claim\nper call, with that claim's own evidence. A model name containing \"cloud\" is refused.\n`--num-ctx` defaults to `auto` and sizes one window for the run. `--keep-thinking`\nwrites thinking text to `thinking.jsonl` in the run directory only. `--jobs <N>`\n(1 to 8, default 1) keeps up to N claims in flight at once and still commits them in\nfile order: the server must allow N in parallel (`OLLAMA_NUM_PARALLEL`, which defaults\nto 1 in Ollama) or extra requests queue there, required KV memory scales with parallel\nslots, and concurrency may change verdicts until measured. The\n[handbook reference](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)\nlists the flags.",
+      "translation": "`offrig index` は Google DeepMind の **EmbeddingGemma 2**（Apache-2.0、ゲートなし）で埋め込みを行い、\n[`tools/embed-serve`](tools/embed-serve/) が CPU 上で提供します（`embed_url`、既定値は\n`http://127.0.0.1:11490`）。11434 の共有サーバーも GPU も決して使いません。1.2.0 で、スタジオ自身のクエリを使った事前登録ベンチマーク\n（dense nDCG@10 +0.112）の結果、nomic-embed-text から置き換えられました。nomic で作られたインデックスは `offrig index --rebuild` するまで拒否されます。\nプロジェクトにインデックスができると、`offrig_memory_search` の既定はハイブリッド（キーワードと意味）になります。\n`offrig verify calibrate` は、ローカルのループバックモデルを検証器として採点します。1 回の呼び出しにつき 1 件のゴールドクレームを、\nそのクレーム自身の根拠とともに使います。モデル名に \"cloud\" を含むものは拒否されます。\n`--num-ctx` の既定は `auto` で、実行全体に 1 つのウィンドウサイズを決めます。`--keep-thinking` は\n思考テキストを実行ディレクトリ内の `thinking.jsonl` にのみ書き出します。`--jobs <N>`\n（1〜8、既定 1）は最大 N 件のクレームを同時に処理し、それでもファイル順にコミットします。サーバーが N 件の並列を許可している必要があり\n（`OLLAMA_NUM_PARALLEL`、Ollama の既定は 1）、そうでなければ余分なリクエストはサーバー側で待機します。必要な KV メモリは並列スロット数に比例し、\n並列化は測定するまで判定を変える可能性があります。フラグの一覧は\n[ハンドブックのリファレンス](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)\nにあります。",
+      "pinnedAt": "2026-11-27T20:53:21.334Z"
+    },
+    "6c390ff70bad22a4:zh": {
+      "lang": "zh",
+      "source": "`offrig index` embeds with **EmbeddingGemma 2** by Google DeepMind (Apache-2.0, not gated),\nserved on the CPU by [`tools/embed-serve`](tools/embed-serve/) (`embed_url`, default\n`http://127.0.0.1:11490`), never the shared server on 11434 and never a GPU. It replaced\nnomic-embed-text in 1.2.0 after a pre-registered benchmark on the studio's own queries\n(dense nDCG@10 +0.112); a nomic-built index is refused until `offrig index --rebuild`. Once the\nproject has an index, `offrig_memory_search` defaults to hybrid (keyword plus meaning).\n`offrig verify calibrate` scores a local loopback model as a verifier, one gold claim\nper call, with that claim's own evidence. A model name containing \"cloud\" is refused.\n`--num-ctx` defaults to `auto` and sizes one window for the run. `--keep-thinking`\nwrites thinking text to `thinking.jsonl` in the run directory only. `--jobs <N>`\n(1 to 8, default 1) keeps up to N claims in flight at once and still commits them in\nfile order: the server must allow N in parallel (`OLLAMA_NUM_PARALLEL`, which defaults\nto 1 in Ollama) or extra requests queue there, required KV memory scales with parallel\nslots, and concurrency may change verdicts until measured. The\n[handbook reference](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)\nlists the flags.",
+      "translation": "`offrig index` 嵌入了 Google DeepMind 的 **EmbeddingGemma 2**（Apache-2.0 许可，无需特殊授权）。\n由 [`tools/embed-serve`](tools/embed-serve/) 在 CPU 上提供服务（`embed_url`，默认值）\n`http://127.0.0.1:11490`，它既不是共享服务器，端口也不是 11434，也不是 GPU。它取代了\n在 1.2.0 版本中，通过对工作室内部查询进行预先注册的基准测试，实现了 nomic-embed-text。\n（密集型 nDCG@10 +0.112）；在 `offrig index --rebuild` 之前，基于公理构建的索引将被拒绝。一旦……\n该项目有一个索引，`offrig_memory_search` 默认设置为混合模式（关键词加语义）。\n`offrig verify calibrate` 将本地环回模型作为验证器进行评分，并针对一个黄金标准案例进行验证。\n每次通话时，都需要提供与该声明相关的证据。模型名称中不能包含“cloud”一词。\n`--num-ctx` 默认设置为 `auto`，并在程序运行时调整一个窗口的大小。`--keep-thinking`\n仅将思考过程记录写入运行目录中的文件 `thinking.jsonl`。`--jobs <N>`\n（1 到 8，默认值为 1）允许同时处理最多 N 个待处理的请求，并最终提交这些请求。\n文件顺序：服务器必须允许 N 个请求并行处理（`OLLAMA_NUM_PARALLEL`，默认情况下）。\n（例如，在 Ollama 中设置为 1）或在其中添加额外的请求队列，所需的 KV 内存会随着并行处理的数量而增加。\n插槽和并发性可能会影响结果，直到进行测量时才会确定。\n[请参考手册](https://mcp-tool-shop-org.github.io/offrig/handbook/reference/)\n列出各个国家的国旗。",
+      "pinnedAt": "2026-11-27T20:53:21.088Z"
+    },
+    "a97698e47c36103c:es": {
+      "lang": "es",
+      "source": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "translation": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "pinnedAt": "2026-11-27T20:53:21.196Z"
+    },
+    "a97698e47c36103c:fr": {
+      "lang": "fr",
+      "source": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "translation": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "pinnedAt": "2026-11-27T20:53:21.462Z"
+    },
+    "a97698e47c36103c:it": {
+      "lang": "it",
+      "source": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "translation": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "pinnedAt": "2026-11-27T20:53:21.616Z"
+    },
+    "a97698e47c36103c:pt": {
+      "lang": "pt",
+      "source": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "translation": "frontier-mini-awq (Qwen3-Coder-30B AWQ)",
+      "pinnedAt": "2026-11-27T20:53:21.728Z"
+    },
+    "c406602b5bf81948:es": {
+      "lang": "es",
+      "source": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "translation": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "pinnedAt": "2026-11-27T20:53:21.195Z"
+    },
+    "c406602b5bf81948:fr": {
+      "lang": "fr",
+      "source": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "translation": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "pinnedAt": "2026-11-27T20:53:21.461Z"
+    },
+    "c406602b5bf81948:it": {
+      "lang": "it",
+      "source": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "translation": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "pinnedAt": "2026-11-27T20:53:21.614Z"
+    },
+    "c406602b5bf81948:pt": {
+      "lang": "pt",
+      "source": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "translation": "frontier-mini (Qwen3-Coder-30B FP8)",
+      "pinnedAt": "2026-11-27T20:53:21.727Z"
+    },
+    "c7575274a20d035b:fr": {
+      "lang": "fr",
+      "source": "frontier",
+      "translation": "frontier",
+      "pinnedAt": "2026-11-27T20:53:21.457Z"
+    },
     "c7d88f6ee3de4446:es": {
       "lang": "es",
       "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
@@ -42,6 +144,30 @@
       "source": "**Tasks and skills.** A client that supports MCP Tasks can run `offrig_launch` as a task: `tasks/get` shows the same state as `offrig_job`, and `tasks/cancel` cancels a launch still in progress (through `offrig_shutdown`); to stop a ready session, call `offrig_shutdown`. The plan's deadline and the watchdog still decide when a pod stops. The server also publishes one procedure skill, `offrig-session`. Details are in the [side-car handbook](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks).",
       "translation": "**任务与技能。** 支持 MCP Tasks 的客户端可以把 `offrig_launch` 作为任务运行：`tasks/get` 显示与 `offrig_job` 相同的状态，`tasks/cancel` 取消仍在进行中的启动（通过 `offrig_shutdown`）；要停止已就绪的会话，请调用 `offrig_shutdown`。何时停止 pod 仍由计划的期限和 watchdog 决定。服务器还发布一个流程技能 `offrig-session`。详情见 [side-car 手册](https://mcp-tool-shop-org.github.io/offrig/handbook/side-car/#tasks)。",
       "pinnedAt": "2026-11-25T18:32:27.334Z"
+    },
+    "d6813283eacbabaa:fr": {
+      "lang": "fr",
+      "source": "480B on 4 GPUs",
+      "translation": "480B sur 4 GPU",
+      "pinnedAt": "2026-11-27T20:53:21.463Z"
+    },
+    "d89809a62bab902e:pt": {
+      "lang": "pt",
+      "source": "frontier-mini-awq",
+      "translation": "frontier-mini-awq",
+      "pinnedAt": "2026-11-27T20:53:21.723Z"
+    },
+    "de1d81fcf1453bfc:ja": {
+      "lang": "ja",
+      "source": "Built by <a href=\"https://mcp-tool-shop.github.io/\">MCP Tool Shop</a>",
+      "translation": "作成：<a href=\"https://mcp-tool-shop.github.io/\">MCP Tool Shop</a>",
+      "pinnedAt": "2026-11-27T20:53:21.339Z"
+    },
+    "f21eb091fefacc8b:zh": {
+      "lang": "zh",
+      "source": "A profile with a `recipe` runs another engine than Ollama: a pinned image\n(`lmsysorg/sglang:v0.5.20-cu130`), a Hugging Face model it downloads at start, and\nextra server arguments. offrig sets tensor parallelism from the GPU count, the context\nlength from the profile, and keeps the engine on the pod's loopback; a recipe cannot\noverride those. For a gated repo, `hf_token_secret` names a RunPod secret, referenced as\n`{{ RUNPOD_SECRET_<name> }}` so the token never enters the pod spec. The launch reports\nweights on disk while the engine downloads them, and stops at once (with the engine's\nlog) if the engine exits. It does not call the engine ready when `/health` answers, and\n`/v1/models` answering is not readiness either. After `/health` returns 200, offrig\nsends one chat completion (`max_tokens` 1, `temperature` 0) and waits up to 30 seconds.\nThe step is `ready` only when that reply has a choice. If the completion fails or times\nout, offrig tries once more after 15 seconds. A second failure is the step\n`engine_unresponsive`: the job stays running, and the error and the engine log are on\nthe job. The next action is `the engine is not answering completions: shut the pod down,\nor wait if it is still warming up`. offrig does not shut the pod down for this, on the\nside-car, the CLI, or the app. A slow first request (graph capture, JIT) is not a reason\nto throw away the download and the load; the plan's deadline still bounds the cost.\nThe hang clock starts from `grep -c` of `Application startup complete` on the same ssh\nread as the log tail, over the whole engine log, not only the last 40 lines. A chatty\nengine can push the startup line out of that tail. The count still starts the clock.\nIf that count is at least one and `/health` then stays down for 3 minutes, the step is\n`engine_hung`: those last 40 lines, the seconds since the count was first seen, and the\nnext action `shut the pod down: the engine finished startup but never became healthy`.\noffrig reports that hang and leaves the pod up. Shutting it down stays with you, the\nsame as a GPU-count mismatch. A GPU-count warning is not prefixed onto that next\naction, or onto the unresponsive one, so the sentence stays exact. An engine process\nthat has already exited is not either report. On the side-car the compensator deletes\nthat pod. On the CLI and the app the command stops with the error and does not delete\nit.",
+      "translation": "一个使用`recipe`的配置会运行与Ollama不同的引擎：一个固定的镜像（`lmsysorg/sglang:v0.5.20-cu130`），一个在启动时下载的Hugging Face模型，以及额外的服务器参数。offrig会根据GPU的数量设置张量并行性，根据配置设置上下文长度，并将引擎保持在pod的环回地址上；一个配方不能覆盖这些设置。对于一个受限的仓库，`hf_token_secret`指定一个RunPod类型的密钥，并以`{{ RUNPOD_SECRET_<name> }}`的形式引用，这样令牌就不会进入pod的配置中。启动时，会报告磁盘上的权重，同时引擎会下载这些权重，如果引擎退出，则会立即停止（并显示引擎的日志）。当`/health`返回结果时，它不会将引擎标记为已就绪，并且`/v1/models`的响应也不是就绪的标志。在`/health`返回200之后，offrig会发送一个聊天完成请求（`max_tokens`为1，`temperature`为0），并等待最多30秒。只有当该回复包含一个选项时，才会执行下一步（`ready`）。如果完成请求失败或超时，offrig会在15秒后再次尝试。如果第二次尝试也失败，则执行下一步（`engine_unresponsive`）：作业将继续运行，错误和引擎日志将保留在作业中。下一步的动作是“引擎没有响应完成请求：关闭pod，或者如果它仍在预热中，则等待”。offrig不会为此关闭pod，无论是侧边栏、CLI还是应用程序。缓慢的第一个请求（图形捕获、JIT）不是丢弃下载和加载的理由；计划的截止日期仍然限制了成本。挂起计时器从同一ssh读取的`Application startup complete`的`grep -c`开始，读取整个引擎日志，而不仅仅是最后40行。一个活跃的引擎可能会将启动行推到日志的末尾。计数仍然会启动计时器。如果该计数至少为1，并且`/health`在接下来的3分钟内保持不变，则执行下一步（`engine_hung`）：显示最后40行、自首次看到计数以来的秒数，以及下一步的动作（`shut the pod down: the engine finished startup but never became healthy`）。\noffrig会报告挂起情况，并保持pod运行。关闭pod的决定由您自行决定，与GPU数量不匹配的情况相同。GPU数量警告不会附加到下一步的动作或未响应的动作中，因此句子保持不变。已经退出的引擎进程也不会报告。在侧边栏中，补偿器会删除该pod。在CLI和应用程序中，命令会停止并显示错误，但不会删除它。",
+      "pinnedAt": "2026-11-27T20:53:21.091Z"
     }
   }
 }
