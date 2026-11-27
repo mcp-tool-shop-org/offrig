@@ -6,6 +6,12 @@ All notable changes to offrig are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **On-pod self-stop API fallback when `runpodctl` is missing (`crates/offrig-core/src/spec.rs`):**
+  - When a planned pod's image lacks `runpodctl`, `self_stop_timer` now falls back to calling RunPod's REST API v2 (`DELETE https://api.runpod.io/v2/pods/$RUNPOD_POD_ID` retried 4 times with exponential backoff and HTTP `429` `Retry-After` handling, then `POST .../action` `{"action":"terminate"}`) via `python3` (`import ssl, urllib.request` preflight, falling through to `curl` at fire time if Python fails) or `curl` second, authenticating with the pod-injected `RUNPOD_POD_ID` and pod-scoped `RUNPOD_API_KEY` without downloading anything or changing any image. The `runpodctl` branch likewise retries `pod delete` / `remove pod` before any stop fallback.
+  - At boot, bootstrap logs a non-gating `GET /v2/pods/$RUNPOD_POD_ID` status check to `bootstrap.log` on REST-fallback pods and writes `offrig self-stop: armed fire_at=<n> via <tool>` (or `offrig self-stop: UNAVAILABLE (<missing>)`) to `self-stop.status`. If all termination attempts fail and a last-resort `stop` is attempted, bootstrap first appends `offrig self-stop: STOPPED NOT TERMINATED: volume still billing` to `self-stop.status` (surfaced by `self_stop_warning`). `RUNPOD_API_KEY` is never printed or written to `self-stop.status` or `bootstrap.log`.
+
 ## [1.4.0] - 2026-11-25
 
 **A pod offrig launches from a plan is never left running unseen, and MCP clients can follow a launch as a task.** For planned launches, the watchdog now finds pods whose launching process died before the pod was recorded and terminates them (or, when it cannot tell, flags them in `offrig_status` as `unknown_create_pods`), a launch probes before it creates, and the pod carries an on-pod deadline timer. Pods started by hand with `offrig up` or from the app are not covered. The side-car also serves `offrig_launch` as an MCP task and the `offrig-session` procedure as an MCP skill.
