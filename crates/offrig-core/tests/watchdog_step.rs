@@ -853,3 +853,69 @@ fn duplicate_sweep_and_closed_plan_journal_branches() {
     );
     let _ = jcb;
 }
+
+#[test]
+fn vanished_pod_past_margin_books_persisted_real_rate_capped_at_deadline_plus_margin() {
+    let m = serve(|req, _| match req.route().as_str() {
+        "GET /pods" => (200, "[]".to_string()),
+        _ => (404, "{}".to_string()),
+    });
+    let store = Store::open_in_memory().expect("store");
+    let now = offrig_core::cost::now_unix();
+    let commit = now - 1020;
+    store.set_budget_cap(50.0).expect("cap");
+    let p = store
+        .create_plan(NewPlan {
+            profile: "job".into(),
+            gpu_count: 1,
+            gpu_types: vec!["NVIDIA RTX A4000".into()],
+            max_hours: 0.0834,
+            max_price_hr: 2.09,
+            note: None,
+        })
+        .expect("plan");
+    store.commit_plan(p.id).expect("commit");
+    store.attach_pod(p.id, "p1").expect("attach");
+    store.set_plan_cost_per_hr(p.id, 1.44).expect("rate");
+    // Plan committed and started 1020s ago (~5 min deadline -> 420s elapsed by fire_at = deadline + 120s).
+    // Even though now is 600s past fire_at, booking caps at 420s * $1.44/hr = $0.168 -> $0.17.
+    let mut plan = store.plan(p.id).expect("r").expect("p");
+    plan.committed_at = Some(commit);
+    plan.started_at = Some(commit);
+    assert_eq!(watchdog::spend_when_gone(&plan, 1.44, now), 0.17);
+    let _ = m;
+}
+
+#[test]
+fn stopped_pod_past_deadline_raises_volume_still_billing_warning_on_watchdog() {
+    for status in ["EXITED", "STOPPED"] {
+        let pods = pods_json(status);
+        let m = serve(move |req, _| match req.route().as_str() {
+            "GET /pods" => (200, pods.clone()),
+            "DELETE /pods/p1" => (500, "down".to_string()),
+            _ => (404, "{}".to_string()),
+        });
+        let store = Store::open_in_memory().expect("store");
+        let plan = committed(&store, 0.0001, Some("p1"));
+        assert!(watchdog::step(&store, &rp(&m), plan.id).is_err());
+        assert_eq!(
+            store.plan_self_stop(plan.id).expect("read").as_deref(),
+            Some(offrig_core::spec::SELF_STOP_STOPPED_LINE),
+            "{status}: must persist loud STOPPED NOT TERMINATED line even if delete fails"
+        );
+        let verdict = watchdog::decide(
+            &plan,
+            &watchdog::PodSeen::Present(Box::new(
+                serde_json::from_str(&pods_json(status))
+                    .ok()
+                    .and_then(|mut v: Vec<offrig_core::runpod::Pod>| v.pop())
+                    .expect("pod"),
+            )),
+            offrig_core::cost::now_unix(),
+        );
+        assert!(
+            matches!(verdict, Verdict::Terminate { ref reason } if reason.contains("STOPPED NOT TERMINATED: volume still billing")),
+            "{status}: {verdict:?}"
+        );
+    }
+}

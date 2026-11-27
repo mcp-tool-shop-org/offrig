@@ -193,8 +193,15 @@ pub const SELF_STOP_STATUS_FILE: &str = "/workspace/offrig/self-stop.status";
 pub const SELF_STOP_PREFIX: &str = "offrig self-stop: ";
 /// Status recorded when bootstrap's self-stop status cannot be read over SSH.
 pub const SELF_STOP_UNKNOWN_PREFIX: &str = "self-stop status unknown";
-const SELF_STOP_STOPPED_LINE: &str =
+pub const SELF_STOP_STOPPED_LINE: &str =
     "offrig self-stop: STOPPED NOT TERMINATED: volume still billing";
+
+/// True when RunPod reports a pod stopped (`EXITED` or `STOPPED`) rather than running
+/// or terminated: its container is down while its pod volume continues billing until
+/// terminated.
+pub fn pod_is_stopped(status: &str) -> bool {
+    status.eq_ignore_ascii_case("EXITED") || status.eq_ignore_ascii_case("STOPPED")
+}
 
 const SELF_STOP_START: &str = "# offrig-self-stop-begin\n";
 const SELF_STOP_END: &str = "# offrig-self-stop-end\n";
@@ -297,7 +304,9 @@ for i in range(4):
             ra = hdr.get("Retry-After") if code == 429 and hdr is not None else None
             if ra is not None:
                 try:
-                    w = max(0.0, min(float(ra.strip()), 60.0))
+                    v = float(ra.strip())
+                    if v == v:
+                        w = max(0.0, min(v, 60.0))
                 except Exception:
                     pass
             if w > 0:
@@ -320,8 +329,9 @@ except Exception as exc:
          if [ -z \"${{RUNPOD_API_KEY:-}}\" ]; then _offrig_ss_missing=\"${{_offrig_ss_missing:+$_offrig_ss_missing, }}RUNPOD_API_KEY\"; fi; \
          mkdir -p \"{state_dir}\"; \
          if [ -z \"$_offrig_ss_missing\" ]; then \
-           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at} via $_offrig_ss_tool\" | tee \"{status_file}\"; \
-           (_offrig_py_api() {{ \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at} via $_offrig_ss_tool\" | tee -a \"{status_file}\"; \
+           (_offrig_log=\"{state_dir}/bootstrap.log\"; \
+           _offrig_py_api() {{ \
              python3 -c '{py_api}' \"$1\" \"{api_base}\" \"$2\"; \
            }}; \
            _offrig_curl_req() {{ \
@@ -336,7 +346,7 @@ except Exception as exc:
              for _i in 1 2 3 4; do \
                _out=$(_offrig_curl_req DELETE \"\" \"\"); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in [0-9][0-9][0-9]) ;; *) _c=\"000\" ;; esac; \
                case \"$_c\" in 2*) return 0 ;; esac; \
-               echo \"[offrig] self-stop DELETE $_i/4 failed ($_c)\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+               echo \"[offrig] self-stop DELETE $_i/4 failed ($_c)\" >> \"$_offrig_log\" 2>&1; \
                if [ \"$_i\" -lt 4 ]; then \
                  _w=$_d; _d=$((_d * 2)); \
                  if [ \"$_c\" = \"429\" ]; then \
@@ -345,40 +355,43 @@ except Exception as exc:
                      _ra=\"${{_ra%%[! 0-9]*}}\"; \
                      while [ \"${{_ra# }}\" != \"$_ra\" ]; do _ra=\"${{_ra# }}\"; done; \
                      _ra=\"${{_ra%%[!0-9]*}}\"; \
-                     case \"$_ra\" in \"\"|*[!0-9]*) ;; *) [ \"$_ra\" -gt 60 ] && _ra=60; _w=$_ra ;; esac ;; \
+                     if [ -n \"$_ra\" ]; then \
+                       while [ \"${{_ra#0}}\" != \"$_ra\" ]; do _ra=\"${{_ra#0}}\"; done; \
+                       case \"$_ra\" in \"\") _w=0 ;; [0-9]) _w=$_ra ;; [0-9][0-9]) [ \"$_ra\" -gt 60 ] && _ra=60; _w=$_ra ;; *) _w=60 ;; esac; \
+                     fi ;; \
                    esac; \
                  fi; \
                  if [ \"$_w\" -gt 0 ]; then sleep \"$_w\"; fi; \
                fi; \
              done; \
              _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"terminate\"}}'); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in 2*) return 0 ;; esac; \
-             echo \"[offrig] self-stop terminate action failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+             echo \"[offrig] self-stop terminate action failed (${{_c:-000}})\" >> \"$_offrig_log\" 2>&1; \
              return 1; \
            }}; \
            if [ \"$_offrig_ss_tool\" = \"python3\" ]; then \
-             _offrig_py_api probe {retry_base_secs} >> \"{state_dir}/bootstrap.log\" 2>&1 || true; \
+             _offrig_py_api probe {retry_base_secs} >> \"$_offrig_log\" 2>&1 || true; \
            elif [ \"$_offrig_ss_tool\" = \"curl\" ]; then \
              _out=$(_offrig_curl_req GET \"\" \"\"); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in [0-9][0-9][0-9]) ;; *) _c=\"000\" ;; esac; \
-             echo \"[offrig] self-stop boot GET /pods/${{RUNPOD_POD_ID}}: $_c\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+             echo \"[offrig] self-stop boot GET /pods/${{RUNPOD_POD_ID}}: $_c\" >> \"$_offrig_log\" 2>&1; \
            fi; \
-           now=$(date -u +%s); wait=$(({fire_at} - now)); \
+           now=$(date -u +%s 2>/dev/null || true); [ -n \"$now\" ] || now={fire_at}; case \"$now\" in *[!0-9]*) now={fire_at} ;; esac; wait=$(({fire_at} - now)); \
            if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
-           echo \"[offrig] on-pod deadline {fire_at} reached; terminating ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+           echo \"[offrig] on-pod deadline {fire_at} reached; terminating ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"$_offrig_log\" 2>&1; \
            _offrig_term=0; \
            case \"$_offrig_ss_tool\" in \
              runpodctl) \
                _d={retry_base_secs}; \
                for _i in 1 2 3 4; do \
-                 if runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1; then \
+                 if runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1 || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1; then \
                    _offrig_term=1; break; \
                  fi; \
                  if [ \"$_i\" -lt 4 ] && [ \"$_d\" -gt 0 ]; then sleep \"$_d\"; _d=$((_d * 2)); fi; \
                done ;; \
              python3) \
-               if _offrig_py_api terminate {retry_base_secs} >> \"{state_dir}/bootstrap.log\" 2>&1; then \
+               if _offrig_py_api terminate {retry_base_secs} >> \"$_offrig_log\" 2>&1; then \
                  _offrig_term=1; \
                elif command -v curl >/dev/null 2>&1; then \
-                 echo \"[offrig] self-stop python3 failed; falling through to curl\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+                 echo \"[offrig] self-stop python3 failed; falling through to curl\" >> \"$_offrig_log\" 2>&1; \
                  if _offrig_curl_term; then _offrig_term=1; fi; \
                fi ;; \
              curl) \
@@ -386,25 +399,25 @@ except Exception as exc:
            esac; \
            if [ \"$_offrig_term\" -ne 1 ]; then \
              printf '%s\\n' \"{SELF_STOP_STOPPED_LINE}\" >> \"{status_file}\"; \
-             echo \"[offrig] {SELF_STOP_STOPPED_LINE}\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
+             echo \"[offrig] {SELF_STOP_STOPPED_LINE}\" >> \"$_offrig_log\" 2>&1; \
              case \"$_offrig_ss_tool\" in \
                runpodctl) \
-                 runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
-                 || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 || exit 1 ;; \
+                 runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1 \
+                 || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1 || exit 1 ;; \
                python3) \
-                 if ! _offrig_py_api stop 0 >> \"{state_dir}/bootstrap.log\" 2>&1; then \
+                 if ! _offrig_py_api stop 0 >> \"$_offrig_log\" 2>&1; then \
                    if command -v curl >/dev/null 2>&1; then \
                      _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"stop\"}}'); _c=\"${{_out##*__CODE__:}}\"; \
-                     case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; esac; \
+                     case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"$_offrig_log\" 2>&1; exit 1 ;; esac; \
                    else exit 1; fi; \
                  fi ;; \
                curl) \
                  _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"stop\"}}'); _c=\"${{_out##*__CODE__:}}\"; \
-                 case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; esac ;; \
+                 case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"$_offrig_log\" 2>&1; exit 1 ;; esac ;; \
              esac; \
            fi) </dev/null >/dev/null 2>&1 & \
          else \
-           printf '%s\\n' \"{SELF_STOP_PREFIX}UNAVAILABLE ($_offrig_ss_missing)\" | tee \"{status_file}\"; \
+           printf '%s\\n' \"{SELF_STOP_PREFIX}UNAVAILABLE ($_offrig_ss_missing)\" | tee -a \"{status_file}\"; \
          fi\n\
          {SELF_STOP_END}"
     )
@@ -1296,19 +1309,46 @@ mod tests {
         pod_id: Option<&str>,
         api_key: Option<&str>,
     ) -> SnippetRun {
+        run_snippet_with(sh, case_dir, bin_dir, 0, 0, None, api_base, pod_id, api_key)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_snippet_with(
+        sh: &std::path::Path,
+        case_dir: &std::path::Path,
+        bin_dir: &std::path::Path,
+        deadline: i64,
+        retry_base_secs: u64,
+        pre_status: Option<&str>,
+        api_base: &str,
+        pod_id: Option<&str>,
+        api_key: Option<&str>,
+    ) -> SnippetRun {
         let state_dir = case_dir.join("state");
         std::fs::create_dir_all(&state_dir).expect("state_dir");
+        if let Some(prior) = pre_status {
+            std::fs::write(state_dir.join("self-stop.status"), prior).expect("pre_status");
+        }
         let state_posix = posix_dir(sh, &state_dir);
         let status_posix = format!("{state_posix}/self-stop.status");
         let bin_posix = posix_dir(sh, bin_dir);
 
-        let snippet = self_stop_timer_in(0, &state_posix, &status_posix, api_base, 0);
+        let snippet = self_stop_timer_in(
+            deadline,
+            &state_posix,
+            &status_posix,
+            api_base,
+            retry_base_secs,
+        );
         assert!(
             !snippet.contains(TEST_KEY),
             "snippet must never embed secret"
         );
+        let syntax_file = case_dir.join("syntax.sh");
+        std::fs::write(&syntax_file, &snippet).expect("write syntax.sh");
+        let syntax_posix = format!("{}/syntax.sh", posix_dir(sh, case_dir));
         let mut syntax = std::process::Command::new(sh);
-        syntax.arg("-n").arg("-c").arg(&snippet);
+        syntax.arg("-n").arg(&syntax_posix);
         let syntax_out =
             crate::proc::run_with_timeout(&mut syntax, std::time::Duration::from_secs(5), "sh -n")
                 .expect("sh -n");
@@ -1319,8 +1359,11 @@ mod tests {
         );
 
         let script = format!("PATH='{bin_posix}'; export PATH\n{snippet}\nwait\n");
+        let run_file = case_dir.join("run.sh");
+        std::fs::write(&run_file, &script).expect("write run.sh");
+        let run_posix = format!("{}/run.sh", posix_dir(sh, case_dir));
         let mut cmd = std::process::Command::new(sh);
-        cmd.arg("-c").arg(&script);
+        cmd.arg(&run_posix);
         match pod_id {
             Some(v) => {
                 cmd.env("RUNPOD_POD_ID", v);
@@ -1392,14 +1435,19 @@ mod tests {
         assert!(snippet.contains(SELF_STOP_STATUS_FILE));
         assert!(!snippet.contains(TEST_KEY));
 
-        let mut cmd = std::process::Command::new(sh);
-        cmd.arg("-n").arg("-c").arg(&snippet);
+        let dir = temp_case_dir("prod-syntax");
+        let f = dir.join("syntax.sh");
+        std::fs::write(&f, &snippet).expect("write");
+        let f_posix = format!("{}/syntax.sh", posix_dir(&sh, &dir));
+        let mut cmd = std::process::Command::new(&sh);
+        cmd.arg("-n").arg(&f_posix);
         let out = crate::proc::run_with_timeout(
             &mut cmd,
             std::time::Duration::from_secs(5),
             "sh -n prod snippet",
         )
         .expect("sh -n");
+        let _ = std::fs::remove_dir_all(&dir);
         assert!(out.success(), "sh -n failed: {}", out.stderr);
         assert!(out.stderr.is_empty(), "unexpected stderr: {}", out.stderr);
     }
@@ -1881,5 +1929,320 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn self_stop_snippet_preserves_history_across_restarts_and_handles_empty_date() {
+        let sh = find_sh();
+        let cu = discover_tool(&sh, "curl");
+
+        // Item 4 (`tee -a`): prior self-stop.status lines survive a bootstrap restart.
+        let dir = temp_case_dir("preserve-history");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        populate_coreutils(&sh, &bin);
+        write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+        let mock = LocalMock::start(|_| (204, String::new()));
+        let prior = format!("{SELF_STOP_STOPPED_LINE}\n");
+        let res = run_snippet_with(
+            &sh,
+            &dir,
+            &bin,
+            0,
+            0,
+            Some(&prior),
+            &mock.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(
+            res.status,
+            format!("{SELF_STOP_STOPPED_LINE}\noffrig self-stop: armed fire_at=120 via curl\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Item 6 (empty `date`): timer fires immediately instead of sleeping ~56 years.
+        let dir2 = temp_case_dir("empty-date");
+        let bin2 = dir2.join("bin");
+        std::fs::create_dir_all(&bin2).expect("bin2");
+        populate_coreutils(&sh, &bin2);
+        write_shim(&bin2, "date", "exit 0");
+        write_shim(&bin2, "sleep", "exit 99");
+        write_shim(&bin2, "curl", &format!("exec '{cu}' \"$@\""));
+        let mock2 = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (200, "{}".into())
+            } else {
+                (204, String::new())
+            }
+        });
+        let res2 = run_snippet_with(
+            &sh,
+            &dir2,
+            &bin2,
+            1_900_000_000,
+            0,
+            None,
+            &mock2.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(
+            res2.status,
+            "offrig self-stop: armed fire_at=1900000120 via curl\n"
+        );
+        let reqs2 = mock2.requests();
+        assert!(
+            reqs2.iter().any(|r| r.method == "DELETE"),
+            "empty `date` must fire DELETE immediately without sleeping: {reqs2:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn self_stop_snippet_handles_retry_after_edge_cases() {
+        let sh = find_sh();
+        let py = discover_tool(&sh, "python3");
+        let cu = discover_tool(&sh, "curl");
+
+        // Item 5 + Item 7: non-numeric, HTTP-date, over-60 ("120"), and 20-digit oversized Retry-After.
+        let cases = [
+            ("nonnum", "soon", 2u64),
+            ("httpdate", "Wed, 21 Oct 2026 07:28:00 GMT", 2u64),
+            ("over60", "120", 60u64),
+            ("huge", "99999999999999999999", 60u64),
+        ];
+
+        for (label, header_val, expected_sleep) in cases {
+            for (tool, with_py) in [("curl", false), ("python3", true)] {
+                let dir = temp_case_dir(&format!("ra-{label}-{tool}"));
+                let bin = dir.join("bin");
+                std::fs::create_dir_all(&bin).expect("bin");
+                populate_coreutils(&sh, &bin);
+                let sleep_log = dir.join("sleep.calls");
+                let sleep_posix = posix_dir(&sh, &dir) + "/sleep.calls";
+                if with_py {
+                    let stub_dir = dir.join("pystub");
+                    std::fs::create_dir_all(&stub_dir).expect("stub");
+                    std::fs::write(
+                        stub_dir.join("sitecustomize.py"),
+                        "import os, time\np = os.environ.get('OFFRIG_TEST_SLEEP_LOG')\nif p:\n    def _s(x):\n        open(p, 'a').write(str(int(round(x))) + '\\n')\n    time.sleep = _s\n",
+                    )
+                    .expect("sitecustomize");
+                    let stub_posix = posix_dir(&sh, &stub_dir);
+                    write_shim(
+                        &bin,
+                        "python3",
+                        &format!(
+                            "PYTHONPATH='{stub_posix}' OFFRIG_TEST_SLEEP_LOG='{sleep_posix}' exec '{py}' \"$@\""
+                        ),
+                    );
+                } else {
+                    write_shim(
+                        &bin,
+                        "sleep",
+                        &format!("printf '%s\\n' \"$1\" >> '{sleep_posix}'"),
+                    );
+                    write_shim(&bin, "curl", &format!("exec '{cu}' \"$@\""));
+                }
+
+                let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let hits_c = std::sync::Arc::clone(&hits);
+                let hdr = header_val.to_string();
+                let mock = LocalMock::start_with_headers(move |req| {
+                    if req.method == "GET" {
+                        return (200, Vec::new(), "{}".into());
+                    }
+                    let n = hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if n == 0 {
+                        (
+                            429,
+                            vec![("Retry-After".into(), hdr.clone())],
+                            String::new(),
+                        )
+                    } else {
+                        (204, Vec::new(), String::new())
+                    }
+                });
+
+                let res = run_snippet_with(
+                    &sh,
+                    &dir,
+                    &bin,
+                    0,
+                    2,
+                    None,
+                    &mock.url,
+                    Some("pod_abc"),
+                    Some(TEST_KEY),
+                );
+                assert_eq!(
+                    res.status,
+                    format!("offrig self-stop: armed fire_at=120 via {tool}\n")
+                );
+                let recorded = std::fs::read_to_string(&sleep_log).unwrap_or_default();
+                let slept: Vec<u64> = recorded
+                    .lines()
+                    .map(|l| l.trim().parse().expect("sleep int"))
+                    .collect();
+                assert_eq!(
+                    slept,
+                    vec![expected_sleep],
+                    "{tool}/{label}: Retry-After={header_val:?} slept {slept:?}"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    #[test]
+    fn self_stop_snippet_treats_delete_404_and_python_failure_without_curl_as_stop_fallback() {
+        let sh = find_sh();
+        let py = discover_tool(&sh, "python3");
+
+        // Item 7: DELETE returning 404 counts as failure, leaving conservative STOPPED warning.
+        let dir = temp_case_dir("delete-404");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        populate_coreutils(&sh, &bin);
+        write_shim(&bin, "python3", &format!("exec '{py}' \"$@\""));
+        let mock = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (200, "{}".into())
+            } else {
+                (404, "not found".into())
+            }
+        });
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+        assert_eq!(
+            res.status,
+            format!("offrig self-stop: armed fire_at=120 via python3\n{SELF_STOP_STOPPED_LINE}\n")
+        );
+        let reqs = mock.requests();
+        assert_eq!(reqs.iter().filter(|r| r.method == "DELETE").count(), 4);
+        let posts: Vec<serde_json::Value> = reqs
+            .iter()
+            .filter(|r| r.method == "POST")
+            .map(|r| serde_json::from_str(&r.body).expect("json"))
+            .collect();
+        assert_eq!(
+            posts,
+            vec![
+                serde_json::json!({"action": "terminate"}),
+                serde_json::json!({"action": "stop"}),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Item 7: Python path with curl absent and every call returning 500.
+        let dir2 = temp_case_dir("py-no-curl-all-fail");
+        let bin2 = dir2.join("bin");
+        std::fs::create_dir_all(&bin2).expect("bin2");
+        populate_coreutils(&sh, &bin2);
+        write_shim(&bin2, "python3", &format!("exec '{py}' \"$@\""));
+        let mock2 = LocalMock::start(|req| {
+            if req.method == "GET" {
+                (200, "{}".into())
+            } else {
+                (500, format!("echoed {TEST_KEY}"))
+            }
+        });
+        let res2 = run_snippet(
+            &sh,
+            &dir2,
+            &bin2,
+            &mock2.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(
+            res2.status,
+            format!("offrig self-stop: armed fire_at=120 via python3\n{SELF_STOP_STOPPED_LINE}\n")
+        );
+        let reqs2 = mock2.requests();
+        assert_eq!(reqs2.iter().filter(|r| r.method == "DELETE").count(), 4);
+        assert!(res2.bootstrap_log.contains("stop failed (500)"));
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn self_stop_snippet_stop_python_alone_and_runpodctl_remove_pod() {
+        let sh = find_sh();
+        let py = discover_tool(&sh, "python3");
+
+        // Item 7: last-resort stop succeeding through Python alone (DELETE + terminate 500, stop 200).
+        let dir = temp_case_dir("py-stop-ok");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        populate_coreutils(&sh, &bin);
+        write_shim(&bin, "python3", &format!("exec '{py}' \"$@\""));
+        let mock = LocalMock::start(|req| {
+            if req.method == "GET" {
+                return (200, "{}".into());
+            }
+            if req.method == "POST"
+                && serde_json::from_str::<serde_json::Value>(&req.body)
+                    .is_ok_and(|v| v["action"] == "stop")
+            {
+                return (200, "{}".into());
+            }
+            (500, "fail".into())
+        });
+        let res = run_snippet(&sh, &dir, &bin, &mock.url, Some("pod_abc"), Some(TEST_KEY));
+        assert_eq!(
+            res.status,
+            format!("offrig self-stop: armed fire_at=120 via python3\n{SELF_STOP_STOPPED_LINE}\n")
+        );
+        let posts: Vec<serde_json::Value> = mock
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "POST")
+            .map(|r| serde_json::from_str(&r.body).expect("json"))
+            .collect();
+        assert_eq!(
+            posts,
+            vec![
+                serde_json::json!({"action": "terminate"}),
+                serde_json::json!({"action": "stop"}),
+            ]
+        );
+        assert!(
+            !res.bootstrap_log.contains("stop failed"),
+            "{}",
+            res.bootstrap_log
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Item 7: runpodctl with `pod delete` failing and `remove pod` succeeding (no stop, 1 round).
+        let dir2 = temp_case_dir("runpodctl-remove-ok");
+        let bin2 = dir2.join("bin");
+        std::fs::create_dir_all(&bin2).expect("bin2");
+        populate_coreutils(&sh, &bin2);
+        let calls_file = dir2.join("runpodctl.calls");
+        let calls_posix = posix_dir(&sh, &dir2) + "/runpodctl.calls";
+        write_shim(
+            &bin2,
+            "runpodctl",
+            &format!(
+                "printf '%s\\n' \"$*\" >> '{calls_posix}'\ncase \"$1 $2\" in 'remove pod') exit 0;; *) exit 1;; esac"
+            ),
+        );
+        let res2 = run_snippet(
+            &sh,
+            &dir2,
+            &bin2,
+            &mock.url,
+            Some("pod_abc"),
+            Some(TEST_KEY),
+        );
+        assert_eq!(
+            res2.status,
+            "offrig self-stop: armed fire_at=120 via runpodctl\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&calls_file).expect("calls"),
+            "pod delete pod_abc\nremove pod pod_abc\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 }

@@ -284,8 +284,16 @@ pub fn decide(plan: &Plan, seen: &PodSeen, now: i64) -> Verdict {
         (Some(id), PodSeen::Absent) => Verdict::Close {
             reason: format!("pod {id} no longer exists"),
         },
-        (Some(id), PodSeen::Present(_)) if past => Verdict::Terminate {
-            reason: format!("plan deadline reached; terminating pod {id}"),
+        (Some(id), PodSeen::Present(p)) if past => Verdict::Terminate {
+            reason: if crate::spec::pod_is_stopped(&p.desired_status) {
+                format!(
+                    "plan deadline reached and pod {id} is {} ({}); terminating pod {id}",
+                    p.desired_status,
+                    crate::spec::SELF_STOP_STOPPED_LINE
+                )
+            } else {
+                format!("plan deadline reached; terminating pod {id}")
+            },
         },
         (Some(_), PodSeen::Present(_)) => Verdict::Wait,
     }
@@ -297,6 +305,16 @@ pub fn spend(plan: &Plan, rate_per_hr: f64, now: i64) -> f64 {
     let from = plan.started_at.or(plan.committed_at).unwrap_or(now);
     let hours = (now - from).max(0) as f64 / 3600.0;
     (rate_per_hr * hours * 100.0).ceil() / 100.0
+}
+
+/// Spend when the pod is already gone: if the plan had a deadline, end the booking clock
+/// at `min(now, deadline + SELF_STOP_MARGIN_SECS)` so a late close after an on-pod
+/// backstop deletion does not count time after the timer fired.
+pub fn spend_when_gone(plan: &Plan, rate_per_hr: f64, now: i64) -> f64 {
+    let end = plan.deadline().map_or(now, |d| {
+        now.min(d.saturating_add(crate::spec::SELF_STOP_MARGIN_SECS))
+    });
+    spend(plan, rate_per_hr, end)
 }
 
 pub fn heartbeat_key(plan_id: i64) -> String {
@@ -835,6 +853,7 @@ pub fn step_with_config(
                         }),
                     )?;
                     store.attach_pod(plan_id, &found.id)?;
+                    store.set_plan_cost_per_hr(plan_id, found.cost_per_hr)?;
                     store.journal_outcome(
                         ja,
                         &format!("attached orphan pod {} ({})", found.id, how.as_str()),
@@ -849,12 +868,24 @@ pub fn step_with_config(
             }
         }
     };
+    if let PodSeen::Present(p) = &seen {
+        store.set_plan_cost_per_hr(plan_id, p.cost_per_hr)?;
+        if plan.deadline().is_some_and(|d| now >= d)
+            && crate::spec::pod_is_stopped(&p.desired_status)
+        {
+            store.set_plan_self_stop(plan_id, crate::spec::SELF_STOP_STOPPED_LINE)?;
+        }
+    }
     let verdict = decide(&plan, &seen, now);
     match &verdict {
         Verdict::Terminate { reason } => {
             let rate = match &seen {
-                PodSeen::Present(p) => p.cost_per_hr,
-                _ => plan.max_price_hr,
+                PodSeen::Present(p) if p.cost_per_hr > 0.0 && p.cost_per_hr.is_finite() => {
+                    p.cost_per_hr
+                }
+                _ => store
+                    .plan_cost_per_hr(plan_id)?
+                    .unwrap_or(plan.max_price_hr),
             };
             let j = store.journal(
                 "watchdog_terminate",
@@ -868,10 +899,14 @@ pub fn step_with_config(
             store.close_plan(plan_id, spend(&plan, rate, now))?;
         }
         Verdict::Close { .. } => {
-            // The pod's last rate is unknown once it is gone; charge the plan's
-            // ceiling so the books never understate spend.
+            // If the pod vanished or was self-deleted, use the persisted real rate
+            // (falling back to the ceiling only if never recorded) and cap the clock
+            // at deadline + SELF_STOP_MARGIN_SECS so late closes do not overbook.
             let cost = if plan.pod_id.is_some() {
-                spend(&plan, plan.max_price_hr, now)
+                let rate = store
+                    .plan_cost_per_hr(plan_id)?
+                    .unwrap_or(plan.max_price_hr);
+                spend_when_gone(&plan, rate, now)
             } else {
                 0.0
             };
@@ -973,6 +1008,17 @@ mod tests {
         // started_at = 60; one hour later at 8.36/hr
         assert!((spend(&p, 8.36, 3660) - 8.36).abs() < 1e-9);
         assert_eq!(spend(&p, 8.36, 0), 0.0, "never negative");
+    }
+
+    #[test]
+    fn spend_when_gone_caps_at_deadline_plus_self_stop_margin() {
+        // committed_at = 0, started_at = 60, max_hours = 0.0834 (~300s deadline) -> fire_at = 420.
+        let p = plan("committed", Some("p1"), Some(0), 0.0834);
+        assert_eq!(p.deadline(), Some(300));
+        // Late host close (10 minutes past fire_at) books only up to deadline + 120s (360s from start).
+        assert_eq!(spend_when_gone(&p, 1.44, 1020), 0.15);
+        // Before fire_at still books only elapsed runtime.
+        assert_eq!(spend_when_gone(&p, 1.44, 210), 0.06);
     }
 
     #[test]

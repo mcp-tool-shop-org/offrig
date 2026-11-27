@@ -504,11 +504,14 @@ mod tests {
     }
 
     fn new_plan(price: f64) -> NewPlan {
+        // Choose hours such that max_hours + SELF_STOP_MARGIN_SECS/3600 == 1.0 exactly,
+        // keeping each test fixture's worst_case equal to $price.
+        let margin_hours = crate::spec::SELF_STOP_MARGIN_SECS as f64 / 3600.0;
         NewPlan {
             profile: "p".into(),
             gpu_count: 1,
             gpu_types: vec![],
-            max_hours: 1.0,
+            max_hours: 1.0 - margin_hours,
             max_price_hr: price,
             note: None,
         }

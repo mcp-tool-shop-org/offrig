@@ -637,7 +637,11 @@ impl Sidecar {
             .with_store(|s| watchdog::failure(s, job.plan_id))
             .ok()
             .flatten();
-        let rate = job.progress["cost_per_hr"].as_f64();
+        let rate = job.progress["cost_per_hr"].as_f64().or_else(|| {
+            self.with_store(|s| s.plan_cost_per_hr(job.plan_id))
+                .ok()
+                .flatten()
+        });
         // A stopped launch recorded its own cost when it closed the plan; the
         // time-based figure below would keep growing after the pod was terminated.
         let failure = job.progress["failure"].clone();
@@ -939,8 +943,12 @@ impl Sidecar {
                 "held": s.open_completions()?.iter().map(complete::completion_json).collect::<Vec<_>>(),
                 "recent": s.recent_completions(5)?.iter().map(complete::completion_json).collect::<Vec<_>>(),
             });
-            let plans: Vec<Value> = s
-                .open_plans()?
+            let open = s.open_plans()?;
+            let plan_deadlines: std::collections::BTreeMap<i64, i64> = open
+                .iter()
+                .filter_map(|p| p.deadline().map(|d| (p.id, d)))
+                .collect();
+            let plans: Vec<Value> = open
                 .iter()
                 .map(|p| {
                     let cfg = self.ctx.cfg_for_plan(s, p).ok();
@@ -998,6 +1006,7 @@ impl Sidecar {
                 s.unfinished_journal()?,
                 s.ready()?,
                 plans,
+                plan_deadlines,
                 !s.active(Kind::Brief)?.is_empty(),
                 completions,
                 s.unresolved_duplicate_pods()?,
@@ -1016,6 +1025,7 @@ impl Sidecar {
             journal,
             ready,
             open_plans,
+            plan_deadlines,
             has_brief,
             completions,
             unresolved_dups,
@@ -1042,6 +1052,26 @@ impl Sidecar {
             Ok(Err(e)) => (None, Vec::new(), Some(chain(&e))),
             Err(e) => (None, Vec::new(), Some(e.to_string())),
         };
+        let mut open_plans = open_plans;
+        if remote_note.is_none() {
+            for p in &mut open_plans {
+                let Some(pid) = p["plan_id"].as_i64() else {
+                    continue;
+                };
+                let Some(pod_id) = p["pod_id"].as_str() else {
+                    continue;
+                };
+                if plan_deadlines.get(&pid).is_some_and(|&d| now >= d)
+                    && let Some(pod) = pods.iter().find(|pod| pod.id == pod_id)
+                    && offrig_core::spec::pod_is_stopped(&pod.desired_status)
+                {
+                    p["self_stop"] = json!(offrig_core::spec::SELF_STOP_STOPPED_LINE);
+                    let _ = self.with_store(|s| {
+                        s.set_plan_self_stop(pid, offrig_core::spec::SELF_STOP_STOPPED_LINE)
+                    });
+                }
+            }
+        }
         // Only this project's pods are "ours": the lane's own names, and the pod of any
         // open plan (a plan from before lanes holds a plain-lane `offrig-<profile>` pod).
         // Another lane's pods are another project's, and count as other pods.
@@ -1184,6 +1214,14 @@ impl Sidecar {
             .collect();
         let next = if self_stop_warnings.is_empty() {
             next
+        } else if self_stop_warnings
+            .iter()
+            .any(|w| w.contains("STOPPED NOT TERMINATED"))
+        {
+            format!(
+                "WARNING, pod STOPPED NOT TERMINATED (volume still billing): {}. Run offrig_shutdown to terminate the pod. Then: {next}",
+                self_stop_warnings.join("; ")
+            )
         } else if self_stop_warnings.iter().any(|w| w.contains("UNAVAILABLE")) {
             format!(
                 "WARNING, on-pod self-stop is unavailable: {}. Keep the host watchdog running until offrig_shutdown. Then: {next}",

@@ -892,6 +892,13 @@ pub struct NewOutput<'a> {
     pub tokens: Option<i64>,
 }
 
+/// Worst-case RunPod spend for a planned session: `max_price_hr` over `max_hours` plus
+/// [`crate::spec::SELF_STOP_MARGIN_SECS`] (until the on-pod backstop fires), rounded up to cents.
+pub fn plan_worst_case(max_price_hr: f64, max_hours: f64) -> f64 {
+    let hours = max_hours + crate::spec::SELF_STOP_MARGIN_SECS as f64 / 3600.0;
+    (max_price_hr * hours * 100.0).ceil() / 100.0
+}
+
 // ---------------------------------------------------------------- the store
 
 impl Store {
@@ -1854,8 +1861,9 @@ impl Store {
         Ok(None)
     }
 
-    /// A plan prices the worst case (max price x max hours) and is refused if that
-    /// would exceed what the budget has left. Planning spends nothing.
+    /// A plan prices the worst case (`max_price_hr` over `max_hours` plus the on-pod
+    /// self-stop margin) and is refused if that would exceed what the budget has left.
+    /// Planning spends nothing.
     pub fn create_plan(&self, p: NewPlan) -> Result<Plan> {
         if !(p.max_hours > 0.0 && p.max_hours.is_finite()) {
             return Err(Error::Refused("max_hours must be a positive number".into()));
@@ -1865,12 +1873,17 @@ impl Store {
                 "max_price_hr must be positive; read it from offrig_offers".into(),
             ));
         }
-        let worst = (p.max_price_hr * p.max_hours * 100.0).ceil() / 100.0;
+        let worst = plan_worst_case(p.max_price_hr, p.max_hours);
         if let Some(r) = self.refusal(Provider::RunPod, worst)? {
             return Err(Error::Budget(format!(
-                "worst case ${worst:.2} ({}h at ${:.2}/hr) exceeds the ${:.2} left of the ${:.2} budget ({}); \
+                "worst case ${worst:.2} ({}h + {}s margin at ${:.2}/hr) exceeds the ${:.2} left of the ${:.2} budget ({}); \
                  shorten max_hours, pick a cheaper profile, or raise that cap",
-                p.max_hours, p.max_price_hr, r.remaining, r.cap, r.scope
+                p.max_hours,
+                crate::spec::SELF_STOP_MARGIN_SECS,
+                p.max_price_hr,
+                r.remaining,
+                r.cap,
+                r.scope
             )));
         }
         self.conn
@@ -1960,29 +1973,28 @@ impl Store {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(db("starting a plan commit"))?;
         let res = (|| -> Result<()> {
-            if let Some(r) = self.refusal(Provider::RunPod, plan.worst_case)? {
+            let worst = plan
+                .worst_case
+                .max(plan_worst_case(plan.max_price_hr, plan.max_hours));
+            if let Some(r) = self.refusal(Provider::RunPod, worst)? {
                 return Err(Error::Refused(format!(
-                    "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
-                    plan.worst_case, r.remaining, r.scope
+                    "plan {id} needs ${worst:.2} but only ${:.2} of the budget is left under the {}",
+                    r.remaining, r.scope
                 )));
             }
             if let Some(h) = &held {
-                h.check(
-                    plan.worst_case,
-                    self.budget_for(Provider::RunPod)?.committed,
-                    "plan",
-                )?;
+                h.check(worst, self.budget_for(Provider::RunPod)?.committed, "plan")?;
             }
             self.conn
                 .execute(
                     "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
-                    params![id, plan.worst_case, now_unix()],
+                    params![id, worst, now_unix()],
                 )
                 .map_err(db("writing a commit"))?;
             self.conn
                 .execute(
-                    "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1",
-                    params![id, now_unix()],
+                    "UPDATE plans SET state = 'committed', committed_at = ?2, worst_case = ?3 WHERE id = ?1",
+                    params![id, now_unix(), worst],
                 )
                 .map_err(db("marking the plan committed"))?;
             Ok(())
@@ -2145,30 +2157,29 @@ impl Store {
             match current.state.as_str() {
                 "planned" => {
                     precheck(self, &current, false)?;
-                    if let Some(r) = self.refusal(Provider::RunPod, current.worst_case)? {
+                    let worst = current
+                        .worst_case
+                        .max(plan_worst_case(current.max_price_hr, current.max_hours));
+                    if let Some(r) = self.refusal(Provider::RunPod, worst)? {
                         return Err(Error::Budget(format!(
-                            "plan {id} needs ${:.2} but only ${:.2} of the budget is left under the {}",
-                            current.worst_case, r.remaining, r.scope
+                            "plan {id} needs ${worst:.2} but only ${:.2} of the budget is left under the {}",
+                            r.remaining, r.scope
                         )));
                     }
                     if let Some(h) = &held {
-                        h.check(
-                            current.worst_case,
-                            self.budget_for(Provider::RunPod)?.committed,
-                            "plan",
-                        )?;
+                        h.check(worst, self.budget_for(Provider::RunPod)?.committed, "plan")?;
                     }
                     self.conn
                         .execute(
                             "INSERT INTO ledger(plan_id, kind, amount, at, note) VALUES (?1, 'commit', ?2, ?3, 'worst case')",
-                            params![id, current.worst_case, now],
+                            params![id, worst, now],
                         )
                         .map_err(db("writing a commit"))?;
                     let updated = self
                         .conn
                         .execute(
-                            "UPDATE plans SET state = 'committed', committed_at = ?2 WHERE id = ?1 AND state = 'planned'",
-                            params![id, now],
+                            "UPDATE plans SET state = 'committed', committed_at = ?2, worst_case = ?3 WHERE id = ?1 AND state = 'planned'",
+                            params![id, now, worst],
                         )
                         .map_err(db("marking the plan committed"))?;
                     if updated != 1 {
@@ -2374,6 +2385,25 @@ impl Store {
 
     pub fn set_plan_self_stop(&self, plan_id: i64, status: &str) -> Result<()> {
         self.set_setting(&format!("plan_self_stop:{plan_id}"), status)
+    }
+
+    /// The rented pod's actual hourly price recorded at launch/watchdog poll so
+    /// closing a self-deleted plan books at its real rate even if `get_pod` 404s.
+    pub fn plan_cost_per_hr(&self, plan_id: i64) -> Result<Option<f64>> {
+        Ok(self
+            .setting(&format!("plan_cost_per_hr:{plan_id}"))?
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|&r| r > 0.0 && r.is_finite()))
+    }
+
+    pub fn set_plan_cost_per_hr(&self, plan_id: i64, cost_per_hr: f64) -> Result<()> {
+        if cost_per_hr > 0.0 && cost_per_hr.is_finite() {
+            self.set_setting(
+                &format!("plan_cost_per_hr:{plan_id}"),
+                &cost_per_hr.to_string(),
+            )?;
+        }
+        Ok(())
     }
 
     // ---- jobs (long work run in the background; state survives restarts)
@@ -3412,7 +3442,7 @@ mod tests {
                 note: None,
             })
             .expect("fits");
-        assert!((p.worst_case - 12.54).abs() < 1e-9);
+        assert!((p.worst_case - 12.82).abs() < 1e-9);
         assert_eq!(p.state, "planned");
         assert!(
             (s.budget().expect("b").remaining - 15.0).abs() < 1e-9,
@@ -3429,7 +3459,7 @@ mod tests {
                 note: None,
             }
         };
-        let err = s.create_plan(too_big).expect_err("16.72 > 15");
+        let err = s.create_plan(too_big).expect_err("17.00 > 15");
         assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
@@ -3450,8 +3480,8 @@ mod tests {
         s.commit_plan(p.id).expect("commit");
         s.commit_plan(p.id).expect("commit again is a no-op");
         let b = s.budget().expect("b");
-        assert!((b.committed - 6.27).abs() < 1e-9, "{b:?}");
-        assert!((b.remaining - 8.73).abs() < 1e-9, "{b:?}");
+        assert!((b.committed - 6.34).abs() < 1e-9, "{b:?}");
+        assert!((b.remaining - 8.66).abs() < 1e-9, "{b:?}");
         // A second plan cannot spend the committed part.
         let second = s.create_plan(NewPlan {
             profile: "medium".into(),
@@ -3461,7 +3491,7 @@ mod tests {
             max_price_hr: 2.09,
             note: None,
         });
-        assert!(second.is_err(), "10.45 > 8.73 left");
+        assert!(second.is_err(), "10.52 > 8.66 left");
         let after = s.close_plan(p.id, 1.10).expect("close");
         assert!((after.spent - 1.10).abs() < 1e-9);
         assert!((after.committed).abs() < 1e-9);
@@ -3488,9 +3518,9 @@ mod tests {
             .expect("plan");
         s.commit_plan(p.id).expect("commit");
         let b = s.budget().expect("b");
-        assert!((b.floor() - 6.27).abs() < 1e-9, "{b:?}");
+        assert!((b.floor() - 6.34).abs() < 1e-9, "{b:?}");
         let low = s.set_budget_cap(0.0).expect_err("below the committed run");
-        assert!(low.to_string().contains("can't go below $6.27"), "{low}");
+        assert!(low.to_string().contains("can't go below $6.34"), "{low}");
         assert!(s.set_budget_cap(5.0).is_err());
         assert_eq!(
             s.budget().expect("b").cap,
@@ -3501,7 +3531,7 @@ mod tests {
         s.set_budget_cap(b.floor()).expect("the floor");
         let at = s.budget().expect("b");
         assert!(
-            at.remaining.abs() < 1e-9 && (at.committed - 6.27).abs() < 1e-9,
+            at.remaining.abs() < 1e-9 && (at.committed - 6.34).abs() < 1e-9,
             "{at:?}"
         );
         // After the run closes, only what it actually spent holds the floor up.
@@ -3699,9 +3729,19 @@ mod tests {
         s.set_plan_container_disk_gb(p.id, 200).expect("set");
         assert_eq!(s.plan_container_disk_gb(p.id).expect("read"), Some(200));
         assert_eq!(s.plan_container_disk_gb(p.id + 1).expect("read"), None);
+        assert_eq!(s.plan_cost_per_hr(p.id).expect("read"), None);
+        s.set_plan_cost_per_hr(p.id, 1.44).expect("set rate");
+        assert_eq!(s.plan_cost_per_hr(p.id).expect("read"), Some(1.44));
+        assert_eq!(s.plan_cost_per_hr(p.id + 1).expect("read"), None);
+        s.set_plan_cost_per_hr(p.id, 0.0)
+            .expect("ignore non-positive");
+        assert_eq!(s.plan_cost_per_hr(p.id).expect("unchanged"), Some(1.44));
         let back = s.plan(p.id).expect("read").expect("plan");
         assert_eq!(back.gpu_types, p.gpu_types);
-        assert_eq!(back.worst_case, 7.32, "3.5 h at the plan's own 2.09");
+        assert_eq!(
+            back.worst_case, 7.39,
+            "3.5h + 120s margin at the plan's own 2.09"
+        );
     }
 
     #[test]
@@ -3903,7 +3943,7 @@ mod tests {
             s.budget_for(Provider::RunPod).expect("rp"),
             s.budget_for(Provider::OpenRouter).expect("or"),
         );
-        assert!((rp.committed - 2.0).abs() < 1e-9, "{rp:?}");
+        assert!((rp.committed - 2.04).abs() < 1e-9, "{rp:?}");
         assert!((or.committed - 3.01).abs() < 1e-9, "{or:?}");
         s.close_plan(p.id, 0.5).expect("close");
         let rp = s.budget_for(Provider::RunPod).expect("rp");
@@ -3950,7 +3990,7 @@ mod tests {
         assert_eq!(s.budget().expect("b").cap, 38.0, "sum of the provider caps");
         s.commit_completion(new_completion(3.01)).expect("fits");
         let p = jam_plan(&s, 10.0, 2.0);
-        assert!((p.worst_case - 20.0).abs() < 1e-9);
+        assert!((p.worst_case - 20.07).abs() < 1e-9);
     }
 
     #[test]
@@ -3972,14 +4012,14 @@ mod tests {
             .expect_err("provider cap");
         assert!(matches!(err, Error::Budget(_)), "{err}");
         assert!(err.to_string().contains("runpod cap"), "{err}");
-        // The overall ceiling refuses: 5 fits OpenRouter's 8, then 4 more does not fit 10.
+        // The overall ceiling refuses: 5.04 fits OpenRouter's 8, then 5.01 more does not fit 10.
         let p = jam_plan(&s, 5.0, 1.0);
-        s.commit_plan(p.id).expect("5 of 6 and of 10");
+        s.commit_plan(p.id).expect("5.04 of 6 and of 10");
         let err = s
             .commit_completion(new_completion(5.01))
             .expect_err("overall cap");
         assert!(err.to_string().contains("overall cap"), "{err}");
-        assert!(err.to_string().contains("$5.00 left"), "{err}");
+        assert!(err.to_string().contains("$4.96 left"), "{err}");
         assert!(s.open_completions().expect("open").is_empty());
         // OpenRouter's own cap refuses when it is the tighter one.
         s.set_provider_cap(Provider::OpenRouter, 2.0)
@@ -4009,9 +4049,9 @@ mod tests {
         );
         s.set_provider_cap(Provider::OpenRouter, 3.01)
             .expect("at floor");
-        s.set_provider_cap(Provider::RunPod, 2.0)
-            .expect("runpod floor is 2.00, not 5.01");
-        assert!(s.set_provider_cap(Provider::RunPod, 1.99).is_err());
+        s.set_provider_cap(Provider::RunPod, 2.04)
+            .expect("runpod floor is 2.04, not 5.05");
+        assert!(s.set_provider_cap(Provider::RunPod, 2.03).is_err());
         for bad in [-1.0, f64::NAN, f64::INFINITY] {
             assert!(matches!(
                 s.set_provider_cap(Provider::RunPod, bad),
