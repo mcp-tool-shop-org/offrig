@@ -1,6 +1,6 @@
 # offrig: how it works
 
-Mapped at 2026-11-25 from commit d11665b by Atlas 1.26.0.
+Mapped at 2026-11-27 from commit d851148 by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,9 +8,11 @@ Runs big models on RunPod and wires them into Zed through an SSH tunnel, so they
 
 6 parts, mostly Rust (90 files), Python (3), CSS (2), TypeScript (2), Astro (1), JavaScript (1), PowerShell (1) and shell (1). Work enters through 7 doors; ci and release each reach 5 parts, and ci is followed because a pull request goes through it. It deploys a site to GitHub Pages. People run offrig, offrig-app and offrig-mcp.
 
-## What changed since 2026-11-25 (d8bf0bd)
+## What changed since 2026-11-25 (d11665b)
 
-Nothing structural changed since 2026-11-25; 10 files changed content.
+- In crates/offrig-core/src/watchdog.rs, `step_with_config` gained a step, `pod_is_stopped`, before `self_stop_is_armed`.
+- In crates/offrig-core/src/watchdog.rs, `step_with_config` gained a step, `self_stop_is_armed`, after `pod_is_stopped`.
+- 1 file added and 33 changed content, across 4 parts.
 
 ## What comes in
 
@@ -56,13 +58,12 @@ ci writes nothing this map can see.
 
 - **crates/offrig-cli/src/verify_cmd.rs** and **crates/offrig-core/src/calibrate_run.rs** changed together in 7 of 10 commits, and the offrig-cli part imports the offrig-core part.
 - **crates/offrig-core/src/runpod.rs** and **crates/offrig-core/src/stage.rs** changed together in 5 of 9 commits, inside the offrig-core part.
-- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 17 of 34 commits, inside the offrig-mcp part.
-- **crates/offrig-core/src/lib.rs** and **crates/offrig-core/src/store.rs** changed together in 12 of 24 commits, inside the offrig-core part.
+- **crates/offrig-mcp/src/main.rs** and **crates/offrig-mcp/src/ops.rs** changed together in 18 of 35 commits, inside the offrig-mcp part.
 - **crates/offrig-core/src/calibrate_run.rs** and **crates/offrig-core/src/verify.rs** changed together in 5 of 10 commits, inside the offrig-core part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
-Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do.
+Window: 180 days; a pair counts from 3 shared commits, since 11 source files reach 10 revisions; the floor rises to 10 when 25 do.
 
 ## What no test touches
 

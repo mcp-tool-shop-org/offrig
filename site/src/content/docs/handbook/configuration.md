@@ -139,7 +139,7 @@ same major as the runtime's host floor and at or above that floor.
 the pin only. `cuda_runtime = "13.4"` with `cuda_versions = ["12.8"]` is refused, and the
 message names both values. A pin beside `min_cuda` stays refused.
 
-The worst case becomes `max_hours × min(max_price_hr, the dearest listed price left)`. A
+The worst case becomes `(max_hours + 780 s) × min(max_price_hr, the dearest listed price left)`, rounded up to cents (120 s on-pod self-stop margin + 660 s retry span). A
 plan with nothing left is refused, with the reason for every dropped GPU.
 
 The plan stores what is left, and the launch rents only from it. After ssh is up, offrig

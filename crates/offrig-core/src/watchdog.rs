@@ -925,7 +925,7 @@ pub fn step_with_config(
         Verdict::Close { .. } => {
             // If the pod vanished or was self-deleted, use the persisted real rate
             // (falling back to the ceiling only if never recorded) and clamp at
-            // max(min(now, deadline + SELF_STOP_MARGIN_SECS), last_seen) only when armed.
+            // max(min(now, deadline + SELF_STOP_MARGIN_SECS + SELF_STOP_MAX_RETRY_SECS), last_seen) only when armed.
             let cost = if plan.pod_id.is_some() {
                 let rate = store
                     .plan_cost_per_hr(plan_id)

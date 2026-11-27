@@ -22,7 +22,8 @@ pub struct Choice {
     /// Priority order, as in the profile.
     pub gpu_types: Vec<String>,
     /// `min(max_price_hr, highest listed price among gpu_types)`, or just the highest
-    /// listed price with no cap. The plan's worst case is this times its hours.
+    /// listed price with no cap. The plan's worst case prices `max_hours` plus the
+    /// 780 s self-stop tail at this rate.
     pub max_price_hr: f64,
     /// The dearest price listed among the remaining types, before any cap.
     pub highest_listed: f64,
@@ -599,11 +600,11 @@ mod tests {
         );
         assert_eq!(c.highest_listed, 2.09);
         assert_eq!(c.max_price_hr, 2.09, "min(2.20, 2.09)");
-        // The issue's arithmetic: 3.5 h commits $7.32 here, not $12.22.
-        let worst = (c.max_price_hr * 3.5 * 100.0).ceil() / 100.0;
-        assert_eq!(worst, 7.32);
-        let top = (3.49f64 * 3.5 * 100.0).ceil() / 100.0;
-        assert_eq!(top, 12.22);
+        // 3.5 h + 780 s tail commits $7.77 here, not $12.98.
+        let worst = crate::store::plan_worst_case(c.max_price_hr, 3.5);
+        assert_eq!(worst, 7.77);
+        let top = crate::store::plan_worst_case(3.49, 3.5);
+        assert_eq!(top, 12.98);
     }
 
     #[test]
