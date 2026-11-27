@@ -1089,6 +1089,13 @@ mod tests {
                 return p.to_path_buf();
             }
         }
+        #[cfg(not(windows))]
+        {
+            let p = std::path::Path::new("/bin/sh");
+            if p.exists() {
+                return p.to_path_buf();
+            }
+        }
         std::path::PathBuf::from("sh")
     }
 
@@ -1185,7 +1192,7 @@ mod tests {
 
         let script = format!("PATH='{bin_posix}'; export PATH\n{snippet}\nwait\n");
         let mut cmd = std::process::Command::new(sh);
-        cmd.arg("-c").arg(&script).env("PATH", &bin_posix);
+        cmd.arg("-c").arg(&script);
         match pod_id {
             Some(v) => {
                 cmd.env("RUNPOD_POD_ID", v);
