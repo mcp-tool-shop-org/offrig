@@ -2417,19 +2417,21 @@ async fn shutdown_after_self_delete_books_persisted_real_rate_capped_at_deadline
             "GET /pods" => (200, Value::Array(list.clone()).to_string()),
             "POST /pods" => {
                 let want: Value = serde_json::from_str(b).unwrap_or_default();
-                let p = json!({
+                let p_created = json!({
                     "id": "pod-selfdel",
                     "name": want["name"],
                     "status": "RUNNING",
-                    "cost": 1.44,
+                    "cost": 0.0,
                     "ports": ["22/tcp"],
                     "env": want["env"],
                     "ssh": { "direct": { "host": "203.0.113.9", "port": 40022 } },
                     "gpu": { "id": "NVIDIA A100-SXM4-80GB", "count": 1 },
                     "cudaVersion": "13.0"
                 });
-                list.push(p.clone());
-                (200, p.to_string())
+                let mut p_ready = p_created.clone();
+                p_ready["cost"] = json!(1.44);
+                list.push(p_ready);
+                (200, p_created.to_string())
             }
             "GET /pods/pod-selfdel" | "DELETE /pods/pod-selfdel"
                 if deleted_flag.load(std::sync::atomic::Ordering::SeqCst) =>
@@ -2451,6 +2453,21 @@ async fn shutdown_after_self_delete_books_persisted_real_rate_capped_at_deadline
         s.set_budget_cap(50.0).expect("cap");
     }
     let (bin, fake) = install_fake_tools(&dir);
+    std::fs::write(
+        fake.join("rules.json"),
+        json!([
+            {
+                "contains": "nvidia-smi",
+                "stdout": "| NVIDIA-SMI 570.1 Driver Version: 570.1 CUDA Version: 13.0 |\n|   0  NVIDIA A100-SXM4-80GB  Off |\n"
+            },
+            {
+                "contains": "self-stop.status",
+                "stdout": "offrig self-stop: armed fire_at=1900000120 via python3\n"
+            }
+        ])
+        .to_string(),
+    )
+    .expect("rules");
     let client = connect_mcp_extra(
         &dir,
         &url,
@@ -2606,7 +2623,11 @@ async fn status_raises_stopped_not_terminated_warning_when_pod_exited_past_deadl
             .is_some_and(|s| s.contains("STOPPED NOT TERMINATED (volume still billing)")),
         "{b:?}"
     );
-    let _ = plan_id;
+    let ls = Store::open(&db)
+        .expect("reopen")
+        .plan_last_seen(plan_id)
+        .expect("last_seen");
+    assert!(ls.is_some(), "offrig_status must record plan_last_seen");
 
     client.cancel().await.ok();
     let _ = std::fs::remove_dir_all(&dir);

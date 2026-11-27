@@ -2398,12 +2398,28 @@ impl Store {
 
     pub fn set_plan_cost_per_hr(&self, plan_id: i64, cost_per_hr: f64) -> Result<()> {
         if cost_per_hr > 0.0 && cost_per_hr.is_finite() {
-            self.set_setting(
-                &format!("plan_cost_per_hr:{plan_id}"),
-                &cost_per_hr.to_string(),
-            )?;
+            let keep = self
+                .plan_cost_per_hr(plan_id)?
+                .map_or(cost_per_hr, |prev| prev.max(cost_per_hr));
+            self.set_setting(&format!("plan_cost_per_hr:{plan_id}"), &keep.to_string())?;
         }
         Ok(())
+    }
+
+    /// Last timestamp (unix seconds) when a pod attached to `plan_id` was seen alive
+    /// via RunPod API polling (watchdog or `offrig_status`), so a gone-pod clamp
+    /// never under-books below the last observed live poll.
+    pub fn plan_last_seen(&self, plan_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .setting(&format!("plan_last_seen:{plan_id}"))?
+            .and_then(|v| v.parse::<i64>().ok()))
+    }
+
+    pub fn set_plan_last_seen(&self, plan_id: i64, seen_at: i64) -> Result<()> {
+        let keep = self
+            .plan_last_seen(plan_id)?
+            .map_or(seen_at, |prev| prev.max(seen_at));
+        self.set_setting(&format!("plan_last_seen:{plan_id}"), &keep.to_string())
     }
 
     // ---- jobs (long work run in the background; state survives restarts)

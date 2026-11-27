@@ -856,34 +856,176 @@ fn duplicate_sweep_and_closed_plan_journal_branches() {
 
 #[test]
 fn vanished_pod_past_margin_books_persisted_real_rate_capped_at_deadline_plus_margin() {
-    let m = serve(|req, _| match req.route().as_str() {
-        "GET /pods" => (200, "[]".to_string()),
+    fn setup_backdated(
+        name: &str,
+        self_stop: Option<&str>,
+        last_seen_offset: Option<i64>,
+    ) -> (std::path::PathBuf, Store, i64, Mock) {
+        let dir =
+            std::env::temp_dir().join(format!("offrig-wd-gone-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let db = dir.join("offrig.db");
+        let now = offrig_core::cost::now_unix();
+        let commit = now - 1020;
+        let plan_id = {
+            let store = Store::open(&db).expect("store");
+            store.set_budget_cap(50.0).expect("cap");
+            let p = store
+                .create_plan(NewPlan {
+                    profile: "job".into(),
+                    gpu_count: 1,
+                    gpu_types: vec!["NVIDIA RTX A4000".into()],
+                    max_hours: 0.0834,
+                    max_price_hr: 2.09,
+                    note: None,
+                })
+                .expect("plan");
+            store.commit_plan(p.id).expect("commit");
+            store.attach_pod(p.id, "p1").expect("attach");
+            store.set_plan_cost_per_hr(p.id, 1.44).expect("rate");
+            if let Some(ss) = self_stop {
+                store.set_plan_self_stop(p.id, ss).expect("ss");
+            }
+            if let Some(off) = last_seen_offset {
+                store
+                    .set_plan_last_seen(p.id, commit + off)
+                    .expect("last_seen");
+            }
+            p.id
+        };
+        let conn = rusqlite::Connection::open(&db).expect("conn");
+        conn.execute(
+            "UPDATE plans SET committed_at = ?1, started_at = ?1 WHERE id = ?2",
+            rusqlite::params![commit, plan_id],
+        )
+        .expect("backdate");
+        drop(conn);
+        let store = Store::open(&db).expect("reopen");
+        let m = serve(|req, _| match req.route().as_str() {
+            "GET /pods" => (200, "[]".to_string()),
+            _ => (404, "{}".to_string()),
+        });
+        (dir, store, plan_id, m)
+    }
+
+    // (a) Armed + absent past deadline -> books to deadline + 120s (420s * $1.44/hr = $0.17).
+    let (d1, s1, id1, m1) = setup_backdated(
+        "armed",
+        Some("offrig self-stop: armed fire_at=420 via python3"),
+        Some(120),
+    );
+    let v1 = watchdog::step(&s1, &rp(&m1), id1).expect("step armed");
+    assert!(matches!(v1, Verdict::Close { .. }), "{v1:?}");
+    assert_eq!(m1.count("GET /pods"), 1);
+    assert!((s1.budget().expect("b1").spent - 0.17).abs() < 1e-9);
+    let _ = std::fs::remove_dir_all(&d1);
+
+    // (b) UNAVAILABLE + absent past deadline -> books to `now` (1020s * $1.44/hr = $0.41).
+    let (d2, s2, id2, m2) = setup_backdated(
+        "unavail",
+        Some("offrig self-stop: UNAVAILABLE (runpodctl/python3/curl)"),
+        Some(120),
+    );
+    let v2 = watchdog::step(&s2, &rp(&m2), id2).expect("step unavail");
+    assert!(matches!(v2, Verdict::Close { .. }), "{v2:?}");
+    assert_eq!(m2.count("GET /pods"), 1);
+    assert!((s2.budget().expect("b2").spent - 0.41).abs() < 1e-9);
+    let _ = std::fs::remove_dir_all(&d2);
+
+    // (c) Armed + last_seen later than deadline + 120s -> last_seen wins (750s * $1.44/hr = $0.30).
+    let (d3, s3, id3, m3) = setup_backdated(
+        "lastseen",
+        Some("offrig self-stop: armed fire_at=420 via python3"),
+        Some(750),
+    );
+    let v3 = watchdog::step(&s3, &rp(&m3), id3).expect("step last_seen");
+    assert!(matches!(v3, Verdict::Close { .. }), "{v3:?}");
+    assert_eq!(m3.count("GET /pods"), 1);
+    assert!((s3.budget().expect("b3").spent - 0.30).abs() < 1e-9);
+    let _ = std::fs::remove_dir_all(&d3);
+}
+
+#[test]
+fn exited_pod_lower_cost_per_hr_does_not_lower_saved_rate() {
+    let status = std::sync::Arc::new(std::sync::Mutex::new(("RUNNING", 1.44f64)));
+    let st = std::sync::Arc::clone(&status);
+    let m = serve(move |req, _| match req.route().as_str() {
+        "GET /pods" => {
+            let (s, cost) = *st.lock().expect("lock");
+            (
+                200,
+                format!(
+                    r#"[{{"id":"p1","name":"offrig-frontier","desiredStatus":"{s}","costPerHr":{cost}}}]"#
+                ),
+            )
+        }
         _ => (404, "{}".to_string()),
     });
     let store = Store::open_in_memory().expect("store");
-    let now = offrig_core::cost::now_unix();
-    let commit = now - 1020;
-    store.set_budget_cap(50.0).expect("cap");
-    let p = store
-        .create_plan(NewPlan {
-            profile: "job".into(),
-            gpu_count: 1,
-            gpu_types: vec!["NVIDIA RTX A4000".into()],
-            max_hours: 0.0834,
-            max_price_hr: 2.09,
-            note: None,
-        })
-        .expect("plan");
-    store.commit_plan(p.id).expect("commit");
-    store.attach_pod(p.id, "p1").expect("attach");
-    store.set_plan_cost_per_hr(p.id, 1.44).expect("rate");
-    // Plan committed and started 1020s ago (~5 min deadline -> 420s elapsed by fire_at = deadline + 120s).
-    // Even though now is 600s past fire_at, booking caps at 420s * $1.44/hr = $0.168 -> $0.17.
-    let mut plan = store.plan(p.id).expect("r").expect("p");
-    plan.committed_at = Some(commit);
-    plan.started_at = Some(commit);
-    assert_eq!(watchdog::spend_when_gone(&plan, 1.44, now), 0.17);
-    let _ = m;
+    let plan = committed(&store, 1.0, Some("p1"));
+    assert_eq!(
+        watchdog::step(&store, &rp(&m), plan.id).expect("poll1"),
+        Verdict::Wait
+    );
+    assert_eq!(store.plan_cost_per_hr(plan.id).expect("rate1"), Some(1.44));
+    assert!(store.plan_last_seen(plan.id).expect("ls1").is_some());
+
+    *status.lock().expect("lock") = ("EXITED", 0.05);
+    assert_eq!(
+        watchdog::step(&store, &rp(&m), plan.id).expect("poll2"),
+        Verdict::Wait
+    );
+    assert_eq!(
+        store.plan_cost_per_hr(plan.id).expect("rate2"),
+        Some(1.44),
+        "EXITED pod reporting a lower costPerHr must not lower saved rate"
+    );
+}
+
+#[test]
+fn settings_write_error_on_present_poll_does_not_abort_deadline_terminate() {
+    for status in ["RUNNING", "EXITED"] {
+        let pods = format!(
+            r#"[{{"id":"p1","name":"offrig-frontier","desiredStatus":"{status}","costPerHr":1.44}}]"#
+        );
+        let m = serve(move |req, _| match req.route().as_str() {
+            "GET /pods" => (200, pods.clone()),
+            "DELETE /pods/p1" => (204, String::new()),
+            _ => (404, "{}".to_string()),
+        });
+        let dir =
+            std::env::temp_dir().join(format!("offrig-wd-m2-{status}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let db = dir.join("offrig.db");
+        let plan_id = {
+            let store = Store::open(&db).expect("store");
+            committed(&store, 0.0001, Some("p1")).id
+        };
+        let conn = rusqlite::Connection::open(&db).expect("conn");
+        conn.execute_batch(
+            "CREATE TRIGGER fail_plan_meta_ins BEFORE INSERT ON settings WHEN NEW.key LIKE 'plan_%'
+             BEGIN SELECT RAISE(ABORT, 'meta write fault'); END;
+             CREATE TRIGGER fail_plan_meta_upd BEFORE UPDATE ON settings WHEN NEW.key LIKE 'plan_%'
+             BEGIN SELECT RAISE(ABORT, 'meta write fault'); END;",
+        )
+        .expect("triggers");
+        drop(conn);
+
+        let store = Store::open(&db).expect("reopen");
+        let verdict = watchdog::step(&store, &rp(&m), plan_id).expect("step must terminate");
+        assert!(
+            matches!(verdict, Verdict::Terminate { .. }),
+            "{status}: {verdict:?}"
+        );
+        assert_eq!(m.count("DELETE /pods/p1"), 1, "{status}");
+        assert_eq!(
+            store.plan(plan_id).expect("plan").expect("exists").state,
+            "closed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

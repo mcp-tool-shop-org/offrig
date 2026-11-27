@@ -665,7 +665,10 @@ pub fn claim_or_terminate_duplicate_pod(
     pod: &Pod,
 ) -> Result<()> {
     claim_or_terminate_with(store, rp, plan_id, pod, |pid, id| store.attach_pod(pid, id))?;
-    store.set_plan_cost_per_hr(plan_id, pod.cost_per_hr)
+    if pod.desired_status.eq_ignore_ascii_case("RUNNING") {
+        store.set_plan_cost_per_hr(plan_id, pod.cost_per_hr)?;
+    }
+    Ok(())
 }
 
 fn probe_existing_plan_pod(
@@ -940,12 +943,16 @@ fn launch(
             .filter(|p| p.gpu_type().is_some())
             .unwrap_or_else(|| pod.clone())
     };
-    let _ = store.set_plan_cost_per_hr(plan_id, seen.cost_per_hr);
+    if seen.desired_status.eq_ignore_ascii_case("RUNNING") {
+        let _ = store.set_plan_cost_per_hr(plan_id, seen.cost_per_hr);
+    }
     progress.v["rented"] = progress.rented(&seen);
     // offrig_job derives the step from the pod itself while the pod boots, so a
     // slow host never leaves a stale "waiting for the address" line behind.
     progress.v["phase"] = json!("pod_boot");
-    progress.v["cost_per_hr"] = json!(seen.cost_per_hr);
+    if seen.cost_per_hr > 0.0 && seen.cost_per_hr.is_finite() {
+        progress.v["cost_per_hr"] = json!(seen.cost_per_hr);
+    }
     progress.step(format!(
         "pod {} created at ${:.2}/hr",
         pod.id, seen.cost_per_hr
@@ -957,7 +964,12 @@ fn launch(
     // reported and left running. Shutting it down stays with the person.
     let ready = (|| -> Result<Value> {
         let up = session.wait_ready(&pod.id, &mut |e| progress.event(e))?;
-        let _ = store.set_plan_cost_per_hr(plan_id, up.cost_per_hr);
+        if up.desired_status.eq_ignore_ascii_case("RUNNING") {
+            let _ = store.set_plan_cost_per_hr(plan_id, up.cost_per_hr);
+        }
+        if up.cost_per_hr > 0.0 && up.cost_per_hr.is_finite() {
+            progress.v["cost_per_hr"] = json!(up.cost_per_hr);
+        }
         progress.v["phase"] = json!("after_ssh");
         progress.step(format!("ssh is up through the alias {}", cfg.ssh_alias));
         if cancel.load(Ordering::SeqCst) {
@@ -1277,7 +1289,7 @@ pub fn shutdown_with_override(
                 // Never terminate a pod this plan's lane did not name, whatever id the plan holds.
                 ensure_owned(&cfg, &p)?;
                 if p.cost_per_hr > 0.0 && p.cost_per_hr.is_finite() {
-                    rate = p.cost_per_hr;
+                    rate = rate.max(p.cost_per_hr);
                 }
                 if p.desired_status == "TERMINATED" {
                     pod_gone = true;
@@ -1326,7 +1338,9 @@ pub fn shutdown_with_override(
     let spent = if plan.pod_id.is_some() {
         let now = now_unix();
         if pod_gone {
-            watchdog::spend_when_gone(&plan, rate, now)
+            let self_stop = store.plan_self_stop(plan_id).ok().flatten();
+            let last_seen = store.plan_last_seen(plan_id).ok().flatten();
+            watchdog::spend_when_gone(&plan, rate, now, self_stop.as_deref(), last_seen)
         } else {
             watchdog::spend(&plan, rate, now)
         }

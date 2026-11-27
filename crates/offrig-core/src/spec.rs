@@ -203,6 +203,18 @@ pub fn pod_is_stopped(status: &str) -> bool {
     status.eq_ignore_ascii_case("EXITED") || status.eq_ignore_ascii_case("STOPPED")
 }
 
+/// True when the stored `self-stop.status` text shows the on-pod backstop timer armed
+/// (`armed fire_at=`) without `UNAVAILABLE`, `STOPPED NOT TERMINATED`, or `unknown`.
+pub fn self_stop_is_armed(status: Option<&str>) -> bool {
+    let Some(s) = status.map(str::trim) else {
+        return false;
+    };
+    s.contains("armed fire_at=")
+        && !s.contains("UNAVAILABLE")
+        && !s.contains("STOPPED NOT TERMINATED")
+        && !s.contains(SELF_STOP_UNKNOWN_PREFIX)
+}
+
 const SELF_STOP_START: &str = "# offrig-self-stop-begin\n";
 const SELF_STOP_END: &str = "# offrig-self-stop-end\n";
 
@@ -304,9 +316,7 @@ for i in range(4):
             ra = hdr.get("Retry-After") if code == 429 and hdr is not None else None
             if ra is not None:
                 try:
-                    v = float(ra.strip())
-                    if v == v:
-                        w = max(0.0, min(v, 60.0))
+                    w = max(0.0, min(float(ra.strip()), 60.0))
                 except Exception:
                     pass
             if w > 0:
@@ -330,8 +340,7 @@ except Exception as exc:
          mkdir -p \"{state_dir}\"; \
          if [ -z \"$_offrig_ss_missing\" ]; then \
            printf '%s\\n' \"{SELF_STOP_PREFIX}armed fire_at={fire_at} via $_offrig_ss_tool\" | tee -a \"{status_file}\"; \
-           (_offrig_log=\"{state_dir}/bootstrap.log\"; \
-           _offrig_py_api() {{ \
+           (_offrig_py_api() {{ \
              python3 -c '{py_api}' \"$1\" \"{api_base}\" \"$2\"; \
            }}; \
            _offrig_curl_req() {{ \
@@ -346,7 +355,7 @@ except Exception as exc:
              for _i in 1 2 3 4; do \
                _out=$(_offrig_curl_req DELETE \"\" \"\"); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in [0-9][0-9][0-9]) ;; *) _c=\"000\" ;; esac; \
                case \"$_c\" in 2*) return 0 ;; esac; \
-               echo \"[offrig] self-stop DELETE $_i/4 failed ($_c)\" >> \"$_offrig_log\" 2>&1; \
+               echo \"[offrig] self-stop DELETE $_i/4 failed ($_c)\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
                if [ \"$_i\" -lt 4 ]; then \
                  _w=$_d; _d=$((_d * 2)); \
                  if [ \"$_c\" = \"429\" ]; then \
@@ -365,33 +374,33 @@ except Exception as exc:
                fi; \
              done; \
              _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"terminate\"}}'); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in 2*) return 0 ;; esac; \
-             echo \"[offrig] self-stop terminate action failed (${{_c:-000}})\" >> \"$_offrig_log\" 2>&1; \
+             echo \"[offrig] self-stop terminate action failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
              return 1; \
            }}; \
            if [ \"$_offrig_ss_tool\" = \"python3\" ]; then \
-             _offrig_py_api probe {retry_base_secs} >> \"$_offrig_log\" 2>&1 || true; \
+             _offrig_py_api probe {retry_base_secs} >> \"{state_dir}/bootstrap.log\" 2>&1 || true; \
            elif [ \"$_offrig_ss_tool\" = \"curl\" ]; then \
              _out=$(_offrig_curl_req GET \"\" \"\"); _c=\"${{_out##*__CODE__:}}\"; case \"$_c\" in [0-9][0-9][0-9]) ;; *) _c=\"000\" ;; esac; \
-             echo \"[offrig] self-stop boot GET /pods/${{RUNPOD_POD_ID}}: $_c\" >> \"$_offrig_log\" 2>&1; \
+             echo \"[offrig] self-stop boot GET /pods/${{RUNPOD_POD_ID}}: $_c\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
            fi; \
            now=$(date -u +%s 2>/dev/null || true); [ -n \"$now\" ] || now={fire_at}; case \"$now\" in *[!0-9]*) now={fire_at} ;; esac; wait=$(({fire_at} - now)); \
            if [ \"$wait\" -gt 0 ]; then sleep \"$wait\"; fi; \
-           echo \"[offrig] on-pod deadline {fire_at} reached; terminating ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"$_offrig_log\" 2>&1; \
+           echo \"[offrig] on-pod deadline {fire_at} reached; terminating ${{RUNPOD_POD_ID}} via $_offrig_ss_tool\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
            _offrig_term=0; \
            case \"$_offrig_ss_tool\" in \
              runpodctl) \
                _d={retry_base_secs}; \
                for _i in 1 2 3 4; do \
-                 if runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1 || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1; then \
+                 if runpodctl pod delete \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 || runpodctl remove pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1; then \
                    _offrig_term=1; break; \
                  fi; \
                  if [ \"$_i\" -lt 4 ] && [ \"$_d\" -gt 0 ]; then sleep \"$_d\"; _d=$((_d * 2)); fi; \
                done ;; \
              python3) \
-               if _offrig_py_api terminate {retry_base_secs} >> \"$_offrig_log\" 2>&1; then \
+               if _offrig_py_api terminate {retry_base_secs} >> \"{state_dir}/bootstrap.log\" 2>&1; then \
                  _offrig_term=1; \
                elif command -v curl >/dev/null 2>&1; then \
-                 echo \"[offrig] self-stop python3 failed; falling through to curl\" >> \"$_offrig_log\" 2>&1; \
+                 echo \"[offrig] self-stop python3 failed; falling through to curl\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
                  if _offrig_curl_term; then _offrig_term=1; fi; \
                fi ;; \
              curl) \
@@ -399,21 +408,21 @@ except Exception as exc:
            esac; \
            if [ \"$_offrig_term\" -ne 1 ]; then \
              printf '%s\\n' \"{SELF_STOP_STOPPED_LINE}\" >> \"{status_file}\"; \
-             echo \"[offrig] {SELF_STOP_STOPPED_LINE}\" >> \"$_offrig_log\" 2>&1; \
+             echo \"[offrig] {SELF_STOP_STOPPED_LINE}\" >> \"{state_dir}/bootstrap.log\" 2>&1; \
              case \"$_offrig_ss_tool\" in \
                runpodctl) \
-                 runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1 \
-                 || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"$_offrig_log\" 2>&1 || exit 1 ;; \
+                 runpodctl pod stop \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 \
+                 || runpodctl stop pod \"$RUNPOD_POD_ID\" >> \"{state_dir}/bootstrap.log\" 2>&1 || exit 1 ;; \
                python3) \
-                 if ! _offrig_py_api stop 0 >> \"$_offrig_log\" 2>&1; then \
+                 if ! _offrig_py_api stop 0 >> \"{state_dir}/bootstrap.log\" 2>&1; then \
                    if command -v curl >/dev/null 2>&1; then \
                      _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"stop\"}}'); _c=\"${{_out##*__CODE__:}}\"; \
-                     case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"$_offrig_log\" 2>&1; exit 1 ;; esac; \
+                     case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; esac; \
                    else exit 1; fi; \
                  fi ;; \
                curl) \
                  _out=$(_offrig_curl_req POST \"/action\" '{{\"action\":\"stop\"}}'); _c=\"${{_out##*__CODE__:}}\"; \
-                 case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"$_offrig_log\" 2>&1; exit 1 ;; esac ;; \
+                 case \"$_c\" in 2*) ;; *) echo \"[offrig] self-stop stop failed (${{_c:-000}})\" >> \"{state_dir}/bootstrap.log\" 2>&1; exit 1 ;; esac ;; \
              esac; \
            fi) </dev/null >/dev/null 2>&1 & \
          else \

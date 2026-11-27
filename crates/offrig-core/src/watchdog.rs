@@ -307,13 +307,23 @@ pub fn spend(plan: &Plan, rate_per_hr: f64, now: i64) -> f64 {
     (rate_per_hr * hours * 100.0).ceil() / 100.0
 }
 
-/// Spend when the pod is already gone: if the plan had a deadline, end the booking clock
-/// at `min(now, deadline + SELF_STOP_MARGIN_SECS)` so a late close after an on-pod
-/// backstop deletion does not count time after the timer fired.
-pub fn spend_when_gone(plan: &Plan, rate_per_hr: f64, now: i64) -> f64 {
-    let end = plan.deadline().map_or(now, |d| {
-        now.min(d.saturating_add(crate::spec::SELF_STOP_MARGIN_SECS))
-    });
+/// Spend when the pod is already gone: clamp at `max(min(now, deadline + SELF_STOP_MARGIN_SECS), last_seen)`
+/// only when the plan's stored self-stop status proves the on-pod backstop timer armed;
+/// otherwise (UNAVAILABLE, unknown, or STOPPED NOT TERMINATED) book up to `now`.
+pub fn spend_when_gone(
+    plan: &Plan,
+    rate_per_hr: f64,
+    now: i64,
+    self_stop: Option<&str>,
+    last_seen: Option<i64>,
+) -> f64 {
+    let end = match plan.deadline() {
+        Some(d) if crate::spec::self_stop_is_armed(self_stop) => {
+            let clamped = now.min(d.saturating_add(crate::spec::SELF_STOP_MARGIN_SECS));
+            last_seen.map_or(clamped, |ls| clamped.max(ls))
+        }
+        _ => now,
+    };
     spend(plan, rate_per_hr, end)
 }
 
@@ -853,7 +863,11 @@ pub fn step_with_config(
                         }),
                     )?;
                     store.attach_pod(plan_id, &found.id)?;
-                    store.set_plan_cost_per_hr(plan_id, found.cost_per_hr)?;
+                    if found.desired_status.eq_ignore_ascii_case("RUNNING")
+                        && let Err(e) = store.set_plan_cost_per_hr(plan_id, found.cost_per_hr)
+                    {
+                        eprintln!("[offrig-watchdog] failed saving plan {plan_id} rate: {e}");
+                    }
                     store.journal_outcome(
                         ja,
                         &format!("attached orphan pod {} ({})", found.id, how.as_str()),
@@ -869,23 +883,30 @@ pub fn step_with_config(
         }
     };
     if let PodSeen::Present(p) = &seen {
-        store.set_plan_cost_per_hr(plan_id, p.cost_per_hr)?;
+        if let Err(e) = store.set_plan_last_seen(plan_id, now) {
+            eprintln!("[offrig-watchdog] failed saving plan {plan_id} last_seen: {e}");
+        }
+        if p.desired_status.eq_ignore_ascii_case("RUNNING")
+            && let Err(e) = store.set_plan_cost_per_hr(plan_id, p.cost_per_hr)
+        {
+            eprintln!("[offrig-watchdog] failed saving plan {plan_id} rate: {e}");
+        }
         if plan.deadline().is_some_and(|d| now >= d)
             && crate::spec::pod_is_stopped(&p.desired_status)
+            && let Err(e) = store.set_plan_self_stop(plan_id, crate::spec::SELF_STOP_STOPPED_LINE)
         {
-            store.set_plan_self_stop(plan_id, crate::spec::SELF_STOP_STOPPED_LINE)?;
+            eprintln!("[offrig-watchdog] failed saving plan {plan_id} self_stop: {e}");
         }
     }
     let verdict = decide(&plan, &seen, now);
     match &verdict {
         Verdict::Terminate { reason } => {
+            let saved = store.plan_cost_per_hr(plan_id).ok().flatten();
             let rate = match &seen {
                 PodSeen::Present(p) if p.cost_per_hr > 0.0 && p.cost_per_hr.is_finite() => {
-                    p.cost_per_hr
+                    saved.map_or(p.cost_per_hr, |s| s.max(p.cost_per_hr))
                 }
-                _ => store
-                    .plan_cost_per_hr(plan_id)?
-                    .unwrap_or(plan.max_price_hr),
+                _ => saved.unwrap_or(plan.max_price_hr),
             };
             let j = store.journal(
                 "watchdog_terminate",
@@ -900,13 +921,17 @@ pub fn step_with_config(
         }
         Verdict::Close { .. } => {
             // If the pod vanished or was self-deleted, use the persisted real rate
-            // (falling back to the ceiling only if never recorded) and cap the clock
-            // at deadline + SELF_STOP_MARGIN_SECS so late closes do not overbook.
+            // (falling back to the ceiling only if never recorded) and clamp at
+            // max(min(now, deadline + SELF_STOP_MARGIN_SECS), last_seen) only when armed.
             let cost = if plan.pod_id.is_some() {
                 let rate = store
-                    .plan_cost_per_hr(plan_id)?
+                    .plan_cost_per_hr(plan_id)
+                    .ok()
+                    .flatten()
                     .unwrap_or(plan.max_price_hr);
-                spend_when_gone(&plan, rate, now)
+                let self_stop = store.plan_self_stop(plan_id).ok().flatten();
+                let last_seen = store.plan_last_seen(plan_id).ok().flatten();
+                spend_when_gone(&plan, rate, now, self_stop.as_deref(), last_seen)
             } else {
                 0.0
             };
@@ -1015,10 +1040,35 @@ mod tests {
         // committed_at = 0, started_at = 60, max_hours = 0.0834 (~300s deadline) -> fire_at = 420.
         let p = plan("committed", Some("p1"), Some(0), 0.0834);
         assert_eq!(p.deadline(), Some(300));
-        // Late host close (10 minutes past fire_at) books only up to deadline + 120s (360s from start).
-        assert_eq!(spend_when_gone(&p, 1.44, 1020), 0.15);
+        let armed = Some("offrig self-stop: armed fire_at=420 via python3");
+        // Armed + late close books to deadline + 120s (360s from start = $0.15).
+        assert_eq!(spend_when_gone(&p, 1.44, 1020, armed, None), 0.15);
         // Before fire_at still books only elapsed runtime.
-        assert_eq!(spend_when_gone(&p, 1.44, 210), 0.06);
+        assert_eq!(spend_when_gone(&p, 1.44, 210, armed, None), 0.06);
+        // last_seen later than fire_at wins (660s from start = $0.27).
+        assert_eq!(spend_when_gone(&p, 1.44, 1020, armed, Some(720)), 0.27);
+        // UNAVAILABLE, STOPPED NOT TERMINATED, or unknown books to `now` (960s from start = $0.39).
+        assert_eq!(
+            spend_when_gone(
+                &p,
+                1.44,
+                1020,
+                Some("offrig self-stop: UNAVAILABLE"),
+                Some(120)
+            ),
+            0.39
+        );
+        assert_eq!(spend_when_gone(&p, 1.44, 1020, None, Some(120)), 0.39);
+        assert_eq!(
+            spend_when_gone(
+                &p,
+                1.44,
+                1020,
+                Some(crate::spec::SELF_STOP_STOPPED_LINE),
+                Some(120)
+            ),
+            0.39
+        );
     }
 
     #[test]
